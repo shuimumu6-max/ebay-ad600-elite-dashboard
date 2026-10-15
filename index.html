@@ -503,9 +503,9 @@
     function baseLayout(content) {
       const pages = [
         ['dashboard', 'layout-dashboard', '经营看板'],
-        ['daily', 'calendar-range', '每日记录'],
-        ['import', 'file-up', '数据导入'],
         ['detail', 'table-2', 'Item 明细'],
+        ['import', 'file-up', '数据导入'],
+        ['daily', 'calendar-range', '每日记录'],
         ['coverage', 'list-checks', '字段覆盖']
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
       return `<header class="topbar">
