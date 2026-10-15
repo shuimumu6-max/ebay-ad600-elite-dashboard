@@ -91,6 +91,35 @@
     .metric-label { color: var(--muted); font-size: 12px; }
     .metric-value { margin-top: 9px; font-size: 25px; line-height: 1; font-weight: 760; font-variant-numeric: tabular-nums; }
     .metric-foot { margin-top: 10px; color: var(--muted); font-size: 11px; }
+    .decision-metric { min-height: 132px; position: relative; overflow: hidden; }
+    .metric-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+    .metric-change { margin-top: 9px; display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; }
+    .metric-change.up { color: var(--green); }
+    .metric-change.down { color: var(--red); }
+    .metric-change.flat { color: var(--muted); }
+    .sparkline { width: 90px; height: 32px; flex: 0 0 90px; }
+    .sparkline polyline { fill: none; stroke: var(--blue); stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .health-strip { margin-bottom: 14px; padding: 13px 15px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid #acd5c0; border-left: 4px solid var(--green); border-radius: 7px; background: var(--green-soft); }
+    .health-strip.warning { border-color: #e5ca85; border-left-color: #d89a00; background: var(--amber-soft); }
+    .health-title { font-size: 13px; font-weight: 760; }
+    .health-detail { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .decision-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(330px, .85fr); gap: 14px; margin-bottom: 14px; }
+    .alert-list { display: grid; }
+    .alert-row { min-height: 64px; padding: 11px 14px; display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid #edf0f3; }
+    .alert-row:last-child { border-bottom: 0; }
+    .alert-main { min-width: 0; }
+    .alert-main strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .alert-main span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .link-btn { padding: 4px; border: 0; background: transparent; color: var(--blue); }
+    .trend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .trend-grid .panel:last-child { grid-column: 1 / -1; }
+    .chart.tall { height: 390px; }
+    .diagnosis-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+    .diagnosis-grid .wide { grid-column: 1 / -1; }
+    .rule-note { padding: 12px 15px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+    .priority-cell { text-align: left; }
+    .delta-positive { color: var(--green); font-weight: 700; }
+    .delta-negative { color: var(--red); font-weight: 700; }
     .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .8fr); gap: 14px; margin-bottom: 14px; }
     .chart { width: 100%; height: 330px; }
     .table-wrap { width: 100%; overflow: auto; }
@@ -130,7 +159,8 @@
       .nav { display: flex; width: max-content; position: static; }
       .nav-btn { width: auto; padding: 0 13px; white-space: nowrap; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .dashboard-grid { grid-template-columns: 1fr; }
+      .dashboard-grid, .decision-grid, .trend-grid, .diagnosis-grid { grid-template-columns: 1fr; }
+      .trend-grid .panel:last-child, .diagnosis-grid .wide { grid-column: auto; }
       .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
@@ -143,6 +173,8 @@
       .source-grid { grid-template-columns: 1fr; }
       .snapshot-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .coverage-summary { grid-template-columns: 1fr; }
+      .alert-row { grid-template-columns: 66px minmax(0, 1fr); }
+      .alert-row .link-btn { display: none; }
     }
     @media (max-width: 460px) {
       .metrics { grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -168,7 +200,7 @@
     const MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
     const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [] };
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', query: '', start: '', end: '', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { page: 'dashboard', query: '', start: '', end: '', trafficPeriod: '', detail: 'item', diagnosisMetric: 'trafficTotalImpressions', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
 
     const COVERAGE = [
@@ -388,6 +420,7 @@
         const key = `${row.date}|${row.itemId}`;
         if (!map.has(key)) map.set(key, { date: row.date, itemId: row.itemId, title: row.title, price: row.price, available: row.available, campaigns: new Set(), adImpressions: 0, adClicks: 0, adSold: 0, organicSold: 0, totalSold: 0, adSales: 0, adFees: 0, organicClicks: 0, organicImpressions: 0 });
         const item = map.get(key);
+        item.hasPlg = true;
         item.title = row.title || item.title;
         item.price = row.price || item.price;
         item.available = row.available;
@@ -500,13 +533,148 @@
       }).sort((a, b) => b.date.localeCompare(a.date) || b.trafficTotalImpressions - a.trafficTotalImpressions || a.itemId.localeCompare(b.itemId));
     }
 
+    function dateCoverage() {
+      const trafficDates = unique(dataState.trafficRaw.filter(row => isTargetModelTitle(row.title) && row.start && row.start === row.end).map(row => row.start)).sort();
+      const plgDates = unique(dataState.plgRaw.filter(row => isTargetModelTitle(row.title)).map(row => row.date)).sort();
+      const completeDates = trafficDates.filter(date => plgDates.includes(date));
+      return {
+        trafficDates, plgDates, completeDates,
+        missingTraffic: plgDates.filter(date => !trafficDates.includes(date)),
+        missingPlg: trafficDates.filter(date => !plgDates.includes(date))
+      };
+    }
+
+    function portfolioDailySeries() {
+      const coverage = dateCoverage();
+      const complete = new Set(coverage.completeDates);
+      const map = new Map();
+      const query = ui.query.toLowerCase();
+      for (const row of aggregateDaily()) {
+        if (query && !row.itemId.toLowerCase().includes(query) && !row.title.toLowerCase().includes(query)) continue;
+        if (!map.has(row.date)) map.set(row.date, { date: row.date, hasTraffic: false, hasPlg: false, totalImpressions: 0, ebayViews: 0, externalViews: 0, pageViews: 0, sold: 0, naturalImpressions: 0, naturalViews: 0, adImpressions: 0, adClicks: 0, adSold: 0, adSales: 0, adFees: 0 });
+        const day = map.get(row.date);
+        if (row.hasDailyTraffic) {
+          day.hasTraffic = true;
+          day.totalImpressions += row.trafficTotalImpressions || 0;
+          day.ebayViews += row.trafficEbayViews || 0;
+          day.externalViews += row.trafficExternalViews || 0;
+          day.pageViews += row.trafficPageViews || 0;
+          day.sold += row.trafficSold || 0;
+          day.naturalImpressions += row.trafficNaturalImpressions || 0;
+          day.naturalViews += row.trafficNaturalViews || 0;
+        }
+        if (row.hasPlg) day.hasPlg = true;
+        day.adImpressions += row.adImpressions || 0;
+        day.adClicks += row.adClicks || 0;
+        day.adSold += row.adSold || 0;
+        day.adSales += row.adSales || 0;
+        day.adFees += row.adFees || 0;
+      }
+      return [...map.values()].sort((a, b) => a.date.localeCompare(b.date)).map(day => ({
+        ...day,
+        complete: complete.has(day.date),
+        totalCtr: day.ebayViews / day.totalImpressions || 0,
+        conversion: day.sold / day.pageViews || 0,
+        adCtr: day.adClicks / day.adImpressions || 0,
+        roas: day.adSales / day.adFees || 0,
+        acos: day.adFees / day.adSales || 0
+      }));
+    }
+
+    function average(rows, key) { return rows.length ? sum(rows, key) / rows.length : 0; }
+    function median(values) {
+      const rows = values.filter(Number.isFinite).sort((a, b) => a - b);
+      if (!rows.length) return 0;
+      const middle = Math.floor(rows.length / 2);
+      return rows.length % 2 ? rows[middle] : (rows[middle - 1] + rows[middle]) / 2;
+    }
+    function relativeChange(value, baseline) { return baseline ? (value - baseline) / baseline : null; }
+    function sparkline(values) {
+      const rows = values.map(Number).filter(Number.isFinite);
+      if (!rows.length) return '';
+      const min = Math.min(...rows), max = Math.max(...rows), span = max - min || 1;
+      const points = rows.map((value, index) => `${rows.length === 1 ? 45 : index * 88 / (rows.length - 1) + 1},${30 - (value - min) * 26 / span}`).join(' ');
+      return `<svg class="sparkline" viewBox="0 0 90 32" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
+    }
+    function changeText(value) {
+      if (value === null) return { cls: 'flat', text: '暂无可比基线' };
+      const direction = value > .005 ? 'up' : value < -.005 ? 'down' : 'flat';
+      return { cls: direction, text: `${value > 0 ? '+' : ''}${pct(value)} 较前 3 日均值` };
+    }
+
+    function decisionSnapshot() {
+      const series = portfolioDailySeries();
+      const complete = series.filter(row => row.complete);
+      const current = complete.at(-1) || null;
+      const previous = complete.at(-2) || null;
+      const baselineRows = complete.slice(Math.max(0, complete.length - 4), -1);
+      return { series, complete, current, previous, baselineRows, coverage: dateCoverage() };
+    }
+
+    function decisionMetric(label, value, format, currentKey, snapshot) {
+      const baseline = average(snapshot.baselineRows, currentKey);
+      const change = changeText(relativeChange(value, baseline));
+      const values = snapshot.complete.slice(-7).map(row => row[currentKey]);
+      return `<article class="metric decision-metric"><div class="metric-label">${label}</div><div class="metric-row"><div class="metric-value">${format(value)}</div>${sparkline(values)}</div><div class="metric-change ${change.cls}">${change.cls === 'up' ? icon('trending-up', 14) : change.cls === 'down' ? icon('trending-down', 14) : icon('minus', 14)}${change.text}</div></article>`;
+    }
+
+    function itemDiagnostics() {
+      const { completeDates } = dateCoverage();
+      const latestDate = completeDates.at(-1) || '';
+      const baselineDates = completeDates.slice(Math.max(0, completeDates.length - 4), -1);
+      const rows = aggregateDaily();
+      const currentRows = rows.filter(row => row.date === latestDate);
+      const historyMap = new Map();
+      for (const row of rows.filter(item => baselineDates.includes(item.date))) {
+        if (!historyMap.has(row.itemId)) historyMap.set(row.itemId, []);
+        historyMap.get(row.itemId).push(row);
+      }
+      const trafficRows = currentRows.filter(row => row.hasDailyTraffic);
+      const medianImpressions = median(trafficRows.map(row => row.trafficTotalImpressions || 0));
+      const medianCtr = median(trafficRows.filter(row => row.trafficTotalImpressions).map(row => (row.trafficEbayViews || 0) / row.trafficTotalImpressions));
+      const medianFees = median(currentRows.map(row => row.adFees || 0));
+      const medianRoas = median(currentRows.filter(row => row.adFees).map(row => (row.adSales || 0) / row.adFees));
+      const allTrafficItems = new Set(dataState.trafficRaw.filter(row => isTargetModelTitle(row.title)).map(row => row.itemId));
+      const allPlgItems = new Set(dataState.plgRaw.filter(row => isTargetModelTitle(row.title)).map(row => row.itemId));
+      return currentRows.map(row => {
+        const history = historyMap.get(row.itemId) || [];
+        const baseline = key => average(history, key);
+        const trafficCtr = row.hasDailyTraffic ? (row.trafficEbayViews || 0) / (row.trafficTotalImpressions || 1) : 0;
+        const conversion = row.hasDailyTraffic ? (row.trafficSold || 0) / (row.trafficPageViews || 1) : 0;
+        const roas = (row.adSales || 0) / (row.adFees || 1);
+        const impressionBaseline = baseline('trafficTotalImpressions');
+        const issues = [];
+        if (impressionBaseline >= 20 && row.trafficTotalImpressions < impressionBaseline * .7) issues.push({ priority: '高', issue: '曝光明显下降', evidence: `较前 3 日均值 ${pct(relativeChange(row.trafficTotalImpressions, impressionBaseline))}`, action: '检查搜索排名、链接状态和自然曝光变化' });
+        if (row.trafficTotalImpressions >= Math.max(20, medianImpressions) && trafficCtr < medianCtr * .7) issues.push({ priority: '中', issue: '高曝光低访问', evidence: `站内 CTR ${pct(trafficCtr)}`, action: '检查主图、标题和价格竞争力' });
+        if ((row.trafficPageViews || 0) >= 3 && !(row.trafficSold || 0)) issues.push({ priority: '中', issue: '有访问无销量', evidence: `${fmt(row.trafficPageViews)} 次访问、0 销量`, action: '检查售价、运费、评价和详情页' });
+        if ((row.adClicks || 0) >= 2 && !(row.adSold || 0)) issues.push({ priority: '高', issue: '广告点击未转化', evidence: `${fmt(row.adClicks)} 次点击、0 广告销量`, action: '检查投放链接质量并控制消耗' });
+        if ((row.adFees || 0) > Math.max(1, medianFees) && roas < medianRoas * .7) issues.push({ priority: '高', issue: '广告效率偏低', evidence: `广告费 ${money(row.adFees)}，ROAS ${fmt(roas, 2)}`, action: '检查低效活动并评估降费' });
+        if (allTrafficItems.has(row.itemId) && !allPlgItems.has(row.itemId)) issues.push({ priority: '中', issue: '缺少 PLG 数据', evidence: 'Traffic 有记录，PLG 无记录', action: '确认链接是否参与 PLG 推广' });
+        return {
+          ...row, latestDate, baselineDates, trafficCtr, conversion, roas, issues,
+          impressionBaseline,
+          impressionDelta: (row.trafficTotalImpressions || 0) - impressionBaseline,
+          soldDelta: (row.trafficSold || 0) - baseline('trafficSold'),
+          feeDelta: (row.adFees || 0) - baseline('adFees')
+        };
+      }).sort((a, b) => b.issues.length - a.issues.length || a.itemId.localeCompare(b.itemId));
+    }
+
+    function operationalAlerts() {
+      const priority = { '高': 0, '中': 1, '低': 2 };
+      return itemDiagnostics().flatMap(row => row.issues.map(issue => ({ ...issue, itemId: row.itemId, title: row.title })))
+        .sort((a, b) => priority[a.priority] - priority[b.priority] || a.itemId.localeCompare(b.itemId));
+    }
+
     function baseLayout(content) {
       const pages = [
-        ['dashboard', 'layout-dashboard', '经营看板'],
+        ['dashboard', 'layout-dashboard', '经营驾驶舱'],
+        ['trend', 'chart-no-axes-combined', '日度趋势'],
+        ['diagnosis', 'scan-search', 'Item 诊断'],
         ['detail', 'table-2', 'Item 明细'],
         ['import', 'file-up', '数据导入'],
         ['daily', 'calendar-range', '每日记录'],
-        ['coverage', 'list-checks', '字段覆盖']
+        ['coverage', 'list-checks', '数据健康']
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
       return `<header class="topbar">
         <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay Item 链接表现看板</h1><p>整体流量 + 自然流量 + 广告表现</p></div></div>
@@ -532,40 +700,61 @@
     function metric(label, value, foot) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`; }
 
     function dashboardPage() {
-      const rows = itemPerformance();
-      if (!rows.length) return emptyDashboard();
-      const trafficRows = trafficPeriodRows();
-      const [plgStart, plgEnd] = plgDateRange();
-      const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
-      const impressions = sum(rows, 'totalImpressions');
-      const ebayViews = sum(rows, 'ebayViews');
-      const externalViews = sum(rows, 'externalViews');
-      const sold = sum(rows, 'quantitySold');
-      const totalViews = sum(rows, 'totalPageViews');
-      const adSales = sum(rows, 'adSales');
-      const adFees = sum(rows, 'adFees');
-      return `<div class="page-head"><div><h2>Item 链接表现</h2><p>每个 Item 只保留一行，Traffic 展示整体与自然流量，PLG 展示广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
-        ${filterPanel()}
-        <div class="snapshot-note">Traffic 整体数据：${trafficRange}；PLG 广告数据：${rangeText(plgStart, plgEnd)}。两个区间分别统计，不互相补算。</div>
+      const snapshot = decisionSnapshot();
+      if (!snapshot.current) return emptyDashboard();
+      const current = snapshot.current;
+      const latestPlg = snapshot.coverage.plgDates.at(-1) || '';
+      const latestComplete = current.date;
+      const alerts = operationalAlerts().slice(0, 8);
+      const incomplete = latestPlg > latestComplete;
+      return `<div class="page-head"><div><h2>经营驾驶舱</h2><p>先确认数据完整，再处理变化最大的指标和 Item。</p></div><div class="actions"><button class="btn" data-page="trend">${icon('chart-no-axes-combined')}查看全部趋势</button><button class="btn" data-page="diagnosis">${icon('scan-search')}进入 Item 诊断</button></div></div>
+        <section class="health-strip ${incomplete ? 'warning' : ''}"><div><div class="health-title" data-complete-date>最新完整日期：${latestComplete}</div><div class="health-detail">Traffic 与 PLG 均有数据，可用于完整链接判断。${incomplete ? ` ${latestPlg} 仅有 PLG，未混入完整日指标。` : ''}</div></div><span class="badge ${incomplete ? 'amber' : 'green'}">${incomplete ? '存在待补数据' : '数据完整'}</span></section>
         <section class="metrics">
-          ${metric('链接总曝光', fmt(impressions), `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
-          ${metric('eBay Page views', fmt(ebayViews), '站内广告 + 站内自然')}
-          ${metric('External Page views', fmt(externalViews), '站外广告 + 站外自然')}
-          ${metric('Quantity sold', fmt(sold), `整体转化率 ${pct(sold / totalViews || 0)}`)}
-          ${metric('链接总 CTR', pct(ebayViews / impressions || 0), 'eBay Page views ÷ 总曝光')}
-          ${metric('PLG 销售额', money(adSales), `${fmt(rows.filter(row => row.hasPlg).length)} 个 Item 有 PLG`)}
-          ${metric('PLG 广告费', money(adFees), `ACOS ${pct(adFees / adSales || 0)}`)}
-          ${metric('PLG ROAS', fmt(adSales / adFees || 0, 2), '广告销售额 ÷ 广告费')}
+          ${decisionMetric('总曝光', current.totalImpressions, value => fmt(value), 'totalImpressions', snapshot)}
+          ${decisionMetric('eBay Page views', current.ebayViews, value => fmt(value), 'ebayViews', snapshot)}
+          ${decisionMetric('总销量', current.sold, value => fmt(value), 'sold', snapshot)}
+          ${decisionMetric('总转化率', current.conversion, value => pct(value), 'conversion', snapshot)}
+          ${decisionMetric('PLG 曝光', current.adImpressions, value => fmt(value), 'adImpressions', snapshot)}
+          ${decisionMetric('PLG 销售额', current.adSales, value => money(value), 'adSales', snapshot)}
+          ${decisionMetric('广告费', current.adFees, value => money(value), 'adFees', snapshot)}
+          ${decisionMetric('ROAS', current.roas, value => fmt(value, 2), 'roas', snapshot)}
         </section>
-        <section class="dashboard-grid">
-          <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
-          <div class="panel"><div class="panel-head"><h3>站内曝光结构</h3><small>Traffic 广告与自然</small></div><div id="mixChart" class="chart"></div></div>
-        </section>
-        <section class="panel"><div class="panel-head"><h3>Item 链接表现</h3><small>点击表头切换升序或降序</small></div>${itemSummaryTable(rows)}</section>`;
+        <section class="decision-grid">
+          <div class="panel"><div class="panel-head"><h3>近 10 个完整日核心走势</h3><small>点击图例可隐藏指标</small></div><div id="overviewTrendChart" class="chart tall"></div></div>
+          <div class="panel"><div class="panel-head"><h3>今日优先处理</h3><small>${fmt(operationalAlerts().length)} 条异常</small></div><div id="decisionAlertList" class="alert-list">${alerts.length ? alerts.map(alert => `<div class="alert-row"><span class="badge ${alert.priority === '高' ? 'red' : 'amber'}">${alert.priority}优先级</span><div class="alert-main"><strong>${esc(alert.itemId)} · ${esc(alert.issue)}</strong><span>${esc(alert.evidence)}；${esc(alert.action)}</span></div><button class="link-btn" data-focus-item="${esc(alert.itemId)}" title="查看这个 Item">${icon('arrow-right', 17)}</button></div>`).join('') : '<div class="empty">最新完整日没有触发异常规则</div>'}</div></div>
+        </section>`;
     }
 
     function emptyDashboard() {
-      return `<div class="page-head"><div><h2>经营看板</h2><p>${SHARED_READONLY ? '等待维护者更新报表后自动生成。' : '上传两类 eBay CSV 后自动生成。'}</p></div></div><div class="panel empty">${icon('chart-no-axes-combined', 30)}<div>还没有可展示的数据</div>${SHARED_READONLY ? '' : `<div style="margin-top:14px"><button class="btn primary" id="topUploadBtn">${icon('upload')}上传 Traffic + PLG</button></div>`}</div>`;
+      return `<div class="page-head"><div><h2>经营驾驶舱</h2><p>${SHARED_READONLY ? '等待维护者更新报表后自动生成。' : '上传两类 eBay CSV 后自动生成。'}</p></div></div><div class="panel empty">${icon('chart-no-axes-combined', 30)}<div>还没有可展示的数据</div>${SHARED_READONLY ? '' : `<div style="margin-top:14px"><button class="btn primary" id="topUploadBtn">${icon('upload')}上传 Traffic + PLG</button></div>`}</div>`;
+    }
+
+    function trendPage() {
+      const snapshot = decisionSnapshot();
+      if (!snapshot.series.length) return emptyDashboard();
+      const latestComplete = snapshot.current?.date || '暂无';
+      return `<div class="page-head"><div><h2>日度趋势</h2><p>按组合和单 Item 查看流量、转化与广告效率变化。</p></div></div>
+        ${filterPanel('每日记录')}
+        <div class="snapshot-note" style="color:var(--green);background:var(--green-soft);border-color:var(--green)">最新完整日期：${latestComplete}。缺少 Traffic 的日期在 Traffic 指标中留空，不按 0 计算。</div>
+        <section class="trend-grid">
+          <div class="panel"><div class="panel-head"><h3>流量趋势</h3><small>总曝光、自然曝光与 PLG 曝光</small></div><div id="trafficTrendChart" class="chart"></div></div>
+          <div class="panel"><div class="panel-head"><h3>转化趋势</h3><small>Page views、销量与转化率</small></div><div id="conversionTrendChart" class="chart"></div></div>
+          <div class="panel"><div class="panel-head"><h3>广告效率趋势</h3><small>销售额、广告费与 ROAS</small></div><div id="adTrendChart" class="chart tall"></div></div>
+        </section>`;
+    }
+
+    function diagnosisPage() {
+      const rows = itemDiagnostics();
+      const alerts = operationalAlerts();
+      const metricOptions = [['trafficTotalImpressions', '曝光变化'], ['trafficSold', '销量变化'], ['adFees', '广告费变化']];
+      return `<div class="page-head"><div><h2>Item 诊断</h2><p>用变化贡献、流量效率和广告效率定位优先处理的链接。</p></div><div class="actions"><select class="input" id="diagnosisMetric" aria-label="变化贡献指标">${metricOptions.map(([value, label]) => `<option value="${value}" ${ui.diagnosisMetric === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
+        <div class="snapshot-note">变化贡献使用最新完整日相对前 3 个完整日均值；四象限分割线使用当前组合中位数。</div>
+        <section class="diagnosis-grid">
+          <div class="panel wide"><div class="panel-head"><h3>Item 变化贡献榜</h3><small>正值推动增长，负值拖累表现</small></div><div id="contributionChart" class="chart tall"></div></div>
+          <div class="panel"><div class="panel-head"><h3>流量四象限</h3><small>曝光 × 转化率</small></div><div id="trafficQuadrantChart" class="chart"></div></div>
+          <div class="panel"><div class="panel-head"><h3>广告四象限</h3><small>最近 7 个完整日广告费 × ROAS</small></div><div id="adQuadrantChart" class="chart"></div></div>
+        </section>
+        <section class="panel"><div class="panel-head"><h3>运营问题清单</h3><small>${fmt(alerts.length)} 条 · 点击 Item 进入单链接趋势</small></div><div class="table-wrap"><table id="diagnosisTable"><thead><tr><th>优先级</th><th>Item ID</th><th>问题</th><th>判断依据</th><th>建议动作</th></tr></thead><tbody>${alerts.length ? alerts.map(alert => `<tr><td class="priority-cell"><span class="badge ${alert.priority === '高' ? 'red' : 'amber'}">${alert.priority}</span></td><td><button class="link-btn" data-focus-item="${esc(alert.itemId)}">${esc(alert.itemId)}</button></td><td>${esc(alert.issue)}</td><td>${esc(alert.evidence)}</td><td style="text-align:left;white-space:normal;min-width:220px">${esc(alert.action)}</td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center">当前没有触发异常规则</td></tr>'}</tbody></table></div><div class="rule-note">规则结合 Item 自身前三日均值与当前组合中位数；建议用于排查优先级，不代表已经证明具体原因。</div></section>`;
     }
 
     function itemSummaryTable(rows) {
@@ -689,7 +878,15 @@
       const counts = { '直接提供': 0, '可计算': 0, '缺少': 0 };
       COVERAGE.forEach(row => counts[row[1]]++);
       const rows = sortRows(COVERAGE.map(([field, status, note]) => ({ field, status, note })), 'coverage');
-      return `<div class="page-head"><div><h2>钉钉字段覆盖</h2><p>盘点 Traffic + PLG 能否提供现有表格所需指标。</p></div></div><div class="coverage">
+      const coverage = dateCoverage();
+      return `<div class="page-head"><div><h2>数据健康</h2><p>先检查日期和来源完整性，再查看字段覆盖情况。</p></div></div><div class="coverage">
+        <section class="panel"><div class="panel-head"><h3>日度数据覆盖</h3><small>完整日期 = 单日 Traffic + PLG</small></div><div class="panel-body"><div class="snapshot-metrics">
+          <div class="snapshot-metric"><span>完整日期</span><strong>${fmt(coverage.completeDates.length)} 天</strong></div>
+          <div class="snapshot-metric"><span>单日 Traffic</span><strong>${fmt(coverage.trafficDates.length)} 天</strong></div>
+          <div class="snapshot-metric"><span>PLG 日度</span><strong>${fmt(coverage.plgDates.length)} 天</strong></div>
+          <div class="snapshot-metric"><span>待补 Traffic</span><strong>${fmt(coverage.missingTraffic.length)} 天</strong></div>
+          <div class="snapshot-metric"><span>待补 PLG</span><strong>${fmt(coverage.missingPlg.length)} 天</strong></div>
+        </div>${coverage.missingTraffic.length ? `<p class="snapshot-note" style="margin-top:12px;margin-bottom:0">待补 Traffic：${esc(coverage.missingTraffic.join('、'))}。这些日期的完整链接指标不会按 0 计算。</p>` : ''}${coverage.missingPlg.length ? `<p class="snapshot-note" style="margin-top:12px;margin-bottom:0">待补 PLG：${esc(coverage.missingPlg.join('、'))}。</p>` : ''}</div></section>
         <div class="coverage-summary">
           <div class="coverage-count"><strong>${counts['直接提供']}</strong><span>直接提供</span></div>
           <div class="coverage-count"><strong>${counts['可计算']}</strong><span>可计算</span></div>
@@ -702,29 +899,88 @@
     function renderCharts() {
       charts.forEach(chart => chart.dispose());
       charts = [];
-      const itemEl = document.getElementById('itemChart');
-      const mixEl = document.getElementById('mixChart');
-      if (!itemEl || !mixEl) return;
-      const rows = itemPerformance();
-      const top = rows.filter(row => row.hasTraffic).slice(0, 12).reverse();
-      const itemChart = echarts.init(itemEl);
-      itemChart.setOption({
-        animationDuration: 350,
-        color: ['#1769aa'],
-        tooltip: { trigger: 'axis' },
-        grid: { left: 108, right: 30, top: 22, bottom: 32 },
-        xAxis: { type: 'value', splitLine: { lineStyle: { color: '#edf0f3' } } },
-        yAxis: { type: 'category', data: top.map(row => row.itemId), axisLabel: { color: '#697586', fontSize: 10 }, axisLine: { lineStyle: { color: '#dce2e8' } } },
-        series: [{ name: '链接总曝光', type: 'bar', barMaxWidth: 16, data: top.map(row => row.totalImpressions) }]
-      });
-      const mixChart = echarts.init(mixEl);
-      mixChart.setOption({
-        color: ['#1769aa', '#4d9b78'],
-        tooltip: { trigger: 'item', formatter: '{b}<br/>{c} ({d}%)' },
-        legend: { bottom: 15, textStyle: { color: '#697586' } },
-        series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '45%'], label: { formatter: '{d}%', color: '#435064' }, data: [{ name: '站内广告曝光', value: sum(rows, 'promotedImpressions') }, { name: '站内自然曝光', value: sum(rows, 'naturalImpressions') }] }]
-      });
-      charts.push(itemChart, mixChart);
+      const palette = ['#1769aa', '#237a57', '#d28b00', '#b42318'];
+      const axis = { axisLine: { lineStyle: { color: '#dce2e8' } }, axisLabel: { color: '#697586', fontSize: 10 } };
+      const lineBase = { type: 'line', smooth: .2, symbolSize: 6, connectNulls: false, emphasis: { focus: 'series' } };
+      const init = (id, option) => {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        const chart = echarts.init(el);
+        chart.setOption({ animationDuration: 350, color: palette, textStyle: { fontFamily: 'Microsoft YaHei' }, ...option });
+        charts.push(chart);
+        return chart;
+      };
+      const allSeries = portfolioDailySeries().filter(row => (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end));
+      const dates = allSeries.map(row => row.date.slice(5));
+
+      if (ui.page === 'dashboard') {
+        const rows = allSeries.filter(row => row.complete).slice(-10);
+        init('overviewTrendChart', {
+          tooltip: { trigger: 'axis' }, legend: { top: 10 }, grid: { left: 58, right: 58, top: 52, bottom: 38 },
+          xAxis: { type: 'category', data: rows.map(row => row.date.slice(5)), ...axis },
+          yAxis: [{ type: 'value', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, { type: 'value', ...axis, splitLine: { show: false } }],
+          series: [
+            { ...lineBase, name: '总曝光', data: rows.map(row => row.totalImpressions), areaStyle: { opacity: .06 } },
+            { ...lineBase, name: 'eBay PV', yAxisIndex: 1, data: rows.map(row => row.ebayViews) },
+            { ...lineBase, name: '销量', yAxisIndex: 1, data: rows.map(row => row.sold) }
+          ]
+        });
+      }
+
+      if (ui.page === 'trend') {
+        const common = { tooltip: { trigger: 'axis' }, legend: { top: 8 }, grid: { left: 58, right: 50, top: 52, bottom: 38 }, xAxis: { type: 'category', data: dates, ...axis } };
+        init('trafficTrendChart', { ...common, yAxis: { type: 'value', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, series: [
+          { ...lineBase, name: '总曝光', data: allSeries.map(row => row.hasTraffic ? row.totalImpressions : null) },
+          { ...lineBase, name: '自然曝光', data: allSeries.map(row => row.hasTraffic ? row.naturalImpressions : null) },
+          { ...lineBase, name: 'PLG 曝光', data: allSeries.map(row => row.hasPlg ? row.adImpressions : null) }
+        ] });
+        init('conversionTrendChart', { ...common, yAxis: [{ type: 'value', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, { type: 'value', axisLabel: { formatter: value => `${value}%`, color: '#697586' }, splitLine: { show: false } }], series: [
+          { ...lineBase, name: 'Page views', data: allSeries.map(row => row.hasTraffic ? row.pageViews : null) },
+          { ...lineBase, name: '销量', data: allSeries.map(row => row.hasTraffic ? row.sold : null) },
+          { ...lineBase, name: '转化率', yAxisIndex: 1, data: allSeries.map(row => row.hasTraffic ? Number((row.conversion * 100).toFixed(2)) : null) }
+        ] });
+        init('adTrendChart', { ...common, yAxis: [{ type: 'value', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, { type: 'value', ...axis, splitLine: { show: false } }], series: [
+          { ...lineBase, name: 'PLG 销售额', data: allSeries.map(row => row.hasPlg ? row.adSales : null), areaStyle: { opacity: .05 } },
+          { ...lineBase, name: '广告费', data: allSeries.map(row => row.hasPlg ? row.adFees : null) },
+          { ...lineBase, name: 'ROAS', yAxisIndex: 1, data: allSeries.map(row => row.hasPlg ? Number(row.roas.toFixed(2)) : null) }
+        ] });
+      }
+
+      if (ui.page === 'diagnosis') {
+        const rows = itemDiagnostics();
+        const deltaKey = ui.diagnosisMetric === 'trafficSold' ? 'soldDelta' : ui.diagnosisMetric === 'adFees' ? 'feeDelta' : 'impressionDelta';
+        const top = [...rows].sort((a, b) => Math.abs(b[deltaKey]) - Math.abs(a[deltaKey])).slice(0, 15).reverse();
+        const contribution = init('contributionChart', {
+          tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } }, grid: { left: 112, right: 36, top: 24, bottom: 34 },
+          xAxis: { type: 'value', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, yAxis: { type: 'category', data: top.map(row => row.itemId), ...axis },
+          series: [{ type: 'bar', barMaxWidth: 17, data: top.map(row => ({ value: Number(row[deltaKey].toFixed(2)), itemStyle: { color: row[deltaKey] >= 0 ? '#237a57' : '#b42318' }, itemId: row.itemId })) }]
+        });
+        const trafficRows = rows.filter(row => row.hasDailyTraffic);
+        const trafficMedianX = median(trafficRows.map(row => row.trafficTotalImpressions || 0));
+        const trafficMedianY = median(trafficRows.map(row => row.conversion || 0));
+        const trafficChart = init('trafficQuadrantChart', {
+          tooltip: { formatter: point => `${point.data.itemId}<br/>曝光：${fmt(point.value[0])}<br/>转化率：${pct(point.value[1])}` }, grid: { left: 58, right: 28, top: 28, bottom: 48 },
+          xAxis: { type: 'value', name: '曝光', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, yAxis: { type: 'value', name: '转化率', axisLabel: { formatter: value => `${fmt(value * 100, 1)}%`, color: '#697586' }, splitLine: { lineStyle: { color: '#edf0f3' } } },
+          series: [{ type: 'scatter', symbolSize: point => Math.min(28, 8 + Math.sqrt(point[2] || 0) * 5), data: trafficRows.map(row => ({ value: [row.trafficTotalImpressions || 0, row.conversion, row.trafficSold || 0], itemId: row.itemId })), markLine: { silent: true, symbol: 'none', lineStyle: { type: 'dashed', color: '#9aa6b3' }, data: [{ xAxis: trafficMedianX }, { yAxis: trafficMedianY }] } }]
+        });
+        const adWindowDates = dateCoverage().completeDates.slice(-7);
+        const adMap = new Map();
+        for (const row of aggregateDaily().filter(item => adWindowDates.includes(item.date) && item.hasPlg)) {
+          if (!adMap.has(row.itemId)) adMap.set(row.itemId, { itemId: row.itemId, adFees: 0, adSales: 0 });
+          const item = adMap.get(row.itemId);
+          item.adFees += row.adFees || 0;
+          item.adSales += row.adSales || 0;
+        }
+        const adRows = [...adMap.values()].filter(row => row.adFees > 0).map(row => ({ ...row, roas: row.adSales / row.adFees || 0 }));
+        const adMedianX = median(adRows.map(row => row.adFees));
+        const adMedianY = median(adRows.map(row => row.roas));
+        const adChart = init('adQuadrantChart', {
+          tooltip: { formatter: point => `${point.data.itemId}<br/>广告费：${money(point.value[0])}<br/>ROAS：${fmt(point.value[1], 2)}` }, grid: { left: 58, right: 28, top: 28, bottom: 48 },
+          xAxis: { type: 'value', name: '广告费', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } }, yAxis: { type: 'value', name: 'ROAS', ...axis, splitLine: { lineStyle: { color: '#edf0f3' } } },
+          series: [{ type: 'scatter', symbolSize: point => Math.min(28, 8 + Math.sqrt(point[2] || 0)), data: adRows.map(row => ({ value: [row.adFees, row.roas, row.adSales], itemId: row.itemId })), markLine: { silent: true, symbol: 'none', lineStyle: { type: 'dashed', color: '#9aa6b3' }, data: [{ xAxis: adMedianX }, { yAxis: adMedianY }] } }]
+        });
+        [contribution, trafficChart, adChart].filter(Boolean).forEach(chart => chart.on('click', event => { if (event.data?.itemId) { ui.query = event.data.itemId; ui.page = 'trend'; render(); } }));
+      }
     }
 
     function bindEvents() {
@@ -744,6 +1000,8 @@
       document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; render(); });
       document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; render(); });
       document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => { ui.trafficPeriod = e.target.value; render(); });
+      document.getElementById('diagnosisMetric')?.addEventListener('change', e => { ui.diagnosisMetric = e.target.value; render(); });
+      document.querySelectorAll('[data-focus-item]').forEach(button => button.addEventListener('click', () => { ui.query = button.dataset.focusItem; ui.start = ''; ui.end = ''; ui.page = 'trend'; render(); }));
       const zone = document.getElementById('dropZone');
       if (zone) {
         ['dragenter','dragover'].forEach(name => zone.addEventListener(name, e => { e.preventDefault(); zone.classList.add('drag'); }));
@@ -751,7 +1009,7 @@
         zone.addEventListener('drop', e => importFiles([...e.dataTransfer.files]));
       }
       lucide.createIcons();
-      if (ui.page === 'dashboard') setTimeout(renderCharts, 0);
+      if (['dashboard', 'trend', 'diagnosis'].includes(ui.page)) setTimeout(renderCharts, 0);
     }
 
     async function importFiles(files) {
@@ -819,7 +1077,7 @@
       if (!confirm('确定清空当前浏览器中保存的所有报表数据吗？')) return;
       dataState = structuredClone(DEFAULT_STATE);
       await saveState();
-      ui = { page: 'import', query: '', start: '', end: '', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      ui = { page: 'import', query: '', start: '', end: '', trafficPeriod: '', detail: 'item', diagnosisMetric: 'trafficTotalImpressions', sort: { table: '', key: '', dir: 0 } };
       render();
       toast('数据已清空。');
     }
@@ -844,7 +1102,8 @@
     function render() {
       charts.forEach(chart => chart.dispose());
       charts = [];
-      const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'detail' ? detailPage() : coveragePage();
+      const pages = { dashboard: dashboardPage, trend: trendPage, diagnosis: diagnosisPage, detail: detailPage, import: importPage, daily: dailyPage, coverage: coveragePage };
+      const pageContent = (pages[ui.page] || dashboardPage)();
       document.getElementById('app').innerHTML = baseLayout(pageContent);
       bindEvents();
     }
