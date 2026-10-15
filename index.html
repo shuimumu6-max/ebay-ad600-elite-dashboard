@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eBay Item 链接表现看板</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.468.0"></script>
+  <script src="./data.js"></script>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --ink: #18212f;
+      --muted: #697586;
+      --line: #dce2e8;
+      --blue: #1769aa;
+      --blue-soft: #eaf3fb;
+      --green: #237a57;
+      --green-soft: #e9f5ef;
+      --amber: #9a6700;
+      --amber-soft: #fff5d8;
+      --red: #b42318;
+      --red-soft: #fef0ed;
+      --shadow: 0 4px 16px rgba(19, 33, 53, 0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-width: 320px; min-height: 100%; overflow-x: hidden; background: var(--bg); color: var(--ink); font-family: "Microsoft YaHei", system-ui, sans-serif; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    .app { min-height: 100vh; }
+    .topbar { height: 62px; padding: 0 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; color: white; background: var(--blue); border-radius: 7px; flex: 0 0 auto; }
+    .brand-mark svg { width: 19px; }
+    .brand h1 { margin: 0; font-size: 17px; line-height: 1.2; letter-spacing: 0; }
+    .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .workspace { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: calc(100vh - 62px); }
+    .sidebar { padding: 18px 12px; background: #f8f9fb; border-right: 1px solid var(--line); }
+    .nav { display: grid; gap: 5px; position: sticky; top: 80px; }
+    .nav-btn { width: 100%; min-height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 6px; background: transparent; color: #435064; text-align: left; }
+    .nav-btn:hover { background: #edf1f5; }
+    .nav-btn.active { color: var(--blue); background: var(--blue-soft); font-weight: 700; }
+    .nav-btn svg { width: 17px; height: 17px; }
+    .content { width: 100%; max-width: 1540px; margin: 0 auto; padding: 24px 28px 44px; min-width: 0; }
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .page-head h2 { margin: 0; font-size: 22px; letter-spacing: 0; }
+    .page-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .btn { min-height: 36px; padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: #314056; font-weight: 650; font-size: 13px; }
+    .btn:hover { border-color: #aeb9c6; background: #f9fafb; }
+    .btn.primary { color: white; border-color: var(--blue); background: var(--blue); }
+    .btn.primary:hover { background: #10598f; }
+    .btn.danger { color: var(--red); }
+    .btn svg { width: 16px; height: 16px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
+    .panel-head { min-height: 52px; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
+    .panel-head h3 { margin: 0; font-size: 15px; }
+    .panel-head small { color: var(--muted); }
+    .panel-body { padding: 16px; }
+    .upload-zone { min-height: 228px; padding: 34px 22px; display: flex; align-items: center; justify-content: center; text-align: center; border: 1px dashed #aeb9c6; border-radius: 7px; background: #fafbfd; }
+    .upload-zone.drag { border-color: var(--blue); background: var(--blue-soft); }
+    .upload-icon { width: 46px; height: 46px; margin: 0 auto 14px; display: grid; place-items: center; border-radius: 7px; color: var(--blue); background: var(--blue-soft); }
+    .upload-icon svg { width: 24px; }
+    .upload-zone h3 { margin: 0; font-size: 17px; }
+    .upload-zone p { max-width: 620px; margin: 8px auto 18px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+    .upload-note { margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .source-grid { margin-top: 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .source-item { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+    .source-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .source-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
+    .source-meta { margin-top: 9px; display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+    .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .badge.blue { color: var(--blue); background: var(--blue-soft); }
+    .badge.green { color: var(--green); background: var(--green-soft); }
+    .badge.amber { color: var(--amber); background: var(--amber-soft); }
+    .badge.red { color: var(--red); background: var(--red-soft); }
+    .empty { padding: 58px 20px; color: var(--muted); text-align: center; }
+    .empty svg { width: 30px; height: 30px; margin-bottom: 8px; color: #9aa6b3; }
+    .filters { padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .filters .field:first-child { grid-column: span 2; }
+    .field { min-width: 0; }
+    .field label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; margin-bottom: 14px; }
+    .metric { min-height: 104px; padding: 15px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
+    .metric-label { color: var(--muted); font-size: 12px; }
+    .metric-value { margin-top: 9px; font-size: 25px; line-height: 1; font-weight: 760; font-variant-numeric: tabular-nums; }
+    .metric-foot { margin-top: 10px; color: var(--muted); font-size: 11px; }
+    .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .8fr); gap: 14px; margin-bottom: 14px; }
+    .chart { width: 100%; height: 330px; }
+    .table-wrap { width: 100%; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { position: sticky; top: 0; z-index: 1; padding: 10px 11px; background: #f5f7f9; color: #516074; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    th[data-sort-key] { cursor: pointer; user-select: none; }
+    th[data-sort-key]:hover { color: var(--blue); background: #edf3f8; }
+    .sort-indicator { display: inline-block; width: 14px; margin-left: 3px; color: var(--blue); font-weight: 800; }
+    th:first-child, th:nth-child(2), td:first-child, td:nth-child(2) { text-align: left; }
+    td { padding: 10px 11px; border-bottom: 1px solid #edf0f3; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #fafbfd; }
+    .item-title { max-width: 330px; overflow: hidden; text-overflow: ellipsis; }
+    .snapshot { margin-top: 14px; }
+    .snapshot-note { margin: 0 0 12px; padding: 10px 12px; color: var(--amber); background: var(--amber-soft); border-left: 3px solid #e3a008; font-size: 12px; line-height: 1.6; }
+    .snapshot-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+    .snapshot-metric { padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
+    .snapshot-metric span { display: block; color: var(--muted); font-size: 11px; }
+    .snapshot-metric strong { display: block; margin-top: 7px; font-size: 18px; }
+    .tabs { display: inline-flex; padding: 3px; gap: 3px; border: 1px solid var(--line); border-radius: 6px; background: #f5f7f9; }
+    .tab-btn { min-height: 30px; padding: 0 11px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .tab-btn.active { color: var(--ink); background: white; box-shadow: 0 1px 4px rgba(19, 33, 53, .1); }
+    .coverage { display: grid; gap: 12px; }
+    .coverage-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .coverage-count { padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+    .coverage-count strong { display: block; font-size: 24px; }
+    .coverage-count span { color: var(--muted); font-size: 12px; }
+    .toast { position: fixed; right: 20px; bottom: 20px; z-index: 60; max-width: min(420px, calc(100vw - 40px)); padding: 12px 14px; border-radius: 7px; color: white; background: #263548; box-shadow: 0 12px 30px rgba(0,0,0,.2); font-size: 13px; line-height: 1.55; }
+    .toast.error { background: #8f241c; }
+    .loading { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(244,246,248,.82); backdrop-filter: blur(2px); }
+    .loading-box { padding: 18px 22px; display: flex; align-items: center; gap: 11px; background: white; border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); font-size: 13px; font-weight: 700; }
+    .spinner { width: 18px; height: 18px; border: 2px solid #cbd6e0; border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 1050px) {
+      .workspace { grid-template-columns: 1fr; }
+      .sidebar { padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow: auto; }
+      .nav { display: flex; width: max-content; position: static; }
+      .nav-btn { width: auto; padding: 0 13px; white-space: nowrap; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .topbar { height: auto; min-height: 58px; padding: 10px 14px; }
+      .brand p, .status span:last-child { display: none; }
+      .content { padding: 18px 14px 34px; }
+      .page-head { align-items: flex-start; flex-direction: column; }
+      .filters { grid-template-columns: 1fr 1fr; }
+      .filters .field:first-child { grid-column: 1 / -1; }
+      .source-grid { grid-template-columns: 1fr; }
+      .snapshot-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .coverage-summary { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 460px) {
+      .metrics { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .metric { min-height: 92px; padding: 12px; }
+      .metric-value { font-size: 20px; }
+      .filters { grid-template-columns: 1fr; }
+      .filters .field:first-child { grid-column: auto; }
+      .actions { width: 100%; }
+      .actions .btn { flex: 1; }
+      .chart { height: 290px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="app"></div>
+  <input id="fileInput" type="file" accept=".csv,text/csv" multiple hidden />
+  <script>
+    const DB_NAME = 'ebay-traffic-dashboard';
+    const DB_STORE = 'workspace';
+    const DB_KEY = 'latest';
+    const BUILDER_MODE = new URLSearchParams(location.search).has('builder');
+    const SHARED_READONLY = location.protocol !== 'file:' && !BUILDER_MODE;
+    const MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [] };
+    let dataState = structuredClone(DEFAULT_STATE);
+    let ui = { page: 'dashboard', query: '', start: '', end: '', operator: '全部运营', pa: '全部PA账号', scope: 'roster', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let charts = [];
+
+    const ITEM_ROSTER = [
+      ['358600694973','陈杰','baihuini02','老改新'], ['820098498625','徐妍萍','baihuini02','新'], ['820216832219','陈杰','baihuini02','老改新'],
+      ['820193484178','陈杰','baihuini02','新'], ['820193560151','陈杰','baihuini02','新'], ['820193634623','陈杰','baihuini02','新'],
+      ['820193709711','陈杰','baihuini02','新'], ['820193768197','陈杰','baihuini02','新'], ['820194221710','陈杰','baihuini02','新'],
+      ['820194134334','陈杰','baihuini02','新'], ['820194094622','陈杰','baihuini02','新'], ['820194268366','陈杰','baihuini02','新'],
+      ['820194378895','陈杰','baihuini02','新'], ['820190743059','汤意之','yizhitang02','新'], ['820191376704','汤意之','yizhitang02','新'],
+      ['820191465788','汤意之','yizhitang02','新'], ['820191413152','汤意之','yizhitang02','新'], ['820190071943','汤意之','yizhitang02','新'],
+      ['820190094726','汤意之','yizhitang02','新'], ['820190112498','汤意之','yizhitang02','新'], ['820190622801','汤意之','yizhitang02','新'],
+      ['820190694660','汤意之','yizhitang02','新'], ['820190668998','汤意之','yizhitang02','新'], ['820216825374','倪柏慧','baihuini02','新'],
+      ['820222316460','倪柏慧','baihuini02','新'], ['820221288212','倪柏慧','baihuini02','新'], ['820220810122','倪柏慧','baihuini02','新'],
+      ['820220679773','倪柏慧','baihuini02','新（$265）'], ['820222435139','倪柏慧','baihuini02','新（$265）'], ['820221385041','倪柏慧','baihuini02','新（$265）'],
+      ['820231195551','陈杰','baihuini02','新'], ['820231256964','陈杰','baihuini02','新'], ['820231288048','陈杰','baihuini02','新'],
+      ['820231316581','陈杰','baihuini02','新'], ['820231359091','陈杰','baihuini02','新'], ['820231431310','陈杰','baihuini02','新'],
+      ['820231485833','陈杰','baihuini02','新'], ['820231573829','陈杰','baihuini02','新']
+    ].map(([itemId, operator, pa, linkType]) => ({ itemId, operator, pa, linkType, link: `https://www.ebay.com/itm/${itemId}` }));
+
+    const COVERAGE = [
+      ['自然曝光', '直接提供', 'Traffic：Total organic impressions on eBay site；PLG：Organic Impressions'],
+      ['自然 eBay Page views', '直接提供', 'Traffic：Page views via organic impressions on eBay site'],
+      ['自然 SOLD', '直接提供', 'PLG：Organic Sold Quantity'],
+      ['自然 CTR', '可计算', '自然站内 Page views ÷ 自然曝光'],
+      ['自然转化率', '可计算', '自然 SOLD ÷ 自然 Page views'],
+      ['链接总曝光', '直接提供', 'Traffic：Total impressions'],
+      ['链接站内 Page views', '可计算', '站内广告 Page views + 站内自然 Page views'],
+      ['External Page views', '可计算', '站外广告 Page views + 站外自然 Page views'],
+      ['Quantity sold', '直接提供', 'Traffic：Quantity sold；PLG：Total Quantity Sold'],
+      ['总 CTR', '直接提供', 'Traffic 提供；汇总时按总量重算'],
+      ['总转化率', '直接提供', 'Traffic 提供；汇总时按总量重算'],
+      ['PLG 曝光', '直接提供', 'Promoted Listings Impressions'],
+      ['PLG 点击', '直接提供', 'Total Promoted Listings Clicks'],
+      ['PLG CTR', '可计算', 'PLG 点击 ÷ PLG 曝光'],
+      ['PLG 广告销量', '直接提供', 'Total Promoted Listings Sold quantity'],
+      ['PLG 销售额', '直接提供', 'Total Promoted Listings Sales'],
+      ['广告费', '直接提供', 'Ad fees'],
+      ['ROAS', '可计算', 'PLG 销售额 ÷ 广告费'],
+      ['PLG 费率 / 建议费率', '缺少', '当前两类报表没有该字段'],
+      ['PLP Manual / Smart 指标', '缺少', '需要对应的 Priority Campaign 报表'],
+      ['主推关键词 / 建议出价 / 实际出价', '缺少', '需要关键词或竞价报表'],
+      ['PA 账号 / 负责人 / 备注', '缺少', '属于内部运营字段，需要另行维护']
+    ];
+
+    function clean(value) { return String(value ?? '').replace(/^\uFEFF/, '').trim(); }
+    function number(value) {
+      const text = clean(value).replace(/,/g, '').replace(/[$%]/g, '').replace(/[()]/g, '');
+      const match = text.match(/-?\d+(?:\.\d+)?/);
+      return match ? Number(match[0]) : 0;
+    }
+    function rate(value) { return clean(value).includes('%') ? number(value) / 100 : number(value); }
+    function esc(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c])); }
+    function fmt(value, digits = 0) { return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(Number(value || 0)); }
+    function money(value) { return '$' + fmt(value, 2); }
+    function pct(value) { return fmt(Number(value || 0) * 100, 2) + '%'; }
+    function isoFromEnglish(value) {
+      const text = clean(value);
+      const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`;
+      const english = text.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),\s*(\d{4})$/i);
+      if (english) {
+        const monthKey = english[1][0].toUpperCase() + english[1].slice(1, 3).toLowerCase();
+        return `${english[3]}-${String(MONTHS[monthKey]).padStart(2, '0')}-${String(english[2]).padStart(2, '0')}`;
+      }
+      const numeric = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+      if (numeric) {
+        const year = numeric[3].length === 2 ? 2000 + Number(numeric[3]) : Number(numeric[3]);
+        return `${year}-${String(numeric[1]).padStart(2, '0')}-${String(numeric[2]).padStart(2, '0')}`;
+      }
+      return '';
+    }
+    function headerMap(headers) {
+      const map = {};
+      headers.forEach((item, index) => { map[clean(item)] = index; });
+      return map;
+    }
+    function val(row, map, key) { return row[map[key]] ?? ''; }
+    function sum(rows, key) { return rows.reduce((total, row) => total + Number(row[key] || 0), 0); }
+    function unique(values) { return [...new Set(values.filter(Boolean))]; }
+    function rangeText(start, end) { return start && end ? (start === end ? start : `${start} 至 ${end}`) : '日期未知'; }
+    function icon(name, size = 16) { return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`; }
+    function sortHeader(label, key, table) {
+      const active = ui.sort.table === table && ui.sort.key === key;
+      const direction = active && ui.sort.dir === -1 ? 'descending' : active ? 'ascending' : 'none';
+      const indicator = active ? (ui.sort.dir === -1 ? '↓' : '↑') : '';
+      return `<th data-sort-table="${table}" data-sort-key="${key}" aria-sort="${direction}" title="点击排序：${active && ui.sort.dir === 1 ? '降序' : '升序'}">${label}<span class="sort-indicator" aria-hidden="true">${indicator}</span></th>`;
+    }
+    function sortRows(rows, table) {
+      if (ui.sort.table !== table || !ui.sort.key || !ui.sort.dir) return rows;
+      const key = ui.sort.key;
+      return [...rows].sort((a, b) => {
+        const av = a[key], bv = b[key];
+        const aEmpty = av === null || av === undefined || av === '' || Number.isNaN(av);
+        const bEmpty = bv === null || bv === undefined || bv === '' || Number.isNaN(bv);
+        if (aEmpty || bEmpty) return aEmpty === bEmpty ? 0 : aEmpty ? 1 : -1;
+        const result = typeof av === 'number' && typeof bv === 'number'
+          ? av - bv
+          : String(av).localeCompare(String(bv), 'zh-CN', { numeric: true, sensitivity: 'base' });
+        return result * ui.sort.dir;
+      });
+    }
+
+    function openDb() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = () => request.result.createObjectStore(DB_STORE);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+    async function loadState() {
+      const db = await openDb();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(DB_STORE, 'readonly').objectStore(DB_STORE).get(DB_KEY);
+        request.onsuccess = () => resolve(request.result || structuredClone(DEFAULT_STATE));
+        request.onerror = () => reject(request.error);
+      });
+    }
+    async function saveState() {
+      const db = await openDb();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(DB_STORE, 'readwrite').objectStore(DB_STORE).put(dataState, DB_KEY);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function readFile(file) {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', raw: false });
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '', raw: false });
+      const plgHeader = rows.findIndex(row => row.some(cell => clean(cell) === 'Campaign name') && row.some(cell => clean(cell) === 'Item ID'));
+      const trafficHeader = rows.findIndex(row => row.some(cell => clean(cell) === 'Listing title') && row.some(cell => clean(cell) === 'eBay item ID'));
+      if (plgHeader >= 0) return parsePlg(rows, plgHeader, file);
+      if (trafficHeader >= 0) return parseTraffic(rows, trafficHeader, file);
+      throw new Error('无法识别报表类型，请上传 eBay Listings Traffic 或 Promoted Listings General CSV。');
+    }
+
+    function parsePlg(rows, headerIndex, file) {
+      const map = headerMap(rows[headerIndex]);
+      const parsed = [];
+      for (const row of rows.slice(headerIndex + 1)) {
+        const itemId = clean(val(row, map, 'Item ID'));
+        const date = isoFromEnglish(val(row, map, 'Date'));
+        if (!itemId || !date) continue;
+        const campaignId = clean(val(row, map, 'Campaign ID'));
+        parsed.push({
+          key: `${date}|${itemId}|${campaignId || clean(val(row, map, 'Campaign name'))}`,
+          date, itemId, campaignId,
+          campaign: clean(val(row, map, 'Campaign name')) || '未命名广告活动',
+          title: clean(val(row, map, 'Title')),
+          status: clean(val(row, map, 'Status  ')) || clean(val(row, map, 'Status')),
+          price: number(val(row, map, 'Price (Current or Last Price)')),
+          available: number(val(row, map, 'Quantity available')),
+          adImpressions: number(val(row, map, 'Promoted Listings Impressions (via eBay Placements)')),
+          adClicks: number(val(row, map, 'Total Promoted Listings Clicks')),
+          adSold: number(val(row, map, 'Total Promoted Listings Sold quantity')),
+          organicSold: number(val(row, map, 'Organic Sold Quantity')),
+          totalSold: number(val(row, map, 'Total Quantity Sold')),
+          adSales: number(val(row, map, 'Total Promoted Listings Sales (in billing currency)')),
+          adFees: number(val(row, map, 'Ad fees (in billing currency)')),
+          organicClicks: number(val(row, map, 'Organic Clicks')),
+          organicImpressions: number(val(row, map, 'Organic Impressions'))
+        });
+      }
+      if (!parsed.length) throw new Error('PLG 文件中没有可用的数据行。');
+      const dates = parsed.map(row => row.date).sort();
+      return { type: 'PLG', rows: parsed, source: { id: `${file.name}|${file.size}|${file.lastModified}`, name: file.name, type: 'PLG', count: parsed.length, start: dates[0], end: dates[dates.length - 1], importedAt: new Date().toISOString() } };
+    }
+
+    function parseTraffic(rows, headerIndex, file) {
+      const map = headerMap(rows[headerIndex]);
+      const preface = rows.slice(0, headerIndex).flat().map(clean).join(' ');
+      const periodMatch = preface.match(/Report for\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s*\d{4})\s+to\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s*\d{4})/i);
+      const start = periodMatch ? isoFromEnglish(periodMatch[1]) : '';
+      const end = periodMatch ? isoFromEnglish(periodMatch[2]) : '';
+      const parsed = [];
+      for (const row of rows.slice(headerIndex + 1)) {
+        const itemId = clean(val(row, map, 'eBay item ID'));
+        if (!itemId) continue;
+        parsed.push({
+          key: `${start}|${end}|${itemId}`,
+          start, end, itemId,
+          title: clean(val(row, map, 'Listing title')),
+          category: clean(val(row, map, 'Category')),
+          promotionStatus: clean(val(row, map, 'Current promoted listings status')),
+          available: number(val(row, map, 'Quantity available')),
+          totalImpressions: number(val(row, map, 'Total impressions')),
+          quantitySold: number(val(row, map, 'Quantity sold')),
+          top20Promoted: number(val(row, map, 'Top 20 search spot impressions from promoted listings')),
+          top20Change: rate(val(row, map, '% Change in Top 20 search spot impressions')),
+          top20Organic: number(val(row, map, 'Top 20 search spot organic impressions')),
+          restSearch: number(val(row, map, 'Rest of search spot impressions')),
+          totalSearch: number(val(row, map, 'Total Search Impressions')),
+          nonSearchPromoted: number(val(row, map, 'Non-search promoted listings impressions')),
+          nonSearchOrganic: number(val(row, map, 'Non-search organic impressions')),
+          nonSearchChange: rate(val(row, map, '% Change in non-search organic impressions')),
+          promotedEbayImpressions: number(val(row, map, 'Total Promoted Listings impressions (applies to eBay site only)')),
+          promotedOffsiteImpressions: number(val(row, map, 'Total Promoted Offsite impressions (applies to off-eBay only)')),
+          organicEbayImpressions: number(val(row, map, 'Total organic impressions on eBay site')),
+          totalPageViews: number(val(row, map, 'Total page views')),
+          promotedEbayViews: number(val(row, map, 'Page views via promoted listings impressions on eBay site')),
+          promotedExternalViews: number(val(row, map, 'Page views via promoted listings Impressions from outside eBay (search engines, affilliates)')),
+          organicEbayViews: number(val(row, map, 'Page views via organic impressions on eBay site')),
+          organicExternalViews: number(val(row, map, 'Page views from organic impressions outside eBay (Includes page views from search engines)'))
+        });
+      }
+      if (!parsed.length) throw new Error('Traffic 文件中没有可用的数据行。');
+      return { type: 'Traffic', rows: parsed, source: { id: `${file.name}|${file.size}|${file.lastModified}`, name: file.name, type: 'Traffic', count: parsed.length, start, end, importedAt: new Date().toISOString(), periodKind: start && end && start === end ? '单日' : '区间累计' } };
+    }
+
+    function mergeImport(result) {
+      if (result.type === 'PLG') {
+        const map = new Map(dataState.plgRaw.map(row => [row.key, row]));
+        result.rows.forEach(row => map.set(row.key, row));
+        dataState.plgRaw = [...map.values()];
+      } else {
+        const map = new Map(dataState.trafficRaw.map(row => [row.key, row]));
+        result.rows.forEach(row => map.set(row.key, row));
+        dataState.trafficRaw = [...map.values()];
+      }
+      const sources = new Map(dataState.sources.map(row => [row.id, row]));
+      sources.set(result.source.id, result.source);
+      dataState.sources = [...sources.values()].sort((a, b) => b.importedAt.localeCompare(a.importedAt));
+    }
+
+    function aggregateDaily() {
+      const map = new Map();
+      for (const row of dataState.plgRaw) {
+        const key = `${row.date}|${row.itemId}`;
+        if (!map.has(key)) map.set(key, { date: row.date, itemId: row.itemId, title: row.title, price: row.price, available: row.available, campaigns: new Set(), adImpressions: 0, adClicks: 0, adSold: 0, organicSold: 0, totalSold: 0, adSales: 0, adFees: 0, organicClicks: 0, organicImpressions: 0 });
+        const item = map.get(key);
+        item.title = row.title || item.title;
+        item.price = row.price || item.price;
+        item.available = row.available;
+        item.campaigns.add(row.campaign);
+        ['adImpressions','adClicks','adSold','organicSold','totalSold','adSales','adFees','organicClicks','organicImpressions'].forEach(field => item[field] += row[field] || 0);
+      }
+      for (const row of dataState.trafficRaw.filter(item => item.start && item.start === item.end)) {
+        const key = `${row.start}|${row.itemId}`;
+        if (!map.has(key)) map.set(key, { date: row.start, itemId: row.itemId, title: row.title, price: 0, available: row.available, campaigns: new Set(), adImpressions: 0, adClicks: 0, adSold: 0, organicSold: 0, totalSold: 0, adSales: 0, adFees: 0, organicClicks: 0, organicImpressions: 0 });
+        const item = map.get(key);
+        item.title = item.title || row.title;
+        item.hasDailyTraffic = true;
+        item.trafficTotalImpressions = row.totalImpressions;
+        item.trafficPageViews = row.totalPageViews;
+        item.trafficSold = row.quantitySold;
+        item.trafficEbayViews = row.promotedEbayViews + row.organicEbayViews;
+        item.trafficExternalViews = row.promotedExternalViews + row.organicExternalViews;
+        item.trafficNaturalImpressions = row.organicEbayImpressions;
+        item.trafficNaturalViews = row.organicEbayViews;
+        item.trafficTop20Change = row.top20Change;
+        item.trafficNonSearchChange = row.nonSearchChange;
+      }
+      return [...map.values()].map(item => ({ ...item, campaigns: [...item.campaigns], ctr: item.adClicks / item.adImpressions || 0, conversion: item.adSold / item.adClicks || 0, roas: item.adSales / item.adFees || 0 })).sort((a, b) => b.date.localeCompare(a.date) || a.itemId.localeCompare(b.itemId));
+    }
+
+    function filteredDaily() {
+      const query = ui.query.toLowerCase();
+      return aggregateDaily().filter(row => (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end) && (!query || row.itemId.toLowerCase().includes(query) || row.title.toLowerCase().includes(query)));
+    }
+
+    function trafficPeriods() {
+      return unique(dataState.trafficRaw.map(row => `${row.start}|${row.end}`)).map(key => {
+        const [start, end] = key.split('|');
+        return { key, start, end };
+      }).sort((a, b) => b.end.localeCompare(a.end) || a.start.localeCompare(b.start));
+    }
+
+    function trafficPeriodRows() {
+      const periods = trafficPeriods();
+      if (!periods.length) return [];
+      const selected = periods.find(period => period.key === ui.trafficPeriod) || periods[0];
+      const { start, end } = selected;
+      return dataState.trafficRaw.filter(row => row.start === start && row.end === end);
+    }
+
+    function latestTrafficRows() {
+      const query = ui.query.toLowerCase();
+      return trafficPeriodRows().filter(row => !query || row.itemId.toLowerCase().includes(query) || row.title.toLowerCase().includes(query));
+    }
+
+    function plgDateRange() {
+      const dates = dataState.plgRaw.map(row => row.date).filter(date => (!ui.start || date >= ui.start) && (!ui.end || date <= ui.end)).sort();
+      return [dates[0] || '', dates[dates.length - 1] || ''];
+    }
+
+    function itemPerformance() {
+      const trafficRows = trafficPeriodRows();
+      const trafficMap = new Map(trafficRows.map(row => [row.itemId, row]));
+      const plgMap = new Map();
+      for (const row of dataState.plgRaw.filter(row => (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
+        if (!plgMap.has(row.itemId)) plgMap.set(row.itemId, { itemId: row.itemId, title: row.title, price: row.price, totalSold: 0, organicSold: 0, adImpressions: 0, adClicks: 0, adSold: 0, adSales: 0, adFees: 0 });
+        const item = plgMap.get(row.itemId);
+        item.title = row.title || item.title;
+        item.price = row.price || item.price;
+        ['totalSold','organicSold','adImpressions','adClicks','adSold','adSales','adFees'].forEach(field => item[field] += row[field] || 0);
+      }
+      const rosterMap = new Map(ITEM_ROSTER.map(item => [item.itemId, item]));
+      const ids = ui.scope === 'roster' ? ITEM_ROSTER.map(item => item.itemId) : unique([...trafficMap.keys(), ...plgMap.keys()]);
+      const query = ui.query.toLowerCase();
+      return ids.map(itemId => {
+        const meta = rosterMap.get(itemId) || { itemId, operator: '未维护', pa: '未维护', linkType: '未维护', link: `https://www.ebay.com/itm/${itemId}` };
+        const traffic = trafficMap.get(itemId);
+        const plg = plgMap.get(itemId);
+        const ebayViews = traffic ? traffic.promotedEbayViews + traffic.organicEbayViews : 0;
+        const externalViews = traffic ? traffic.promotedExternalViews + traffic.organicExternalViews : 0;
+        return {
+          ...meta,
+          title: traffic?.title || plg?.title || '',
+          hasTraffic: Boolean(traffic), hasPlg: Boolean(plg),
+          naturalImpressions: traffic?.organicEbayImpressions || 0,
+          promotedImpressions: traffic?.promotedEbayImpressions || 0,
+          naturalViews: traffic?.organicEbayViews || 0,
+          naturalSold: plg?.organicSold || 0,
+          naturalCtr: traffic ? traffic.organicEbayViews / traffic.organicEbayImpressions || 0 : 0,
+          totalImpressions: traffic?.totalImpressions || 0,
+          top20Change: traffic?.top20Change || 0,
+          nonSearchChange: traffic?.nonSearchChange || 0,
+          ebayViews, externalViews,
+          totalPageViews: traffic?.totalPageViews || 0,
+          quantitySold: traffic?.quantitySold || 0,
+          totalCtr: traffic ? ebayViews / traffic.totalImpressions || 0 : 0,
+          totalConversion: traffic ? traffic.quantitySold / traffic.totalPageViews || 0 : 0,
+          price: plg?.price || 0, plgTotalSold: plg?.totalSold || 0,
+          adImpressions: plg?.adImpressions || 0, adClicks: plg?.adClicks || 0, adSold: plg?.adSold || 0,
+          adCtr: plg ? plg.adClicks / plg.adImpressions || 0 : 0,
+          adSales: plg?.adSales || 0, adFees: plg?.adFees || 0, roas: plg ? plg.adSales / plg.adFees || 0 : 0
+        };
+      }).filter(row => (ui.operator === '全部运营' || row.operator === ui.operator) && (ui.pa === '全部PA账号' || row.pa === ui.pa) && (!query || row.itemId.includes(query) || row.title.toLowerCase().includes(query) || row.operator.toLowerCase().includes(query))).sort((a, b) => b.totalImpressions - a.totalImpressions || b.adSales - a.adSales);
+    }
+
+    function dailyItemRecords() {
+      const rosterMap = new Map(ITEM_ROSTER.map(item => [item.itemId, item]));
+      const rosterIds = new Set(ITEM_ROSTER.map(item => item.itemId));
+      const query = ui.query.toLowerCase();
+      return aggregateDaily().filter(row => {
+        const meta = rosterMap.get(row.itemId) || { operator: '未维护', pa: '未维护' };
+        return (ui.scope === 'all' || rosterIds.has(row.itemId)) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end) && (ui.operator === '全部运营' || meta.operator === ui.operator) && (ui.pa === '全部PA账号' || meta.pa === ui.pa) && (!query || row.itemId.includes(query) || row.title.toLowerCase().includes(query) || meta.operator.toLowerCase().includes(query));
+      }).map(row => {
+        const meta = rosterMap.get(row.itemId) || { itemId: row.itemId, operator: '未维护', pa: '未维护', linkType: '未维护', link: `https://www.ebay.com/itm/${row.itemId}` };
+        return {
+          ...row, ...meta,
+          trafficCtr: row.hasDailyTraffic ? row.trafficEbayViews / row.trafficTotalImpressions || 0 : 0,
+          trafficConversion: row.hasDailyTraffic ? row.trafficSold / row.trafficPageViews || 0 : 0,
+          trafficNaturalCtr: row.hasDailyTraffic ? row.trafficNaturalViews / row.trafficNaturalImpressions || 0 : 0
+        };
+      }).sort((a, b) => b.date.localeCompare(a.date) || b.trafficTotalImpressions - a.trafficTotalImpressions || a.itemId.localeCompare(b.itemId));
+    }
+
+    function baseLayout(content) {
+      const pages = [
+        ['dashboard', 'layout-dashboard', '经营看板'],
+        ['daily', 'calendar-range', '每日记录'],
+        ['import', 'file-up', '数据导入'],
+        ['detail', 'table-2', 'Item 明细'],
+        ['coverage', 'list-checks', '字段覆盖']
+      ].filter(([id]) => !SHARED_READONLY || id !== 'import');
+      return `<header class="topbar">
+        <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay Item 链接表现看板</h1><p>整体流量 + 自然流量 + 广告表现</p></div></div>
+        <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'}</span></div>
+      </header>
+      <div class="workspace">
+        <aside class="sidebar"><nav class="nav">${pages.map(([id, ico, label]) => `<button class="nav-btn ${ui.page === id ? 'active' : ''}" data-page="${id}">${icon(ico)}<span>${label}</span></button>`).join('')}</nav></aside>
+        <main class="content">${content}</main>
+      </div>`;
+    }
+
+    function filterPanel(dateScope = 'PLG') {
+      const operators = unique(ITEM_ROSTER.map(row => row.operator));
+      const paAccounts = unique(ITEM_ROSTER.map(row => row.pa));
+      const periods = trafficPeriods();
+      const selectedPeriod = periods.find(period => period.key === ui.trafficPeriod)?.key || periods[0]?.key || '';
+      return `<div class="panel filters">
+        <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
+        <div class="field"><label>Item 范围</label><select class="input" id="scopeFilter"><option value="roster" ${ui.scope === 'roster' ? 'selected' : ''}>钉钉链接清单</option><option value="all" ${ui.scope === 'all' ? 'selected' : ''}>全部报表 Item</option></select></div>
+        <div class="field"><label>运营</label><select class="input" id="operatorFilter"><option>全部运营</option>${operators.map(item => `<option ${ui.operator === item ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></div>
+        <div class="field"><label>PA账号</label><select class="input" id="paFilter"><option>全部PA账号</option>${paAccounts.map(item => `<option ${ui.pa === item ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></div>
+        ${dateScope === '每日记录' ? '' : `<div class="field"><label>Traffic 统计区间</label><select class="input" id="trafficPeriodFilter">${periods.length ? periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : ''}</option>`).join('') : '<option value="">未上传</option>'}</select></div>`}
+        <div class="field"><label>${dateScope === '每日记录' ? '' : 'PLG '}开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
+        <div class="field"><label>${dateScope === '每日记录' ? '' : 'PLG '}结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
+      </div>`;
+    }
+
+    function metric(label, value, foot) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`; }
+
+    function dashboardPage() {
+      const rows = itemPerformance();
+      if (!dataState.plgRaw.length && !dataState.trafficRaw.length) return emptyDashboard();
+      const trafficRows = trafficPeriodRows();
+      const [plgStart, plgEnd] = plgDateRange();
+      const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
+      const impressions = sum(rows, 'totalImpressions');
+      const ebayViews = sum(rows, 'ebayViews');
+      const externalViews = sum(rows, 'externalViews');
+      const sold = sum(rows, 'quantitySold');
+      const totalViews = sum(rows, 'totalPageViews');
+      const adSales = sum(rows, 'adSales');
+      const adFees = sum(rows, 'adFees');
+      return `<div class="page-head"><div><h2>Item 链接表现</h2><p>每个 Item 只保留一行，Traffic 展示整体与自然流量，PLG 展示广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
+        ${filterPanel()}
+        <div class="snapshot-note">Traffic 整体数据：${trafficRange}；PLG 广告数据：${rangeText(plgStart, plgEnd)}。两个区间分别统计，不互相补算。</div>
+        <section class="metrics">
+          ${metric('链接总曝光', fmt(impressions), `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
+          ${metric('eBay Page views', fmt(ebayViews), '站内广告 + 站内自然')}
+          ${metric('External Page views', fmt(externalViews), '站外广告 + 站外自然')}
+          ${metric('Quantity sold', fmt(sold), `整体转化率 ${pct(sold / totalViews || 0)}`)}
+          ${metric('链接总 CTR', pct(ebayViews / impressions || 0), 'eBay Page views ÷ 总曝光')}
+          ${metric('PLG 销售额', money(adSales), `${fmt(rows.filter(row => row.hasPlg).length)} 个 Item 有 PLG`)}
+          ${metric('PLG 广告费', money(adFees), `ACOS ${pct(adFees / adSales || 0)}`)}
+          ${metric('PLG ROAS', fmt(adSales / adFees || 0, 2), '广告销售额 ÷ 广告费')}
+        </section>
+        <section class="dashboard-grid">
+          <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
+          <div class="panel"><div class="panel-head"><h3>站内曝光结构</h3><small>Traffic 广告与自然</small></div><div id="mixChart" class="chart"></div></div>
+        </section>
+        <section class="panel"><div class="panel-head"><h3>Item 链接表现</h3><small>点击表头切换升序或降序</small></div>${itemSummaryTable(rows)}</section>`;
+    }
+
+    function emptyDashboard() {
+      return `<div class="page-head"><div><h2>经营看板</h2><p>${SHARED_READONLY ? '等待维护者更新报表后自动生成。' : '上传两类 eBay CSV 后自动生成。'}</p></div></div><div class="panel empty">${icon('chart-no-axes-combined', 30)}<div>还没有可展示的数据</div>${SHARED_READONLY ? '' : `<div style="margin-top:14px"><button class="btn primary" id="topUploadBtn">${icon('upload')}上传 Traffic + PLG</button></div>`}</div>`;
+    }
+
+    function itemSummaryTable(rows) {
+      if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
+      const sorted = sortRows(rows, 'summary');
+      return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'summary')}${sortHeader('标题', 'title', 'summary')}${sortHeader('运营', 'operator', 'summary')}${sortHeader('PA账号', 'pa', 'summary')}${sortHeader('总曝光', 'totalImpressions', 'summary')}${sortHeader('eBay PV', 'ebayViews', 'summary')}${sortHeader('External PV', 'externalViews', 'summary')}${sortHeader('总销量', 'quantitySold', 'summary')}${sortHeader('总 CTR', 'totalCtr', 'summary')}${sortHeader('总转化率', 'totalConversion', 'summary')}${sortHeader('PLG曝光', 'adImpressions', 'summary')}${sortHeader('PLG点击', 'adClicks', 'summary')}${sortHeader('PLG销量', 'adSold', 'summary')}${sortHeader('PLG销售额', 'adSales', 'summary')}${sortHeader('广告费', 'adFees', 'summary')}${sortHeader('ROAS', 'roas', 'summary')}</tr></thead><tbody>${sorted.map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${esc(row.operator)}</td><td>${esc(row.pa)}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td>${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td>${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td>${row.hasPlg ? fmt(row.adSold) : '—'}</td><td>${row.hasPlg ? money(row.adSales) : '—'}</td><td>${row.hasPlg ? money(row.adFees) : '—'}</td><td>${row.hasPlg ? fmt(row.roas, 2) : '—'}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+
+    function trafficSnapshot() {
+      const rows = latestTrafficRows();
+      if (!rows.length) return '';
+      const start = rows[0].start, end = rows[0].end;
+      const impressions = sum(rows, 'totalImpressions');
+      const views = sum(rows, 'totalPageViews');
+      const sold = sum(rows, 'quantitySold');
+      const onsiteViews = sum(rows, 'promotedEbayViews') + sum(rows, 'organicEbayViews');
+      return `<section class="panel snapshot"><div class="panel-head"><h3>Traffic 区间快照</h3><span class="badge ${start === end ? 'green' : 'amber'}">${start === end ? '单日' : '区间累计'}</span></div><div class="panel-body">
+        ${start !== end ? `<p class="snapshot-note">这份 Traffic 是 ${rangeText(start, end)} 的累计数据，只用于区间汇总，不会混入上方的日度趋势。</p>` : ''}
+        <div class="snapshot-metrics">
+          <div class="snapshot-metric"><span>链接总曝光</span><strong>${fmt(impressions)}</strong></div>
+          <div class="snapshot-metric"><span>总 Page views</span><strong>${fmt(views)}</strong></div>
+          <div class="snapshot-metric"><span>Quantity sold</span><strong>${fmt(sold)}</strong></div>
+          <div class="snapshot-metric"><span>站内 CTR</span><strong>${pct(onsiteViews / impressions || 0)}</strong></div>
+          <div class="snapshot-metric"><span>总转化率</span><strong>${pct(sold / views || 0)}</strong></div>
+        </div></div></section>`;
+    }
+
+    function dailyPage() {
+      const rows = dailyItemRecords();
+      const dates = unique(rows.map(row => row.date)).sort();
+      const itemCount = unique(rows.map(row => row.itemId)).length;
+      const trafficDates = unique(dataState.trafficRaw.filter(row => row.start && row.start === row.end).map(row => row.start)).sort();
+      const plgDates = unique(dataState.plgRaw.map(row => row.date)).sort();
+      const missingTraffic = plgDates.filter(date => !trafficDates.includes(date));
+      return `<div class="page-head"><div><h2>Item 每日记录</h2><p>按“日期 + Item ID”保存历史，PLG 与单日 Traffic 自动合并。</p></div><div class="actions"><button class="btn" id="dailyExportBtn">${icon('download')}导出每日记录</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传日报</button>`}</div></div>
+        ${filterPanel('每日记录')}
+        ${missingTraffic.length ? `<div class="snapshot-note">当前 PLG 有 ${fmt(plgDates.length)} 天日度数据，但单日 Traffic 有 ${fmt(trafficDates.length)} 天。缺少整体日度数据：${esc(missingTraffic.join('、'))}。请在 eBay 把 Traffic 报表开始和结束日期都设为同一天后下载。</div>` : `<div class="snapshot-note" style="color:var(--green);background:var(--green-soft);border-color:var(--green)">当前已导入的 PLG 日期均有对应单日 Traffic，可以查看完整 Item 日度表现。</div>`}
+        <section class="metrics">
+          ${metric('记录日期', fmt(dates.length), rangeText(dates[0], dates[dates.length - 1]))}
+          ${metric('Item 数', fmt(itemCount), ui.scope === 'roster' ? '钉钉链接清单' : '全部报表 Item')}
+          ${metric('PLG 日度记录', fmt(rows.filter(row => row.adImpressions || row.organicImpressions || row.totalSold).length), '广告与自然归因数据')}
+          ${metric('Traffic 日度记录', fmt(rows.filter(row => row.hasDailyTraffic).length), '整体链接表现数据')}
+        </section>
+        <section class="panel"><div class="panel-head"><h3>每日 Item 明细</h3><small>${fmt(rows.length)} 行</small></div>${dailyRecordTable(rows)}</section>`;
+    }
+
+    function dailyRecordTable(rows) {
+      if (!rows.length) return `<div class="empty">当前筛选范围没有每日记录</div>`;
+      const sorted = sortRows(rows.map(row => ({ ...row, status: row.hasDailyTraffic ? '完整' : '缺Traffic', organicConversion: row.organicSold / row.trafficNaturalViews || 0 })), 'daily');
+      return `<div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'daily')}${sortHeader('Item ID', 'itemId', 'daily')}${sortHeader('标题', 'title', 'daily')}${sortHeader('运营', 'operator', 'daily')}${sortHeader('PA账号', 'pa', 'daily')}${sortHeader('数据状态', 'status', 'daily')}${sortHeader('总曝光', 'trafficTotalImpressions', 'daily')}${sortHeader('eBay PV', 'trafficEbayViews', 'daily')}${sortHeader('External PV', 'trafficExternalViews', 'daily')}${sortHeader('总销量', 'trafficSold', 'daily')}${sortHeader('总 CTR', 'trafficCtr', 'daily')}${sortHeader('总转化率', 'trafficConversion', 'daily')}${sortHeader('自然曝光', 'trafficNaturalImpressions', 'daily')}${sortHeader('自然 eBay PV', 'trafficNaturalViews', 'daily')}${sortHeader('自然 SOLD', 'organicSold', 'daily')}${sortHeader('自然 CTR', 'trafficNaturalCtr', 'daily')}${sortHeader('自然转化率', 'organicConversion', 'daily')}${sortHeader('PLG曝光', 'adImpressions', 'daily')}${sortHeader('PLG点击', 'adClicks', 'daily')}${sortHeader('PLG CTR', 'ctr', 'daily')}${sortHeader('PLG销量', 'adSold', 'daily')}${sortHeader('PLG销售额', 'adSales', 'daily')}${sortHeader('广告费', 'adFees', 'daily')}${sortHeader('ROAS', 'roas', 'daily')}</tr></thead><tbody>${sorted.map(row => `<tr>
+        <td>${row.date}</td><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${esc(row.operator)}</td><td>${esc(row.pa)}</td><td style="text-align:left"><span class="badge ${row.hasDailyTraffic ? 'green' : 'amber'}">${row.hasDailyTraffic ? '完整' : '缺Traffic'}</span></td>
+        <td>${row.hasDailyTraffic ? fmt(row.trafficTotalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficEbayViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficExternalViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficSold) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficConversion) : '—'}</td>
+        <td>${row.hasDailyTraffic ? fmt(row.trafficNaturalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficNaturalViews) : '—'}</td><td>${fmt(row.organicSold)}</td><td>${row.hasDailyTraffic ? pct(row.trafficNaturalCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.organicSold / row.trafficNaturalViews || 0) : '—'}</td>
+        <td>${fmt(row.adImpressions)}</td><td>${fmt(row.adClicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.adSold)}</td><td>${money(row.adSales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+    }
+
+    function importPage() {
+      return `<div class="page-head"><div><h2>数据导入</h2><p>支持同时选择多个 CSV，系统会自动识别报表类型并去重。</p></div><div class="actions">${dataState.sources.length ? `<button class="btn danger" id="clearBtn">${icon('trash-2')}清空数据</button>` : ''}</div></div>
+        <section class="panel"><div class="panel-body"><div class="upload-zone" id="dropZone"><div><div class="upload-icon">${icon('files', 24)}</div><h3>上传 Traffic 与 PLG CSV</h3><p>可以一次选择多个文件。PLG 按日期、Item ID、广告活动去重；Traffic 按报表区间和 Item ID 去重。</p><button class="btn primary" id="uploadBtn">${icon('folder-open')}选择文件</button><div class="upload-note">CSV 仅在当前浏览器中解析和保存</div></div></div></div></section>
+        ${dataState.sources.length ? importDiagnostics() : ''}
+        <div class="source-grid">${dataState.sources.length ? dataState.sources.map(sourceCard).join('') : ''}</div>`;
+    }
+
+    function importDiagnostics() {
+      const plgDates = unique(dataState.plgRaw.map(row => row.date)).sort();
+      const trafficDailyDates = unique(dataState.trafficRaw.filter(row => row.start && row.start === row.end).map(row => row.start)).sort();
+      const missingTraffic = plgDates.filter(date => !trafficDailyDates.includes(date));
+      const rangeCount = unique(dataState.trafficRaw.filter(row => row.start !== row.end).map(row => `${row.start}|${row.end}`)).length;
+      return `<section class="panel snapshot"><div class="panel-head"><h3>日期覆盖检查</h3><small>用于判断能否生成完整日度看板</small></div><div class="panel-body"><div class="snapshot-metrics">
+        <div class="snapshot-metric"><span>PLG 日度</span><strong>${fmt(plgDates.length)} 天</strong></div>
+        <div class="snapshot-metric"><span>单日 Traffic</span><strong>${fmt(trafficDailyDates.length)} 天</strong></div>
+        <div class="snapshot-metric"><span>Traffic 区间快照</span><strong>${fmt(rangeCount)} 份</strong></div>
+        <div class="snapshot-metric"><span>缺单日 Traffic</span><strong>${fmt(missingTraffic.length)} 天</strong></div>
+      </div>${missingTraffic.length ? `<p class="snapshot-note" style="margin-top:12px;margin-bottom:0">缺少单日 Traffic：${esc(missingTraffic.join('、'))}。当前仍可查看 PLG 日度趋势，链接总曝光、总 Page views 等 Traffic 指标暂不能按日展示。</p>` : ''}</div></section>`;
+    }
+
+    function sourceCard(source) {
+      const isTraffic = source.type === 'Traffic';
+      return `<article class="source-item"><div class="source-top"><div class="source-name" title="${esc(source.name)}">${esc(source.name)}</div><span class="badge ${isTraffic ? 'amber' : 'blue'}">${esc(source.type)}</span></div><div class="source-meta"><span>${rangeText(source.start, source.end)}</span><span>${fmt(source.count)} 行 · ${isTraffic ? esc(source.periodKind || '区间累计') : '日度明细'}</span></div></article>`;
+    }
+
+    function detailPage() {
+      const rows = itemPerformance();
+      const trafficRows = trafficPeriodRows();
+      const [plgStart, plgEnd] = plgDateRange();
+      const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
+      return `<div class="page-head"><div><h2>Item 完整明细</h2><p>字段顺序按钉钉“上架链接汇总”表整理，每个 Item 一行。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
+        ${filterPanel()}
+        <div class="snapshot-note">自然流量与链接汇总使用 Traffic：${trafficRange}；PLG 数据使用：${rangeText(plgStart, plgEnd)}。自然 SOLD 来自 PLG，区间不一致时不计算自然转化率。</div>
+        <section class="panel">${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
+    }
+
+    function itemFullTable(rows, trafficRows, plgStart, plgEnd) {
+      if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
+      const samePeriod = Boolean(trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
+      const sorted = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
+      return `<div class="table-wrap"><table><thead><tr><th colspan="5" style="text-align:center">基础信息</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（Manual）</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
+        ${sortHeader('运营', 'operator', 'detail')}${sortHeader('PA账号', 'pa', 'detail')}${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('链接属性', 'linkType', 'detail')}${sortHeader('标题', 'title', 'detail')}
+        ${sortHeader('曝光', 'naturalImpressions', 'detail')}${sortHeader('eBay Page views', 'naturalViews', 'detail')}${sortHeader('SOLD', 'naturalSold', 'detail')}${sortHeader('点击率', 'naturalCtr', 'detail')}${sortHeader('Sales conversion rate', 'naturalConversion', 'detail')}
+        ${sortHeader('Impression', 'totalImpressions', 'detail')}${sortHeader('Top 20变化', 'top20Change', 'detail')}${sortHeader('非搜索变化', 'nonSearchChange', 'detail')}${sortHeader('eBay Page views', 'ebayViews', 'detail')}${sortHeader('External Page views', 'externalViews', 'detail')}${sortHeader('Quantity sold', 'quantitySold', 'detail')}${sortHeader('Click-through rate', 'totalCtr', 'detail')}${sortHeader('Sales conversion rate', 'totalConversion', 'detail')}
+        ${sortHeader('售价', 'price', 'detail')}${sortHeader('销量', 'plgTotalSold', 'detail')}<th>费率</th><th>建议费率</th>${sortHeader('PLG Impressions', 'adImpressions', 'detail')}${sortHeader('PLG Clicks', 'adClicks', 'detail')}${sortHeader('CTR', 'adCtr', 'detail')}${sortHeader('PLG Sold', 'adSold', 'detail')}${sortHeader('PLG Sales', 'adSales', 'detail')}${sortHeader('Ad fees', 'adFees', 'detail')}${sortHeader('ROAS', 'roas', 'detail')}
+        <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
+        <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
+      </tr></thead><tbody>${sorted.map(row => `<tr>
+        <td>${esc(row.operator)}</td><td>${esc(row.pa)}</td><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td>${esc(row.linkType)}</td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>
+        <td>${row.hasTraffic ? fmt(row.naturalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.naturalViews) : '—'}</td><td>${row.hasPlg ? fmt(row.naturalSold) : '—'}</td><td>${row.hasTraffic ? pct(row.naturalCtr) : '—'}</td><td>${samePeriod && row.hasTraffic && row.hasPlg ? pct(row.naturalSold / row.naturalViews || 0) : '—'}</td>
+        <td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? pct(row.top20Change) : '—'}</td><td>${row.hasTraffic ? pct(row.nonSearchChange) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td>
+        <td>${row.hasPlg ? money(row.price) : '—'}</td><td>${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td>—</td><td>—</td><td>${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td>${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td>${row.hasPlg ? pct(row.adCtr) : '—'}</td><td>${row.hasPlg ? fmt(row.adSold) : '—'}</td><td>${row.hasPlg ? money(row.adSales) : '—'}</td><td>${row.hasPlg ? money(row.adFees) : '—'}</td><td>${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
+        ${'<td>—</td>'.repeat(26)}
+      </tr>`).join('')}</tbody></table></div>`;
+    }
+
+    function trafficTable(rows) {
+      if (!rows.length) return `<div class="empty">还没有 Traffic 数据</div>`;
+      const sorted = sortRows(rows, 'traffic');
+      return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'traffic')}${sortHeader('标题', 'title', 'traffic')}${sortHeader('总曝光', 'totalImpressions', 'traffic')}${sortHeader('总 Page views', 'totalPageViews', 'traffic')}${sortHeader('销量', 'quantitySold', 'traffic')}${sortHeader('站内广告曝光', 'promotedEbayImpressions', 'traffic')}${sortHeader('站内自然曝光', 'organicEbayImpressions', 'traffic')}${sortHeader('站内广告 PV', 'promotedEbayViews', 'traffic')}${sortHeader('站内自然 PV', 'organicEbayViews', 'traffic')}${sortHeader('站外广告 PV', 'promotedExternalViews', 'traffic')}${sortHeader('站外自然 PV', 'organicExternalViews', 'traffic')}</tr></thead><tbody>${sorted.map(row => `<tr><td>${esc(row.itemId)}</td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${fmt(row.totalImpressions)}</td><td>${fmt(row.totalPageViews)}</td><td>${fmt(row.quantitySold)}</td><td>${fmt(row.promotedEbayImpressions)}</td><td>${fmt(row.organicEbayImpressions)}</td><td>${fmt(row.promotedEbayViews)}</td><td>${fmt(row.organicEbayViews)}</td><td>${fmt(row.promotedExternalViews)}</td><td>${fmt(row.organicExternalViews)}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+
+    function coveragePage() {
+      const counts = { '直接提供': 0, '可计算': 0, '缺少': 0 };
+      COVERAGE.forEach(row => counts[row[1]]++);
+      const rows = sortRows(COVERAGE.map(([field, status, note]) => ({ field, status, note })), 'coverage');
+      return `<div class="page-head"><div><h2>钉钉字段覆盖</h2><p>盘点 Traffic + PLG 能否提供现有表格所需指标。</p></div></div><div class="coverage">
+        <div class="coverage-summary">
+          <div class="coverage-count"><strong>${counts['直接提供']}</strong><span>直接提供</span></div>
+          <div class="coverage-count"><strong>${counts['可计算']}</strong><span>可计算</span></div>
+          <div class="coverage-count"><strong>${counts['缺少']}</strong><span>仍缺少</span></div>
+        </div>
+        <section class="panel"><div class="table-wrap"><table><thead><tr>${sortHeader('钉钉字段', 'field', 'coverage')}${sortHeader('覆盖状态', 'status', 'coverage')}${sortHeader('来源或计算方法', 'note', 'coverage')}</tr></thead><tbody>${rows.map(({ field, status, note }) => `<tr><td>${esc(field)}</td><td style="text-align:left"><span class="badge ${status === '直接提供' ? 'green' : status === '可计算' ? 'blue' : 'red'}">${status}</span></td><td style="text-align:left;white-space:normal;min-width:280px">${esc(note)}</td></tr>`).join('')}</tbody></table></div></section>
+      </div>`;
+    }
+
+    function renderCharts() {
+      charts.forEach(chart => chart.dispose());
+      charts = [];
+      const itemEl = document.getElementById('itemChart');
+      const mixEl = document.getElementById('mixChart');
+      if (!itemEl || !mixEl) return;
+      const rows = itemPerformance();
+      const top = rows.filter(row => row.hasTraffic).slice(0, 12).reverse();
+      const itemChart = echarts.init(itemEl);
+      itemChart.setOption({
+        animationDuration: 350,
+        color: ['#1769aa'],
+        tooltip: { trigger: 'axis' },
+        grid: { left: 108, right: 30, top: 22, bottom: 32 },
+        xAxis: { type: 'value', splitLine: { lineStyle: { color: '#edf0f3' } } },
+        yAxis: { type: 'category', data: top.map(row => row.itemId), axisLabel: { color: '#697586', fontSize: 10 }, axisLine: { lineStyle: { color: '#dce2e8' } } },
+        series: [{ name: '链接总曝光', type: 'bar', barMaxWidth: 16, data: top.map(row => row.totalImpressions) }]
+      });
+      const mixChart = echarts.init(mixEl);
+      mixChart.setOption({
+        color: ['#1769aa', '#4d9b78'],
+        tooltip: { trigger: 'item', formatter: '{b}<br/>{c} ({d}%)' },
+        legend: { bottom: 15, textStyle: { color: '#697586' } },
+        series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '45%'], label: { formatter: '{d}%', color: '#435064' }, data: [{ name: '站内广告曝光', value: sum(rows, 'promotedImpressions') }, { name: '站内自然曝光', value: sum(rows, 'naturalImpressions') }] }]
+      });
+      charts.push(itemChart, mixChart);
+    }
+
+    function bindEvents() {
+      document.querySelectorAll('[data-page]').forEach(button => button.addEventListener('click', () => { ui.page = button.dataset.page; render(); }));
+      document.querySelectorAll('[data-detail]').forEach(button => button.addEventListener('click', () => { ui.detail = button.dataset.detail; render(); }));
+      document.querySelectorAll('th[data-sort-key]').forEach(header => header.addEventListener('click', () => {
+        const sameColumn = ui.sort.table === header.dataset.sortTable && ui.sort.key === header.dataset.sortKey;
+        ui.sort = { table: header.dataset.sortTable, key: header.dataset.sortKey, dir: sameColumn ? ui.sort.dir * -1 : 1 };
+        render();
+      }));
+      ['uploadBtn', 'topUploadBtn'].forEach(id => document.getElementById(id)?.addEventListener('click', () => document.getElementById('fileInput').click()));
+      document.getElementById('exportBtn')?.addEventListener('click', exportData);
+      document.getElementById('dailyExportBtn')?.addEventListener('click', exportDailyData);
+      document.getElementById('clearBtn')?.addEventListener('click', clearData);
+      const query = document.getElementById('queryFilter');
+      query?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
+      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; render(); });
+      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; render(); });
+      document.getElementById('scopeFilter')?.addEventListener('change', e => { ui.scope = e.target.value; render(); });
+      document.getElementById('operatorFilter')?.addEventListener('change', e => { ui.operator = e.target.value; render(); });
+      document.getElementById('paFilter')?.addEventListener('change', e => { ui.pa = e.target.value; render(); });
+      document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => { ui.trafficPeriod = e.target.value; render(); });
+      const zone = document.getElementById('dropZone');
+      if (zone) {
+        ['dragenter','dragover'].forEach(name => zone.addEventListener(name, e => { e.preventDefault(); zone.classList.add('drag'); }));
+        ['dragleave','drop'].forEach(name => zone.addEventListener(name, e => { e.preventDefault(); zone.classList.remove('drag'); }));
+        zone.addEventListener('drop', e => importFiles([...e.dataTransfer.files]));
+      }
+      lucide.createIcons();
+      if (ui.page === 'dashboard') setTimeout(renderCharts, 0);
+    }
+
+    async function importFiles(files) {
+      const csvFiles = files.filter(file => file.name.toLowerCase().endsWith('.csv'));
+      if (!csvFiles.length) return toast('请选择 CSV 文件。', true);
+      loading(true, `正在处理 ${csvFiles.length} 个文件…`);
+      const messages = [];
+      for (const file of csvFiles) {
+        try {
+          const result = await readFile(file);
+          mergeImport(result);
+          messages.push(`${result.type}：${result.rows.length} 行`);
+        } catch (error) {
+          messages.push(`${file.name}：${error.message}`);
+        }
+      }
+      await saveState();
+      loading(false);
+      ui.page = 'dashboard';
+      render();
+      toast(`导入完成。${messages.join('；')}`);
+      document.getElementById('fileInput').value = '';
+    }
+
+    function exportData() {
+      const trafficRows = trafficPeriodRows();
+      const [plgStart, plgEnd] = plgDateRange();
+      const samePeriod = Boolean(trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
+      const items = itemPerformance().map((row, index) => ({
+        序号: index + 1, 运营: row.operator, 上架PA账号: row.pa, 'item ID': row.itemId, 链接: row.link, '链接属性（新/老改新）': row.linkType, 标题: row.title,
+        '自然-曝光': row.hasTraffic ? row.naturalImpressions : '', '自然-eBay page views': row.hasTraffic ? row.naturalViews : '', '自然-SOLD': row.hasPlg ? row.naturalSold : '',
+        '自然-点击率': row.hasTraffic ? row.naturalCtr : '', '自然-Sales conversion rate': samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : '',
+        '链接汇总-Impression': row.hasTraffic ? row.totalImpressions : '', '链接汇总-Top 20变化': row.hasTraffic ? row.top20Change : '', '链接汇总-非搜索变化': row.hasTraffic ? row.nonSearchChange : '',
+        '链接汇总-eBay page views': row.hasTraffic ? row.ebayViews : '', '链接汇总-External page views': row.hasTraffic ? row.externalViews : '', '链接汇总-Quantity sold': row.hasTraffic ? row.quantitySold : '',
+        '链接汇总-Click-through rate': row.hasTraffic ? row.totalCtr : '', '链接汇总-Sales conversion rate': row.hasTraffic ? row.totalConversion : '',
+        'PLG-售价': row.hasPlg ? row.price : '', 'PLG-销量': row.hasPlg ? row.plgTotalSold : '', 'PLG-费率': '', 'PLG-建议费率': '',
+        'PLG-Impressions': row.hasPlg ? row.adImpressions : '', 'PLG-Clicks': row.hasPlg ? row.adClicks : '', 'PLG-CTR': row.hasPlg ? row.adCtr : '', 'PLG-Sold quantity': row.hasPlg ? row.adSold : '',
+        'PLG-Sales': row.hasPlg ? row.adSales : '', 'PLG-Ad fees': row.hasPlg ? row.adFees : '', 'PLG-ROAS': row.hasPlg ? row.roas : '',
+        'PLP Manual-Impressions': '', 'PLP Manual-Clicks': '', 'PLP Manual-CTR': '', 'PLP Manual-Sold quantity': '', 'PLP Manual-Ad fees': '', 'PLP Manual-Sales': '', 'PLP Manual-Conversion rate': '', 'PLP Manual-ROAS': '', 'PLP Manual-Average CPC': '', 'PLP Manual-ACOS': '', 'PLP Manual-主推关键词': '', 'PLP Manual-建议出价': '', 'PLP Manual-实际出价': '',
+        'PLP Smart-Impressions': '', 'PLP Smart-Clicks': '', 'PLP Smart-CTR': '', 'PLP Smart-Sold quantity': '', 'PLP Smart-Ad fees': '', 'PLP Smart-Sales': '', 'PLP Smart-Conversion rate': '', 'PLP Smart-ROAS': '', 'PLP Smart-Average CPC': '', 'PLP Smart-ACOS': '', 'PLP Smart-主推关键词': '', 'PLP Smart-建议出价': '', 'PLP Smart-实际出价': '',
+        Traffic统计区间: trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '', PLG统计区间: rangeText(plgStart, plgEnd)
+      }));
+      if (!items.length) return toast('没有可导出的 Item 数据。', true);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(items), 'Item链接表现');
+      XLSX.writeFile(workbook, `eBay-Item链接表现-${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    function exportDailyData() {
+      const rows = dailyItemRecords().map(row => ({
+        日期: row.date, 运营: row.operator, 上架PA账号: row.pa, 'item ID': row.itemId, 链接: row.link, 标题: row.title, 数据状态: row.hasDailyTraffic ? '完整' : '缺Traffic',
+        '链接汇总-总曝光': row.hasDailyTraffic ? row.trafficTotalImpressions : '', '链接汇总-eBay Page views': row.hasDailyTraffic ? row.trafficEbayViews : '', '链接汇总-External Page views': row.hasDailyTraffic ? row.trafficExternalViews : '',
+        '链接汇总-Quantity sold': row.hasDailyTraffic ? row.trafficSold : '', '链接汇总-CTR': row.hasDailyTraffic ? row.trafficCtr : '', '链接汇总-转化率': row.hasDailyTraffic ? row.trafficConversion : '',
+        '自然-曝光': row.hasDailyTraffic ? row.trafficNaturalImpressions : '', '自然-eBay Page views': row.hasDailyTraffic ? row.trafficNaturalViews : '', '自然-SOLD': row.organicSold,
+        '自然-CTR': row.hasDailyTraffic ? row.trafficNaturalCtr : '', '自然-转化率': row.hasDailyTraffic ? row.organicSold / row.trafficNaturalViews || 0 : '',
+        'PLG-曝光': row.adImpressions, 'PLG-点击': row.adClicks, 'PLG-CTR': row.ctr, 'PLG-广告销量': row.adSold, 'PLG-销售额': row.adSales, 'PLG-广告费': row.adFees, 'PLG-ROAS': row.roas
+      }));
+      if (!rows.length) return toast('当前筛选范围没有可导出的每日记录。', true);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'Item每日记录');
+      XLSX.writeFile(workbook, `eBay-Item每日记录-${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    async function clearData() {
+      if (!confirm('确定清空当前浏览器中保存的所有报表数据吗？')) return;
+      dataState = structuredClone(DEFAULT_STATE);
+      await saveState();
+      ui = { page: 'import', query: '', start: '', end: '', operator: '全部运营', pa: '全部PA账号', scope: 'roster', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      render();
+      toast('数据已清空。');
+    }
+
+    function toast(message, error = false) {
+      document.querySelector('.toast')?.remove();
+      const node = document.createElement('div');
+      node.className = `toast ${error ? 'error' : ''}`;
+      node.textContent = message;
+      document.body.appendChild(node);
+      setTimeout(() => node.remove(), 5000);
+    }
+    function loading(show, message = '') {
+      document.querySelector('.loading')?.remove();
+      if (!show) return;
+      const node = document.createElement('div');
+      node.className = 'loading';
+      node.innerHTML = `<div class="loading-box"><span class="spinner"></span>${esc(message)}</div>`;
+      document.body.appendChild(node);
+    }
+
+    function render() {
+      charts.forEach(chart => chart.dispose());
+      charts = [];
+      const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'detail' ? detailPage() : coveragePage();
+      document.getElementById('app').innerHTML = baseLayout(pageContent);
+      bindEvents();
+    }
+
+    document.getElementById('fileInput').addEventListener('change', event => importFiles([...event.target.files]));
+    window.addEventListener('resize', () => charts.forEach(chart => chart.resize()));
+    (async function start() {
+      try {
+        if (BUILDER_MODE) {
+          dataState = structuredClone(DEFAULT_STATE);
+        } else {
+          dataState = await loadState();
+          const seeded = window.EBAY_PRELOADED_DATA;
+          if (seeded && seeded.bundleId !== localStorage.getItem('ebay-preloaded-bundle')) {
+            dataState = {
+              plgRaw: seeded.plgRaw || [],
+              trafficRaw: seeded.trafficRaw || [],
+              sources: seeded.sources || []
+            };
+            await saveState();
+            localStorage.setItem('ebay-preloaded-bundle', seeded.bundleId);
+          }
+        }
+      } catch (error) {
+        toast('无法读取本地数据，将以空白工作台启动。', true);
+      }
+      render();
+    })();
+  </script>
+</body>
+</html>
