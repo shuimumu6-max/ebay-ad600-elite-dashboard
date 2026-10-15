@@ -2,6 +2,7 @@
 *.log
 *.tmp
 node_modules/
+tools/
 docs/
 test-update.mjs
 verify-*.mjs
