@@ -93,7 +93,7 @@
     .metric-foot { margin-top: 10px; color: var(--muted); font-size: 11px; }
     .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .8fr); gap: 14px; margin-bottom: 14px; }
     .chart { width: 100%; height: 330px; }
-    .table-wrap { width: 100%; overflow: auto; }
+    .table-wrap { width: 100%; max-height: calc(100vh - 150px); overflow: auto; overscroll-behavior: contain; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th { position: sticky; top: 0; z-index: 1; padding: 10px 11px; background: #f5f7f9; color: #516074; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
     th[data-sort-key] { cursor: pointer; user-select: none; }
