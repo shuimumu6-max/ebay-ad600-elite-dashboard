@@ -559,7 +559,7 @@
         </section>
         <section class="dashboard-grid">
           <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
-          <div class="panel"><div class="panel-head"><h3>站内曝光结构</h3><small>Traffic 广告与自然</small></div><div id="mixChart" class="chart"></div></div>
+          <div class="panel"><div class="panel-head"><h3>Item eBay PV 排名</h3><small>Traffic 站内 Page views</small></div><div id="ebayPvChart" class="chart"></div></div>
         </section>
         <section class="panel"><div class="panel-head"><h3>Item 链接表现</h3><small>点击表头切换升序或降序</small></div>${itemSummaryTable(rows)}</section>`;
     }
@@ -703,8 +703,8 @@
       charts.forEach(chart => chart.dispose());
       charts = [];
       const itemEl = document.getElementById('itemChart');
-      const mixEl = document.getElementById('mixChart');
-      if (!itemEl || !mixEl) return;
+      const ebayPvEl = document.getElementById('ebayPvChart');
+      if (!itemEl || !ebayPvEl) return;
       const rows = itemPerformance();
       const top = rows.filter(row => row.hasTraffic).slice(0, 12).reverse();
       const itemChart = echarts.init(itemEl);
@@ -717,14 +717,18 @@
         yAxis: { type: 'category', data: top.map(row => row.itemId), axisLabel: { color: '#697586', fontSize: 10 }, axisLine: { lineStyle: { color: '#dce2e8' } } },
         series: [{ name: '链接总曝光', type: 'bar', barMaxWidth: 16, data: top.map(row => row.totalImpressions) }]
       });
-      const mixChart = echarts.init(mixEl);
-      mixChart.setOption({
-        color: ['#1769aa', '#4d9b78'],
-        tooltip: { trigger: 'item', formatter: '{b}<br/>{c} ({d}%)' },
-        legend: { bottom: 15, textStyle: { color: '#697586' } },
-        series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '45%'], label: { formatter: '{d}%', color: '#435064' }, data: [{ name: '站内广告曝光', value: sum(rows, 'promotedImpressions') }, { name: '站内自然曝光', value: sum(rows, 'naturalImpressions') }] }]
+      const ebayPvRows = rows.filter(row => row.hasTraffic).sort((a, b) => b.ebayViews - a.ebayViews).slice(0, 12).reverse();
+      const ebayPvChart = echarts.init(ebayPvEl);
+      ebayPvChart.setOption({
+        animationDuration: 350,
+        color: ['#4d9b78'],
+        tooltip: { trigger: 'axis' },
+        grid: { left: 108, right: 30, top: 22, bottom: 32 },
+        xAxis: { type: 'value', splitLine: { lineStyle: { color: '#edf0f3' } } },
+        yAxis: { type: 'category', data: ebayPvRows.map(row => row.itemId), axisLabel: { color: '#697586', fontSize: 10 }, axisLine: { lineStyle: { color: '#dce2e8' } } },
+        series: [{ name: 'eBay Page views', type: 'bar', barMaxWidth: 16, data: ebayPvRows.map(row => row.ebayViews) }]
       });
-      charts.push(itemChart, mixChart);
+      charts.push(itemChart, ebayPvChart);
     }
 
     function bindEvents() {
