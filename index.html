@@ -545,8 +545,6 @@
         ['detail', 'table-2', 'Item 明细'],
         ['import', 'file-up', '数据导入'],
         ['daily', 'calendar-range', '每日记录'],
-        ['ads', 'badge-dollar-sign', '广告分析'],
-        ['terms', 'search', '关键词与搜索词'],
         ['coverage', 'list-checks', '字段覆盖']
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
       return `<header class="topbar">
@@ -588,7 +586,7 @@
       const adFees = sum(rows, 'adFees');
       const plpSales = sum(rows, 'plpSales');
       const plpFees = sum(rows, 'plpFees');
-      return `<div class="page-head"><div><h2>Item 链接表现</h2><p>每个 Item 只保留一行，同时展示 Traffic、PLG 和 PLP 表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
+      return `<div class="page-head"><div><h2>经营看板</h2><p>按同一 Item 和日期统一查看整体流量、自然流量、PLG 与 PLP 广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
         ${filterPanel()}
         <div class="snapshot-note">Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。各数据源分别统计，不互相补算。</div>
         <section class="metrics">
@@ -605,7 +603,13 @@
           <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
           <div class="panel"><div class="panel-head"><h3>Item eBay PV 排名</h3><small>Traffic 站内 Page views</small></div><div id="ebayPvChart" class="chart"></div></div>
         </section>
-        <section class="panel"><div class="panel-head"><h3>Item 链接表现</h3><small>点击表头切换升序或降序</small></div>${itemSummaryTable(rows)}</section>`;
+        <section class="dashboard-grid">
+          <div class="panel"><div class="panel-head"><h3>流量与广告曝光对比</h3><small>统一查看 Traffic、自然、PLG、PLP</small></div><div id="channelChart" class="chart"></div></div>
+          <div class="panel"><div class="panel-head"><h3>每日流量与广告互动趋势</h3><small>eBay PV 与广告点击按日对比</small></div><div id="trendChart" class="chart"></div></div>
+        </section>
+        <section class="panel"><div class="panel-head"><h3>Item 链接表现</h3><small>整体流量与广告数据已按 Item 合并</small></div>${itemSummaryTable(rows)}</section>
+        ${adsPage()}
+        ${termsPage()}`;
     }
 
     function emptyDashboard() {
@@ -730,20 +734,11 @@
       return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'traffic')}${sortHeader('标题', 'title', 'traffic')}${sortHeader('总曝光', 'totalImpressions', 'traffic')}${sortHeader('总 Page views', 'totalPageViews', 'traffic')}${sortHeader('销量', 'quantitySold', 'traffic')}${sortHeader('站内广告曝光', 'promotedEbayImpressions', 'traffic')}${sortHeader('站内自然曝光', 'organicEbayImpressions', 'traffic')}${sortHeader('站内广告 PV', 'promotedEbayViews', 'traffic')}${sortHeader('站内自然 PV', 'organicEbayViews', 'traffic')}${sortHeader('站外广告 PV', 'promotedExternalViews', 'traffic')}${sortHeader('站外自然 PV', 'organicExternalViews', 'traffic')}</tr></thead><tbody>${sorted.map(row => `<tr><td>${esc(row.itemId)}</td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${fmt(row.totalImpressions)}</td><td>${fmt(row.totalPageViews)}</td><td>${fmt(row.quantitySold)}</td><td>${fmt(row.promotedEbayImpressions)}</td><td>${fmt(row.organicEbayImpressions)}</td><td>${fmt(row.promotedEbayViews)}</td><td>${fmt(row.organicEbayViews)}</td><td>${fmt(row.promotedExternalViews)}</td><td>${fmt(row.organicExternalViews)}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
-    function adsFilterPanel(placeholder = '搜索 Campaign、Item、关键词或搜索词') {
-      return `<div class="panel filters">
-        <div class="field"><label>搜索</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="${esc(placeholder)}" /></div>
-        <div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
-        <div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
-      </div>`;
-    }
-
     function withinAdsRange(row) {
       return (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end);
     }
 
     function adCampaignRows() {
-      const query = ui.query.toLowerCase();
       return (dataState.ads.campaigns || []).map(campaign => {
         const days = Object.entries(dataState.ads.campaignDaily?.[campaign] || {}).filter(([date]) => (!ui.start || date >= ui.start) && (!ui.end || date <= ui.end));
         const row = { campaign, days: days.length, impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0, itemCount: 0 };
@@ -759,39 +754,31 @@
         row.conversion = row.sold / row.clicks || 0;
         row.roas = row.sales / row.adFees || 0;
         return row;
-      }).filter(row => !query || row.campaign.toLowerCase().includes(query));
+      });
     }
 
     function adsPage() {
       const campaigns = adCampaignRows();
-      const query = ui.query.toLowerCase();
-      const plpRows = (dataState.ads.plpRows || []).filter(row => withinAdsRange(row) && (!query || row.itemId.includes(query) || row.title.toLowerCase().includes(query) || row.campaign.toLowerCase().includes(query)));
       const impressions = sum(campaigns, 'impressions'), clicks = sum(campaigns, 'clicks'), sales = sum(campaigns, 'sales'), fees = sum(campaigns, 'adFees');
       const campaignTable = sortRows(campaigns, 'campaigns').map(row => `<tr><td style="text-align:left">${esc(row.campaign)}</td><td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td></tr>`).join('');
-      const plpTable = sortRows(plpRows.map(row => ({ ...row, ctr: row.clicks / row.impressions || 0, conversion: row.sold / row.clicks || 0, roas: row.sales / row.adFees || 0 })), 'plp').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.campaign)}</td><td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td></tr>`).join('');
-      return `<div class="page-head"><div><h2>广告分析</h2><p>Campaign 总览与 PLP Item 日明细；PLG Item 继续以本地 CSV 为准。</p></div></div>
-        ${adsFilterPanel()}
+      return `<div class="page-head"><div><h2>广告辅助分析</h2><p>Campaign、关键词和搜索词用于解释上方 Item 表现；无法可靠对应到 Item 的数据保留 Campaign 口径。</p></div></div>
         <section class="metrics">
           ${metric('广告曝光', fmt(impressions), `${fmt(campaigns.length)} 个 Campaign`)}
           ${metric('广告点击', fmt(clicks), `CTR ${pct(clicks / impressions || 0)}`)}
           ${metric('广告销售额', money(sales), '广告快照口径')}
           ${metric('广告费', money(fees), `ROAS ${fmt(sales / fees || 0, 2)}`)}
         </section>
-        <section class="panel"><div class="panel-head"><h3>Campaign 表现</h3><small>按日期区间汇总</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('Campaign', 'campaign', 'campaigns')}${sortHeader('天数', 'days', 'campaigns')}${sortHeader('Item数', 'itemCount', 'campaigns')}${sortHeader('曝光', 'impressions', 'campaigns')}${sortHeader('点击', 'clicks', 'campaigns')}${sortHeader('CTR', 'ctr', 'campaigns')}${sortHeader('销量', 'sold', 'campaigns')}${sortHeader('CVR', 'conversion', 'campaigns')}${sortHeader('销售额', 'sales', 'campaigns')}${sortHeader('广告费', 'adFees', 'campaigns')}${sortHeader('ROAS', 'roas', 'campaigns')}</tr></thead><tbody>${campaignTable}</tbody></table></div></section>
-        <section class="panel"><div class="panel-head"><h3>PLP Item 日明细</h3><small>${fmt(plpRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'plp')}${sortHeader('Campaign', 'campaign', 'plp')}${sortHeader('Item ID', 'itemId', 'plp')}${sortHeader('标题', 'title', 'plp')}${sortHeader('曝光', 'impressions', 'plp')}${sortHeader('点击', 'clicks', 'plp')}${sortHeader('CTR', 'ctr', 'plp')}${sortHeader('销量', 'sold', 'plp')}${sortHeader('CVR', 'conversion', 'plp')}${sortHeader('销售额', 'sales', 'plp')}${sortHeader('广告费', 'adFees', 'plp')}${sortHeader('ROAS', 'roas', 'plp')}</tr></thead><tbody>${plpTable}</tbody></table></div></section>`;
+        <section class="panel"><div class="panel-head"><h3>Campaign 表现</h3><small>按顶部日期区间汇总</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('Campaign', 'campaign', 'campaigns')}${sortHeader('天数', 'days', 'campaigns')}${sortHeader('Item数', 'itemCount', 'campaigns')}${sortHeader('曝光', 'impressions', 'campaigns')}${sortHeader('点击', 'clicks', 'campaigns')}${sortHeader('CTR', 'ctr', 'campaigns')}${sortHeader('销量', 'sold', 'campaigns')}${sortHeader('CVR', 'conversion', 'campaigns')}${sortHeader('销售额', 'sales', 'campaigns')}${sortHeader('广告费', 'adFees', 'campaigns')}${sortHeader('ROAS', 'roas', 'campaigns')}</tr></thead><tbody>${campaignTable}</tbody></table></div></section>`;
     }
 
     function termsPage() {
-      const query = ui.query.toLowerCase();
-      const keywordRows = (dataState.ads.keywordRows || []).filter(row => withinAdsRange(row) && (!query || row.keyword.toLowerCase().includes(query) || row.campaign.toLowerCase().includes(query)));
-      const searchRows = (dataState.ads.searchRows || []).filter(row => withinAdsRange(row) && (!query || row.searchQuery.toLowerCase().includes(query) || row.keyword.toLowerCase().includes(query) || row.campaign.toLowerCase().includes(query)));
-      const bidRows = (dataState.ads.bidChanges || []).filter(row => withinAdsRange(row) && (!query || row.keyword.toLowerCase().includes(query)));
+      const keywordRows = (dataState.ads.keywordRows || []).filter(withinAdsRange);
+      const searchRows = (dataState.ads.searchRows || []).filter(withinAdsRange);
+      const bidRows = (dataState.ads.bidChanges || []).filter(withinAdsRange);
       const keywords = sortRows(keywordRows, 'keywords').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.campaign)}</td><td style="text-align:left">${esc(row.keyword)}</td><td>${esc(row.matchType)}</td><td>${money(row.bid)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.clicks / row.impressions || 0)}</td><td>${fmt(row.sold)}</td><td>${money(row.adFees)}</td></tr>`).join('');
       const searches = sortRows(searchRows, 'searches').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.campaign)}</td><td style="text-align:left">${esc(row.searchQuery)}</td><td style="text-align:left">${esc(row.keyword)}</td><td>${esc(row.matchType)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.clicks / row.impressions || 0)}</td><td>${money(row.adFees)}</td></tr>`).join('');
       const bids = sortRows(bidRows.map(row => ({ ...row, change: row.newBid - row.oldBid })), 'bids').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.keyword)}</td><td>${esc(row.matchType)}</td><td>${money(row.oldBid)}</td><td>${money(row.newBid)}</td><td style="color:${row.change >= 0 ? 'var(--red)' : 'var(--green)'}">${row.change >= 0 ? '+' : ''}${money(row.change)}</td></tr>`).join('');
-      return `<div class="page-head"><div><h2>关键词与搜索词</h2><p>查看投放词、真实搜索词和竞价调整历史。</p></div></div>
-        ${adsFilterPanel()}
-        <section class="panel"><div class="panel-head"><h3>关键词表现</h3><small>${fmt(keywordRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'keywords')}${sortHeader('Campaign', 'campaign', 'keywords')}${sortHeader('关键词', 'keyword', 'keywords')}${sortHeader('匹配方式', 'matchType', 'keywords')}${sortHeader('Bid', 'bid', 'keywords')}${sortHeader('曝光', 'impressions', 'keywords')}${sortHeader('点击', 'clicks', 'keywords')}<th>CTR</th>${sortHeader('销量', 'sold', 'keywords')}${sortHeader('广告费', 'adFees', 'keywords')}</tr></thead><tbody>${keywords}</tbody></table></div></section>
+      return `<section class="panel"><div class="panel-head"><h3>关键词表现</h3><small>${fmt(keywordRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'keywords')}${sortHeader('Campaign', 'campaign', 'keywords')}${sortHeader('关键词', 'keyword', 'keywords')}${sortHeader('匹配方式', 'matchType', 'keywords')}${sortHeader('Bid', 'bid', 'keywords')}${sortHeader('曝光', 'impressions', 'keywords')}${sortHeader('点击', 'clicks', 'keywords')}<th>CTR</th>${sortHeader('销量', 'sold', 'keywords')}${sortHeader('广告费', 'adFees', 'keywords')}</tr></thead><tbody>${keywords}</tbody></table></div></section>
         <section class="panel"><div class="panel-head"><h3>搜索词表现</h3><small>${fmt(searchRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'searches')}${sortHeader('Campaign', 'campaign', 'searches')}${sortHeader('搜索词', 'searchQuery', 'searches')}${sortHeader('触发关键词', 'keyword', 'searches')}${sortHeader('匹配方式', 'matchType', 'searches')}${sortHeader('曝光', 'impressions', 'searches')}${sortHeader('点击', 'clicks', 'searches')}<th>CTR</th>${sortHeader('广告费', 'adFees', 'searches')}</tr></thead><tbody>${searches}</tbody></table></div></section>
         <section class="panel"><div class="panel-head"><h3>竞价调整</h3><small>${fmt(bidRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'bids')}${sortHeader('关键词', 'keyword', 'bids')}${sortHeader('匹配方式', 'matchType', 'bids')}${sortHeader('原 Bid', 'oldBid', 'bids')}${sortHeader('新 Bid', 'newBid', 'bids')}${sortHeader('变动', 'change', 'bids')}</tr></thead><tbody>${bids}</tbody></table></div></section>`;
     }
@@ -815,7 +802,9 @@
       charts = [];
       const itemEl = document.getElementById('itemChart');
       const ebayPvEl = document.getElementById('ebayPvChart');
-      if (!itemEl || !ebayPvEl) return;
+      const channelEl = document.getElementById('channelChart');
+      const trendEl = document.getElementById('trendChart');
+      if (!itemEl || !ebayPvEl || !channelEl || !trendEl) return;
       const rows = itemPerformance();
       const top = rows.filter(row => row.hasTraffic).slice(0, 12).reverse();
       const itemChart = echarts.init(itemEl);
@@ -839,7 +828,44 @@
         yAxis: { type: 'category', data: ebayPvRows.map(row => row.itemId), axisLabel: { color: '#697586', fontSize: 10 }, axisLine: { lineStyle: { color: '#dce2e8' } } },
         series: [{ name: 'eBay Page views', type: 'bar', barMaxWidth: 16, data: ebayPvRows.map(row => row.ebayViews) }]
       });
-      charts.push(itemChart, ebayPvChart);
+      const channelChart = echarts.init(channelEl);
+      channelChart.setOption({
+        animationDuration: 350,
+        color: ['#1769aa'],
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        grid: { left: 70, right: 24, top: 24, bottom: 48 },
+        xAxis: { type: 'category', data: ['链接总曝光', '自然曝光', 'PLG 曝光', 'PLP 曝光'], axisLabel: { color: '#697586', interval: 0 } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { color: '#edf0f3' } } },
+        series: [{ name: '曝光', type: 'bar', barMaxWidth: 38, data: [sum(rows, 'totalImpressions'), sum(rows, 'naturalImpressions'), sum(rows, 'adImpressions'), sum(rows, 'plpImpressions')] }]
+      });
+      const dailyMap = new Map();
+      dailyItemRecords().forEach(row => {
+        if (!dailyMap.has(row.date)) dailyMap.set(row.date, { date: row.date, ebayViews: 0, plgClicks: 0, plpClicks: 0 });
+        const day = dailyMap.get(row.date);
+        day.ebayViews += row.hasDailyTraffic ? row.trafficEbayViews || 0 : 0;
+        day.plgClicks += row.adClicks || 0;
+        day.plpClicks += row.plpClicks || 0;
+      });
+      const trendRows = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+      const trendChart = echarts.init(trendEl);
+      trendChart.setOption({
+        animationDuration: 350,
+        color: ['#1769aa', '#d97706', '#4d9b78'],
+        tooltip: { trigger: 'axis' },
+        legend: { top: 0, textStyle: { color: '#697586' } },
+        grid: { left: 58, right: 58, top: 42, bottom: 48 },
+        xAxis: { type: 'category', data: trendRows.map(row => row.date.slice(5)), axisLabel: { color: '#697586' } },
+        yAxis: [
+          { type: 'value', name: 'eBay PV', splitLine: { lineStyle: { color: '#edf0f3' } } },
+          { type: 'value', name: '广告点击', splitLine: { show: false } }
+        ],
+        series: [
+          { name: 'eBay PV', type: 'line', smooth: true, showSymbol: false, data: trendRows.map(row => row.ebayViews) },
+          { name: 'PLG 点击', type: 'line', yAxisIndex: 1, smooth: true, showSymbol: false, data: trendRows.map(row => row.plgClicks) },
+          { name: 'PLP 点击', type: 'line', yAxisIndex: 1, smooth: true, showSymbol: false, data: trendRows.map(row => row.plpClicks) }
+        ]
+      });
+      charts.push(itemChart, ebayPvChart, channelChart, trendChart);
     }
 
     function bindEvents() {
@@ -960,7 +986,7 @@
     function render() {
       charts.forEach(chart => chart.dispose());
       charts = [];
-      const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'detail' ? detailPage() : ui.page === 'ads' ? adsPage() : ui.page === 'terms' ? termsPage() : coveragePage();
+      const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'detail' ? detailPage() : coveragePage();
       document.getElementById('app').innerHTML = baseLayout(pageContent);
       bindEvents();
     }
