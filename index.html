@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>eBay Item 链接表现看板</title>
+  <title>eBay AD600 Elite 流量与广告看板</title>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script src="https://unpkg.com/lucide@0.468.0"></script>
@@ -166,7 +166,8 @@
     const BUILDER_MODE = new URLSearchParams(location.search).has('builder');
     const SHARED_READONLY = location.protocol !== 'file:' && !BUILDER_MODE;
     const MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
-    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [] };
+    const EMPTY_ADS = { dates: [], campaigns: [], campaignDaily: {}, plpRows: [], keywordRows: [], searchRows: [], bidChanges: [] };
+    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [], ads: EMPTY_ADS };
     let dataState = structuredClone(DEFAULT_STATE);
     let ui = { page: 'dashboard', query: '', start: '', end: '', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
@@ -191,8 +192,11 @@
       ['广告费', '直接提供', 'Ad fees'],
       ['ROAS', '可计算', 'PLG 销售额 ÷ 广告费'],
       ['PLG 费率 / 建议费率', '缺少', '当前两类报表没有该字段'],
-      ['PLP Manual / Smart 指标', '缺少', '需要对应的 Priority Campaign 报表'],
-      ['主推关键词 / 建议出价 / 实际出价', '缺少', '需要关键词或竞价报表']
+      ['PLP 曝光、点击、销量、销售额、广告费', '直接提供', '广告看板：Priority Campaign Item 日明细'],
+      ['PLP CTR、CVR、ROAS、Average CPC、ACOS', '可计算', '按 PLP 汇总后使用总量重算'],
+      ['关键词 / 实际出价', '直接提供', '广告看板：关键词日明细'],
+      ['搜索词 / 触发关键词', '直接提供', '广告看板：搜索词日明细'],
+      ['建议出价', '缺少', '当前广告快照只有实际 Bid 和竞价调整记录']
     ];
 
     function clean(value) { return String(value ?? '').replace(/^\uFEFF/, '').trim(); }
@@ -410,7 +414,20 @@
         item.trafficTop20Change = row.top20Change;
         item.trafficNonSearchChange = row.nonSearchChange;
       }
-      return [...map.values()].map(item => ({ ...item, campaigns: [...item.campaigns], ctr: item.adClicks / item.adImpressions || 0, conversion: item.adSold / item.adClicks || 0, roas: item.adSales / item.adFees || 0 })).sort((a, b) => b.date.localeCompare(a.date) || a.itemId.localeCompare(b.itemId));
+      for (const row of dataState.ads.plpRows || []) {
+        const key = `${row.date}|${row.itemId}`;
+        if (!map.has(key)) map.set(key, { date: row.date, itemId: row.itemId, title: row.title, price: 0, available: 0, campaigns: new Set(), adImpressions: 0, adClicks: 0, adSold: 0, organicSold: 0, totalSold: 0, adSales: 0, adFees: 0, organicClicks: 0, organicImpressions: 0 });
+        const item = map.get(key);
+        item.title = item.title || row.title;
+        item.plpCampaigns = item.plpCampaigns || new Set();
+        item.plpCampaigns.add(row.campaign);
+        item.plpImpressions = (item.plpImpressions || 0) + row.impressions;
+        item.plpClicks = (item.plpClicks || 0) + row.clicks;
+        item.plpSold = (item.plpSold || 0) + row.sold;
+        item.plpSales = (item.plpSales || 0) + row.sales;
+        item.plpFees = (item.plpFees || 0) + row.adFees;
+      }
+      return [...map.values()].map(item => ({ ...item, campaigns: [...item.campaigns], plpCampaigns: [...(item.plpCampaigns || [])], ctr: item.adClicks / item.adImpressions || 0, conversion: item.adSold / item.adClicks || 0, roas: item.adSales / item.adFees || 0, plpCtr: item.plpClicks / item.plpImpressions || 0, plpConversion: item.plpSold / item.plpClicks || 0, plpRoas: item.plpSales / item.plpFees || 0 })).sort((a, b) => b.date.localeCompare(a.date) || a.itemId.localeCompare(b.itemId));
     }
 
     function filteredDaily() {
@@ -443,10 +460,16 @@
       return [dates[0] || '', dates[dates.length - 1] || ''];
     }
 
+    function plpDateRange() {
+      const dates = (dataState.ads.plpRows || []).map(row => row.date).filter(date => (!ui.start || date >= ui.start) && (!ui.end || date <= ui.end)).sort();
+      return [dates[0] || '', dates.at(-1) || ''];
+    }
+
     function itemPerformance() {
       const trafficRows = trafficPeriodRows();
       const trafficMap = new Map(trafficRows.map(row => [row.itemId, row]));
       const plgMap = new Map();
+      const plpMap = new Map();
       for (const row of dataState.plgRaw.filter(row => isTargetModelTitle(row.title) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
         if (!plgMap.has(row.itemId)) plgMap.set(row.itemId, { itemId: row.itemId, title: row.title, price: row.price, totalSold: 0, organicSold: 0, adImpressions: 0, adClicks: 0, adSold: 0, adSales: 0, adFees: 0 });
         const item = plgMap.get(row.itemId);
@@ -454,18 +477,26 @@
         item.price = row.price || item.price;
         ['totalSold','organicSold','adImpressions','adClicks','adSold','adSales','adFees'].forEach(field => item[field] += row[field] || 0);
       }
-      const ids = unique([...trafficMap.keys(), ...plgMap.keys()]);
+      for (const row of (dataState.ads.plpRows || []).filter(row => (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
+        if (!plpMap.has(row.itemId)) plpMap.set(row.itemId, { itemId: row.itemId, title: row.title, campaigns: new Set(), impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0 });
+        const item = plpMap.get(row.itemId);
+        item.title = row.title || item.title;
+        item.campaigns.add(row.campaign);
+        ['impressions','clicks','sold','sales','adFees'].forEach(field => item[field] += row[field] || 0);
+      }
+      const ids = unique([...trafficMap.keys(), ...plgMap.keys(), ...plpMap.keys()]);
       const query = ui.query.toLowerCase();
       return ids.map(itemId => {
         const traffic = trafficMap.get(itemId);
         const plg = plgMap.get(itemId);
+        const plp = plpMap.get(itemId);
         const ebayViews = traffic ? traffic.promotedEbayViews + traffic.organicEbayViews : 0;
         const externalViews = traffic ? traffic.promotedExternalViews + traffic.organicExternalViews : 0;
         return {
           itemId,
           link: `https://www.ebay.com/itm/${itemId}`,
-          title: traffic?.title || plg?.title || '',
-          hasTraffic: Boolean(traffic), hasPlg: Boolean(plg),
+          title: traffic?.title || plg?.title || plp?.title || '',
+          hasTraffic: Boolean(traffic), hasPlg: Boolean(plg), hasPlp: Boolean(plp),
           naturalImpressions: traffic?.organicEbayImpressions || 0,
           promotedImpressions: traffic?.promotedEbayImpressions || 0,
           naturalViews: traffic?.organicEbayViews || 0,
@@ -482,7 +513,15 @@
           price: plg?.price || 0, plgTotalSold: plg?.totalSold || 0,
           adImpressions: plg?.adImpressions || 0, adClicks: plg?.adClicks || 0, adSold: plg?.adSold || 0,
           adCtr: plg ? plg.adClicks / plg.adImpressions || 0 : 0,
-          adSales: plg?.adSales || 0, adFees: plg?.adFees || 0, roas: plg ? plg.adSales / plg.adFees || 0 : 0
+          adSales: plg?.adSales || 0, adFees: plg?.adFees || 0, roas: plg ? plg.adSales / plg.adFees || 0 : 0,
+          plpCampaigns: plp ? [...plp.campaigns] : [],
+          plpImpressions: plp?.impressions || 0, plpClicks: plp?.clicks || 0, plpSold: plp?.sold || 0,
+          plpSales: plp?.sales || 0, plpFees: plp?.adFees || 0,
+          plpCtr: plp ? plp.clicks / plp.impressions || 0 : 0,
+          plpConversion: plp ? plp.sold / plp.clicks || 0 : 0,
+          plpRoas: plp ? plp.sales / plp.adFees || 0 : 0,
+          plpAvgCpc: plp ? plp.adFees / plp.clicks || 0 : 0,
+          plpAcos: plp ? plp.adFees / plp.sales || 0 : 0
         };
       }).filter(row => !query || row.itemId.includes(query) || row.title.toLowerCase().includes(query)).sort((a, b) => b.totalImpressions - a.totalImpressions || b.adSales - a.adSales);
     }
@@ -506,10 +545,12 @@
         ['detail', 'table-2', 'Item 明细'],
         ['import', 'file-up', '数据导入'],
         ['daily', 'calendar-range', '每日记录'],
+        ['ads', 'badge-dollar-sign', '广告分析'],
+        ['terms', 'search', '关键词与搜索词'],
         ['coverage', 'list-checks', '字段覆盖']
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
       return `<header class="topbar">
-        <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay Item 链接表现看板</h1><p>整体流量 + 自然流量 + 广告表现</p></div></div>
+        <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay AD600 Elite 流量与广告看板</h1><p>Traffic + PLG + PLP + 关键词</p></div></div>
         <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'}</span></div>
       </header>
       <div class="workspace">
@@ -536,6 +577,7 @@
       if (!rows.length) return emptyDashboard();
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
+      const [plpStart, plpEnd] = plpDateRange();
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
       const impressions = sum(rows, 'totalImpressions');
       const ebayViews = sum(rows, 'ebayViews');
@@ -544,18 +586,20 @@
       const totalViews = sum(rows, 'totalPageViews');
       const adSales = sum(rows, 'adSales');
       const adFees = sum(rows, 'adFees');
-      return `<div class="page-head"><div><h2>Item 链接表现</h2><p>每个 Item 只保留一行，Traffic 展示整体与自然流量，PLG 展示广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
+      const plpSales = sum(rows, 'plpSales');
+      const plpFees = sum(rows, 'plpFees');
+      return `<div class="page-head"><div><h2>Item 链接表现</h2><p>每个 Item 只保留一行，同时展示 Traffic、PLG 和 PLP 表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
         ${filterPanel()}
-        <div class="snapshot-note">Traffic 整体数据：${trafficRange}；PLG 广告数据：${rangeText(plgStart, plgEnd)}。两个区间分别统计，不互相补算。</div>
+        <div class="snapshot-note">Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。各数据源分别统计，不互相补算。</div>
         <section class="metrics">
           ${metric('链接总曝光', fmt(impressions), `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
           ${metric('eBay Page views', fmt(ebayViews), '站内广告 + 站内自然')}
           ${metric('External Page views', fmt(externalViews), '站外广告 + 站外自然')}
           ${metric('Quantity sold', fmt(sold), `整体转化率 ${pct(sold / totalViews || 0)}`)}
           ${metric('链接总 CTR', pct(ebayViews / impressions || 0), 'eBay Page views ÷ 总曝光')}
-          ${metric('PLG 销售额', money(adSales), `${fmt(rows.filter(row => row.hasPlg).length)} 个 Item 有 PLG`)}
-          ${metric('PLG 广告费', money(adFees), `ACOS ${pct(adFees / adSales || 0)}`)}
-          ${metric('PLG ROAS', fmt(adSales / adFees || 0, 2), '广告销售额 ÷ 广告费')}
+          ${metric('广告销售额', money(adSales + plpSales), `PLG ${money(adSales)} + PLP ${money(plpSales)}`)}
+          ${metric('总广告费', money(adFees + plpFees), `PLG ${money(adFees)} + PLP ${money(plpFees)}`)}
+          ${metric('综合 ROAS', fmt((adSales + plpSales) / (adFees + plpFees) || 0, 2), '广告销售额 ÷ 总广告费')}
         </section>
         <section class="dashboard-grid">
           <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
@@ -571,7 +615,7 @@
     function itemSummaryTable(rows) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
       const sorted = sortRows(rows, 'summary');
-      return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'summary')}${sortHeader('标题', 'title', 'summary')}${sortHeader('总曝光', 'totalImpressions', 'summary')}${sortHeader('eBay PV', 'ebayViews', 'summary')}${sortHeader('External PV', 'externalViews', 'summary')}${sortHeader('总销量', 'quantitySold', 'summary')}${sortHeader('总 CTR', 'totalCtr', 'summary')}${sortHeader('总转化率', 'totalConversion', 'summary')}${sortHeader('PLG曝光', 'adImpressions', 'summary')}${sortHeader('PLG点击', 'adClicks', 'summary')}${sortHeader('PLG销量', 'adSold', 'summary')}${sortHeader('PLG销售额', 'adSales', 'summary')}${sortHeader('广告费', 'adFees', 'summary')}${sortHeader('ROAS', 'roas', 'summary')}</tr></thead><tbody>${sorted.map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td>${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td>${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td>${row.hasPlg ? fmt(row.adSold) : '—'}</td><td>${row.hasPlg ? money(row.adSales) : '—'}</td><td>${row.hasPlg ? money(row.adFees) : '—'}</td><td>${row.hasPlg ? fmt(row.roas, 2) : '—'}</td></tr>`).join('')}</tbody></table></div>`;
+      return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'summary')}${sortHeader('标题', 'title', 'summary')}${sortHeader('总曝光', 'totalImpressions', 'summary')}${sortHeader('eBay PV', 'ebayViews', 'summary')}${sortHeader('External PV', 'externalViews', 'summary')}${sortHeader('总销量', 'quantitySold', 'summary')}${sortHeader('总 CTR', 'totalCtr', 'summary')}${sortHeader('总转化率', 'totalConversion', 'summary')}${sortHeader('PLG曝光', 'adImpressions', 'summary')}${sortHeader('PLG点击', 'adClicks', 'summary')}${sortHeader('PLG销量', 'adSold', 'summary')}${sortHeader('PLG销售额', 'adSales', 'summary')}${sortHeader('PLG广告费', 'adFees', 'summary')}${sortHeader('PLG ROAS', 'roas', 'summary')}${sortHeader('PLP曝光', 'plpImpressions', 'summary')}${sortHeader('PLP点击', 'plpClicks', 'summary')}${sortHeader('PLP销量', 'plpSold', 'summary')}${sortHeader('PLP广告费', 'plpFees', 'summary')}${sortHeader('PLP ROAS', 'plpRoas', 'summary')}</tr></thead><tbody>${sorted.map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td>${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td>${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td>${row.hasPlg ? fmt(row.adSold) : '—'}</td><td>${row.hasPlg ? money(row.adSales) : '—'}</td><td>${row.hasPlg ? money(row.adFees) : '—'}</td><td>${row.hasPlg ? fmt(row.roas, 2) : '—'}</td><td>${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td>${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td>${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td>${row.hasPlp ? money(row.plpFees) : '—'}</td><td>${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
     function trafficSnapshot() {
@@ -600,7 +644,7 @@
       const trafficDates = unique(dataState.trafficRaw.filter(row => isTargetModelTitle(row.title) && row.start && row.start === row.end).map(row => row.start)).sort();
       const plgDates = unique(dataState.plgRaw.filter(row => isTargetModelTitle(row.title)).map(row => row.date)).sort();
       const missingTraffic = plgDates.filter(date => !trafficDates.includes(date));
-      return `<div class="page-head"><div><h2>Item 每日记录</h2><p>按“日期 + Item ID”保存历史，PLG 与单日 Traffic 自动合并。</p></div><div class="actions"><button class="btn" id="dailyExportBtn">${icon('download')}导出每日记录</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传日报</button>`}</div></div>
+      return `<div class="page-head"><div><h2>Item 每日记录</h2><p>按“日期 + Item ID”合并单日 Traffic、PLG 和 PLP。</p></div><div class="actions"><button class="btn" id="dailyExportBtn">${icon('download')}导出每日记录</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传日报</button>`}</div></div>
         ${filterPanel('每日记录')}
         ${missingTraffic.length ? `<div class="snapshot-note">当前 PLG 有 ${fmt(plgDates.length)} 天日度数据，但单日 Traffic 有 ${fmt(trafficDates.length)} 天。缺少整体日度数据：${esc(missingTraffic.join('、'))}。请在 eBay 把 Traffic 报表开始和结束日期都设为同一天后下载。</div>` : `<div class="snapshot-note" style="color:var(--green);background:var(--green-soft);border-color:var(--green)">当前已导入的 PLG 日期均有对应单日 Traffic，可以查看完整 Item 日度表现。</div>`}
         <section class="metrics">
@@ -615,11 +659,11 @@
     function dailyRecordTable(rows) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有每日记录</div>`;
       const sorted = sortRows(rows.map(row => ({ ...row, status: row.hasDailyTraffic ? '完整' : '缺Traffic', organicConversion: row.organicSold / row.trafficNaturalViews || 0 })), 'daily');
-      return `<div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'daily')}${sortHeader('Item ID', 'itemId', 'daily')}${sortHeader('标题', 'title', 'daily')}${sortHeader('数据状态', 'status', 'daily')}${sortHeader('总曝光', 'trafficTotalImpressions', 'daily')}${sortHeader('eBay PV', 'trafficEbayViews', 'daily')}${sortHeader('External PV', 'trafficExternalViews', 'daily')}${sortHeader('总销量', 'trafficSold', 'daily')}${sortHeader('总 CTR', 'trafficCtr', 'daily')}${sortHeader('总转化率', 'trafficConversion', 'daily')}${sortHeader('自然曝光', 'trafficNaturalImpressions', 'daily')}${sortHeader('自然 eBay PV', 'trafficNaturalViews', 'daily')}${sortHeader('自然 SOLD', 'organicSold', 'daily')}${sortHeader('自然 CTR', 'trafficNaturalCtr', 'daily')}${sortHeader('自然转化率', 'organicConversion', 'daily')}${sortHeader('PLG曝光', 'adImpressions', 'daily')}${sortHeader('PLG点击', 'adClicks', 'daily')}${sortHeader('PLG CTR', 'ctr', 'daily')}${sortHeader('PLG销量', 'adSold', 'daily')}${sortHeader('PLG销售额', 'adSales', 'daily')}${sortHeader('广告费', 'adFees', 'daily')}${sortHeader('ROAS', 'roas', 'daily')}</tr></thead><tbody>${sorted.map(row => `<tr>
+      return `<div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'daily')}${sortHeader('Item ID', 'itemId', 'daily')}${sortHeader('标题', 'title', 'daily')}${sortHeader('数据状态', 'status', 'daily')}${sortHeader('总曝光', 'trafficTotalImpressions', 'daily')}${sortHeader('eBay PV', 'trafficEbayViews', 'daily')}${sortHeader('External PV', 'trafficExternalViews', 'daily')}${sortHeader('总销量', 'trafficSold', 'daily')}${sortHeader('总 CTR', 'trafficCtr', 'daily')}${sortHeader('总转化率', 'trafficConversion', 'daily')}${sortHeader('自然曝光', 'trafficNaturalImpressions', 'daily')}${sortHeader('自然 eBay PV', 'trafficNaturalViews', 'daily')}${sortHeader('自然 SOLD', 'organicSold', 'daily')}${sortHeader('自然 CTR', 'trafficNaturalCtr', 'daily')}${sortHeader('自然转化率', 'organicConversion', 'daily')}${sortHeader('PLG曝光', 'adImpressions', 'daily')}${sortHeader('PLG点击', 'adClicks', 'daily')}${sortHeader('PLG CTR', 'ctr', 'daily')}${sortHeader('PLG销量', 'adSold', 'daily')}${sortHeader('PLG销售额', 'adSales', 'daily')}${sortHeader('PLG广告费', 'adFees', 'daily')}${sortHeader('PLG ROAS', 'roas', 'daily')}${sortHeader('PLP曝光', 'plpImpressions', 'daily')}${sortHeader('PLP点击', 'plpClicks', 'daily')}${sortHeader('PLP广告费', 'plpFees', 'daily')}${sortHeader('PLP ROAS', 'plpRoas', 'daily')}</tr></thead><tbody>${sorted.map(row => `<tr>
         <td>${row.date}</td><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td style="text-align:left"><span class="badge ${row.hasDailyTraffic ? 'green' : 'amber'}">${row.hasDailyTraffic ? '完整' : '缺Traffic'}</span></td>
         <td>${row.hasDailyTraffic ? fmt(row.trafficTotalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficEbayViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficExternalViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficSold) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficConversion) : '—'}</td>
         <td>${row.hasDailyTraffic ? fmt(row.trafficNaturalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficNaturalViews) : '—'}</td><td>${fmt(row.organicSold)}</td><td>${row.hasDailyTraffic ? pct(row.trafficNaturalCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.organicSold / row.trafficNaturalViews || 0) : '—'}</td>
-        <td>${fmt(row.adImpressions)}</td><td>${fmt(row.adClicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.adSold)}</td><td>${money(row.adSales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td>
+        <td>${fmt(row.adImpressions)}</td><td>${fmt(row.adClicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.adSold)}</td><td>${money(row.adSales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td><td>${row.plpImpressions == null ? '—' : fmt(row.plpImpressions)}</td><td>${row.plpClicks == null ? '—' : fmt(row.plpClicks)}</td><td>${row.plpFees == null ? '—' : money(row.plpFees)}</td><td>${row.plpRoas == null ? '—' : fmt(row.plpRoas, 2)}</td>
       </tr>`).join('')}</tbody></table></div>`;
     }
 
@@ -675,7 +719,8 @@
         <td>${row.hasTraffic ? fmt(row.naturalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.naturalViews) : '—'}</td><td>${row.hasPlg ? fmt(row.naturalSold) : '—'}</td><td>${row.hasTraffic ? pct(row.naturalCtr) : '—'}</td><td>${samePeriod && row.hasTraffic && row.hasPlg ? pct(row.naturalSold / row.naturalViews || 0) : '—'}</td>
         <td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? pct(row.top20Change) : '—'}</td><td>${row.hasTraffic ? pct(row.nonSearchChange) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td>
         <td>${row.hasPlg ? money(row.price) : '—'}</td><td>${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td>—</td><td>—</td><td>${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td>${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td>${row.hasPlg ? pct(row.adCtr) : '—'}</td><td>${row.hasPlg ? fmt(row.adSold) : '—'}</td><td>${row.hasPlg ? money(row.adSales) : '—'}</td><td>${row.hasPlg ? money(row.adFees) : '—'}</td><td>${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
-        ${'<td>—</td>'.repeat(26)}
+        <td>${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td>${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td>${row.hasPlp ? pct(row.plpCtr) : '—'}</td><td>${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td>${row.hasPlp ? money(row.plpFees) : '—'}</td><td>${row.hasPlp ? money(row.plpSales) : '—'}</td><td>${row.hasPlp ? pct(row.plpConversion) : '—'}</td><td>${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td><td>${row.hasPlp ? money(row.plpAvgCpc) : '—'}</td><td>${row.hasPlp ? pct(row.plpAcos) : '—'}</td><td>—</td><td>—</td><td>—</td>
+        ${'<td>—</td>'.repeat(13)}
       </tr>`).join('')}</tbody></table></div>`;
     }
 
@@ -685,11 +730,77 @@
       return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'traffic')}${sortHeader('标题', 'title', 'traffic')}${sortHeader('总曝光', 'totalImpressions', 'traffic')}${sortHeader('总 Page views', 'totalPageViews', 'traffic')}${sortHeader('销量', 'quantitySold', 'traffic')}${sortHeader('站内广告曝光', 'promotedEbayImpressions', 'traffic')}${sortHeader('站内自然曝光', 'organicEbayImpressions', 'traffic')}${sortHeader('站内广告 PV', 'promotedEbayViews', 'traffic')}${sortHeader('站内自然 PV', 'organicEbayViews', 'traffic')}${sortHeader('站外广告 PV', 'promotedExternalViews', 'traffic')}${sortHeader('站外自然 PV', 'organicExternalViews', 'traffic')}</tr></thead><tbody>${sorted.map(row => `<tr><td>${esc(row.itemId)}</td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${fmt(row.totalImpressions)}</td><td>${fmt(row.totalPageViews)}</td><td>${fmt(row.quantitySold)}</td><td>${fmt(row.promotedEbayImpressions)}</td><td>${fmt(row.organicEbayImpressions)}</td><td>${fmt(row.promotedEbayViews)}</td><td>${fmt(row.organicEbayViews)}</td><td>${fmt(row.promotedExternalViews)}</td><td>${fmt(row.organicExternalViews)}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
+    function adsFilterPanel(placeholder = '搜索 Campaign、Item、关键词或搜索词') {
+      return `<div class="panel filters">
+        <div class="field"><label>搜索</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="${esc(placeholder)}" /></div>
+        <div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
+        <div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
+      </div>`;
+    }
+
+    function withinAdsRange(row) {
+      return (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end);
+    }
+
+    function adCampaignRows() {
+      const query = ui.query.toLowerCase();
+      return (dataState.ads.campaigns || []).map(campaign => {
+        const days = Object.entries(dataState.ads.campaignDaily?.[campaign] || {}).filter(([date]) => (!ui.start || date >= ui.start) && (!ui.end || date <= ui.end));
+        const row = { campaign, days: days.length, impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0, itemCount: 0 };
+        days.forEach(([, value]) => {
+          row.impressions += value.impressions || 0;
+          row.clicks += value.clicks || 0;
+          row.sold += value.sold || 0;
+          row.sales += value.sales || 0;
+          row.adFees += value.ad_fees || 0;
+          row.itemCount = Math.max(row.itemCount, value.item_count || 0);
+        });
+        row.ctr = row.clicks / row.impressions || 0;
+        row.conversion = row.sold / row.clicks || 0;
+        row.roas = row.sales / row.adFees || 0;
+        return row;
+      }).filter(row => !query || row.campaign.toLowerCase().includes(query));
+    }
+
+    function adsPage() {
+      const campaigns = adCampaignRows();
+      const query = ui.query.toLowerCase();
+      const plpRows = (dataState.ads.plpRows || []).filter(row => withinAdsRange(row) && (!query || row.itemId.includes(query) || row.title.toLowerCase().includes(query) || row.campaign.toLowerCase().includes(query)));
+      const impressions = sum(campaigns, 'impressions'), clicks = sum(campaigns, 'clicks'), sales = sum(campaigns, 'sales'), fees = sum(campaigns, 'adFees');
+      const campaignTable = sortRows(campaigns, 'campaigns').map(row => `<tr><td style="text-align:left">${esc(row.campaign)}</td><td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td></tr>`).join('');
+      const plpTable = sortRows(plpRows.map(row => ({ ...row, ctr: row.clicks / row.impressions || 0, conversion: row.sold / row.clicks || 0, roas: row.sales / row.adFees || 0 })), 'plp').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.campaign)}</td><td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td></tr>`).join('');
+      return `<div class="page-head"><div><h2>广告分析</h2><p>Campaign 总览与 PLP Item 日明细；PLG Item 继续以本地 CSV 为准。</p></div></div>
+        ${adsFilterPanel()}
+        <section class="metrics">
+          ${metric('广告曝光', fmt(impressions), `${fmt(campaigns.length)} 个 Campaign`)}
+          ${metric('广告点击', fmt(clicks), `CTR ${pct(clicks / impressions || 0)}`)}
+          ${metric('广告销售额', money(sales), '广告快照口径')}
+          ${metric('广告费', money(fees), `ROAS ${fmt(sales / fees || 0, 2)}`)}
+        </section>
+        <section class="panel"><div class="panel-head"><h3>Campaign 表现</h3><small>按日期区间汇总</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('Campaign', 'campaign', 'campaigns')}${sortHeader('天数', 'days', 'campaigns')}${sortHeader('Item数', 'itemCount', 'campaigns')}${sortHeader('曝光', 'impressions', 'campaigns')}${sortHeader('点击', 'clicks', 'campaigns')}${sortHeader('CTR', 'ctr', 'campaigns')}${sortHeader('销量', 'sold', 'campaigns')}${sortHeader('CVR', 'conversion', 'campaigns')}${sortHeader('销售额', 'sales', 'campaigns')}${sortHeader('广告费', 'adFees', 'campaigns')}${sortHeader('ROAS', 'roas', 'campaigns')}</tr></thead><tbody>${campaignTable}</tbody></table></div></section>
+        <section class="panel"><div class="panel-head"><h3>PLP Item 日明细</h3><small>${fmt(plpRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'plp')}${sortHeader('Campaign', 'campaign', 'plp')}${sortHeader('Item ID', 'itemId', 'plp')}${sortHeader('标题', 'title', 'plp')}${sortHeader('曝光', 'impressions', 'plp')}${sortHeader('点击', 'clicks', 'plp')}${sortHeader('CTR', 'ctr', 'plp')}${sortHeader('销量', 'sold', 'plp')}${sortHeader('CVR', 'conversion', 'plp')}${sortHeader('销售额', 'sales', 'plp')}${sortHeader('广告费', 'adFees', 'plp')}${sortHeader('ROAS', 'roas', 'plp')}</tr></thead><tbody>${plpTable}</tbody></table></div></section>`;
+    }
+
+    function termsPage() {
+      const query = ui.query.toLowerCase();
+      const keywordRows = (dataState.ads.keywordRows || []).filter(row => withinAdsRange(row) && (!query || row.keyword.toLowerCase().includes(query) || row.campaign.toLowerCase().includes(query)));
+      const searchRows = (dataState.ads.searchRows || []).filter(row => withinAdsRange(row) && (!query || row.searchQuery.toLowerCase().includes(query) || row.keyword.toLowerCase().includes(query) || row.campaign.toLowerCase().includes(query)));
+      const bidRows = (dataState.ads.bidChanges || []).filter(row => withinAdsRange(row) && (!query || row.keyword.toLowerCase().includes(query)));
+      const keywords = sortRows(keywordRows, 'keywords').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.campaign)}</td><td style="text-align:left">${esc(row.keyword)}</td><td>${esc(row.matchType)}</td><td>${money(row.bid)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.clicks / row.impressions || 0)}</td><td>${fmt(row.sold)}</td><td>${money(row.adFees)}</td></tr>`).join('');
+      const searches = sortRows(searchRows, 'searches').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.campaign)}</td><td style="text-align:left">${esc(row.searchQuery)}</td><td style="text-align:left">${esc(row.keyword)}</td><td>${esc(row.matchType)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.clicks / row.impressions || 0)}</td><td>${money(row.adFees)}</td></tr>`).join('');
+      const bids = sortRows(bidRows.map(row => ({ ...row, change: row.newBid - row.oldBid })), 'bids').map(row => `<tr><td>${row.date}</td><td style="text-align:left">${esc(row.keyword)}</td><td>${esc(row.matchType)}</td><td>${money(row.oldBid)}</td><td>${money(row.newBid)}</td><td style="color:${row.change >= 0 ? 'var(--red)' : 'var(--green)'}">${row.change >= 0 ? '+' : ''}${money(row.change)}</td></tr>`).join('');
+      return `<div class="page-head"><div><h2>关键词与搜索词</h2><p>查看投放词、真实搜索词和竞价调整历史。</p></div></div>
+        ${adsFilterPanel()}
+        <section class="panel"><div class="panel-head"><h3>关键词表现</h3><small>${fmt(keywordRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'keywords')}${sortHeader('Campaign', 'campaign', 'keywords')}${sortHeader('关键词', 'keyword', 'keywords')}${sortHeader('匹配方式', 'matchType', 'keywords')}${sortHeader('Bid', 'bid', 'keywords')}${sortHeader('曝光', 'impressions', 'keywords')}${sortHeader('点击', 'clicks', 'keywords')}<th>CTR</th>${sortHeader('销量', 'sold', 'keywords')}${sortHeader('广告费', 'adFees', 'keywords')}</tr></thead><tbody>${keywords}</tbody></table></div></section>
+        <section class="panel"><div class="panel-head"><h3>搜索词表现</h3><small>${fmt(searchRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'searches')}${sortHeader('Campaign', 'campaign', 'searches')}${sortHeader('搜索词', 'searchQuery', 'searches')}${sortHeader('触发关键词', 'keyword', 'searches')}${sortHeader('匹配方式', 'matchType', 'searches')}${sortHeader('曝光', 'impressions', 'searches')}${sortHeader('点击', 'clicks', 'searches')}<th>CTR</th>${sortHeader('广告费', 'adFees', 'searches')}</tr></thead><tbody>${searches}</tbody></table></div></section>
+        <section class="panel"><div class="panel-head"><h3>竞价调整</h3><small>${fmt(bidRows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'bids')}${sortHeader('关键词', 'keyword', 'bids')}${sortHeader('匹配方式', 'matchType', 'bids')}${sortHeader('原 Bid', 'oldBid', 'bids')}${sortHeader('新 Bid', 'newBid', 'bids')}${sortHeader('变动', 'change', 'bids')}</tr></thead><tbody>${bids}</tbody></table></div></section>`;
+    }
+
     function coveragePage() {
       const counts = { '直接提供': 0, '可计算': 0, '缺少': 0 };
       COVERAGE.forEach(row => counts[row[1]]++);
       const rows = sortRows(COVERAGE.map(([field, status, note]) => ({ field, status, note })), 'coverage');
-      return `<div class="page-head"><div><h2>钉钉字段覆盖</h2><p>盘点 Traffic + PLG 能否提供现有表格所需指标。</p></div></div><div class="coverage">
+      return `<div class="page-head"><div><h2>钉钉字段覆盖</h2><p>盘点 Traffic + PLG + PLP + 关键词能否提供现有表格所需指标。</p></div></div><div class="coverage">
         <div class="coverage-summary">
           <div class="coverage-count"><strong>${counts['直接提供']}</strong><span>直接提供</span></div>
           <div class="coverage-count"><strong>${counts['可计算']}</strong><span>可计算</span></div>
@@ -794,7 +905,7 @@
         'PLG-售价': row.hasPlg ? row.price : '', 'PLG-销量': row.hasPlg ? row.plgTotalSold : '', 'PLG-费率': '', 'PLG-建议费率': '',
         'PLG-Impressions': row.hasPlg ? row.adImpressions : '', 'PLG-Clicks': row.hasPlg ? row.adClicks : '', 'PLG-CTR': row.hasPlg ? row.adCtr : '', 'PLG-Sold quantity': row.hasPlg ? row.adSold : '',
         'PLG-Sales': row.hasPlg ? row.adSales : '', 'PLG-Ad fees': row.hasPlg ? row.adFees : '', 'PLG-ROAS': row.hasPlg ? row.roas : '',
-        'PLP Manual-Impressions': '', 'PLP Manual-Clicks': '', 'PLP Manual-CTR': '', 'PLP Manual-Sold quantity': '', 'PLP Manual-Ad fees': '', 'PLP Manual-Sales': '', 'PLP Manual-Conversion rate': '', 'PLP Manual-ROAS': '', 'PLP Manual-Average CPC': '', 'PLP Manual-ACOS': '', 'PLP Manual-主推关键词': '', 'PLP Manual-建议出价': '', 'PLP Manual-实际出价': '',
+        'PLP Manual-Impressions': row.hasPlp ? row.plpImpressions : '', 'PLP Manual-Clicks': row.hasPlp ? row.plpClicks : '', 'PLP Manual-CTR': row.hasPlp ? row.plpCtr : '', 'PLP Manual-Sold quantity': row.hasPlp ? row.plpSold : '', 'PLP Manual-Ad fees': row.hasPlp ? row.plpFees : '', 'PLP Manual-Sales': row.hasPlp ? row.plpSales : '', 'PLP Manual-Conversion rate': row.hasPlp ? row.plpConversion : '', 'PLP Manual-ROAS': row.hasPlp ? row.plpRoas : '', 'PLP Manual-Average CPC': row.hasPlp ? row.plpAvgCpc : '', 'PLP Manual-ACOS': row.hasPlp ? row.plpAcos : '', 'PLP Manual-主推关键词': '', 'PLP Manual-建议出价': '', 'PLP Manual-实际出价': '',
         'PLP Smart-Impressions': '', 'PLP Smart-Clicks': '', 'PLP Smart-CTR': '', 'PLP Smart-Sold quantity': '', 'PLP Smart-Ad fees': '', 'PLP Smart-Sales': '', 'PLP Smart-Conversion rate': '', 'PLP Smart-ROAS': '', 'PLP Smart-Average CPC': '', 'PLP Smart-ACOS': '', 'PLP Smart-主推关键词': '', 'PLP Smart-建议出价': '', 'PLP Smart-实际出价': '',
         Traffic统计区间: trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '', PLG统计区间: rangeText(plgStart, plgEnd)
       }));
@@ -811,7 +922,8 @@
         '链接汇总-Quantity sold': row.hasDailyTraffic ? row.trafficSold : '', '链接汇总-CTR': row.hasDailyTraffic ? row.trafficCtr : '', '链接汇总-转化率': row.hasDailyTraffic ? row.trafficConversion : '',
         '自然-曝光': row.hasDailyTraffic ? row.trafficNaturalImpressions : '', '自然-eBay Page views': row.hasDailyTraffic ? row.trafficNaturalViews : '', '自然-SOLD': row.organicSold,
         '自然-CTR': row.hasDailyTraffic ? row.trafficNaturalCtr : '', '自然-转化率': row.hasDailyTraffic ? row.organicSold / row.trafficNaturalViews || 0 : '',
-        'PLG-曝光': row.adImpressions, 'PLG-点击': row.adClicks, 'PLG-CTR': row.ctr, 'PLG-广告销量': row.adSold, 'PLG-销售额': row.adSales, 'PLG-广告费': row.adFees, 'PLG-ROAS': row.roas
+        'PLG-曝光': row.adImpressions, 'PLG-点击': row.adClicks, 'PLG-CTR': row.ctr, 'PLG-广告销量': row.adSold, 'PLG-销售额': row.adSales, 'PLG-广告费': row.adFees, 'PLG-ROAS': row.roas,
+        'PLP-曝光': row.plpImpressions ?? '', 'PLP-点击': row.plpClicks ?? '', 'PLP-CTR': row.plpImpressions == null ? '' : row.plpCtr, 'PLP-销量': row.plpSold ?? '', 'PLP-销售额': row.plpSales ?? '', 'PLP-广告费': row.plpFees ?? '', 'PLP-ROAS': row.plpImpressions == null ? '' : row.plpRoas
       }));
       if (!rows.length) return toast('当前筛选范围没有可导出的每日记录。', true);
       const workbook = XLSX.utils.book_new();
@@ -848,7 +960,7 @@
     function render() {
       charts.forEach(chart => chart.dispose());
       charts = [];
-      const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'detail' ? detailPage() : coveragePage();
+      const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'detail' ? detailPage() : ui.page === 'ads' ? adsPage() : ui.page === 'terms' ? termsPage() : coveragePage();
       document.getElementById('app').innerHTML = baseLayout(pageContent);
       bindEvents();
     }
@@ -866,7 +978,8 @@
             dataState = {
               plgRaw: seeded.plgRaw || [],
               trafficRaw: seeded.trafficRaw || [],
-              sources: seeded.sources || []
+              sources: seeded.sources || [],
+              ads: seeded.ads || structuredClone(EMPTY_ADS)
             };
             await saveState();
             localStorage.setItem('ebay-preloaded-bundle', seeded.bundleId);
