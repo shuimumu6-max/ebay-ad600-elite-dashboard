@@ -209,8 +209,9 @@
     ];
 
     function clean(value) { return String(value ?? '').replace(/^\uFEFF/, '').trim(); }
+    function titleKey(value) { return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
     function isTargetModelTitle(value) {
-      const normalized = clean(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normalized = titleKey(value);
       return normalized.includes('artidiag600elite') || normalized.includes('ad600elite');
     }
     function number(value) {
@@ -424,7 +425,8 @@
         item.trafficNonSearchChange = row.nonSearchChange;
       }
       for (const row of dataState.ads.plpRows || []) {
-        const key = `${row.date}|${row.itemId}`;
+        const candidates = [...map.entries()].filter(([, item]) => item.date === row.date && titleKey(item.title) === titleKey(row.title));
+        const key = candidates.find(([, item]) => item.hasDailyTraffic)?.[0] || candidates[0]?.[0] || `${row.date}|${row.itemId}`;
         if (!map.has(key)) map.set(key, { date: row.date, itemId: row.itemId, title: row.title, price: 0, available: 0, campaigns: new Set(), adImpressions: 0, adClicks: 0, adSold: 0, organicSold: 0, totalSold: 0, adSales: 0, adFees: 0, organicClicks: 0, organicImpressions: 0 });
         const item = map.get(key);
         item.title = item.title || row.title;
@@ -478,7 +480,6 @@
       const trafficRows = trafficPeriodRows();
       const trafficMap = new Map(trafficRows.map(row => [row.itemId, row]));
       const plgMap = new Map();
-      const plpMap = new Map();
       for (const row of dataState.plgRaw.filter(row => isTargetModelTitle(row.title) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
         if (!plgMap.has(row.itemId)) plgMap.set(row.itemId, { itemId: row.itemId, title: row.title, price: row.price, totalSold: 0, organicSold: 0, adImpressions: 0, adClicks: 0, adSold: 0, adSales: 0, adFees: 0 });
         const item = plgMap.get(row.itemId);
@@ -486,9 +487,14 @@
         item.price = row.price || item.price;
         ['totalSold','organicSold','adImpressions','adClicks','adSold','adSales','adFees'].forEach(field => item[field] += row[field] || 0);
       }
+      const preferredItemId = new Map();
+      trafficRows.forEach(row => preferredItemId.set(titleKey(row.title), row.itemId));
+      plgMap.forEach(row => { if (!preferredItemId.has(titleKey(row.title))) preferredItemId.set(titleKey(row.title), row.itemId); });
+      const plpMap = new Map();
       for (const row of (dataState.ads.plpRows || []).filter(row => (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
-        if (!plpMap.has(row.itemId)) plpMap.set(row.itemId, { itemId: row.itemId, title: row.title, campaigns: new Set(), impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0 });
-        const item = plpMap.get(row.itemId);
+        const itemId = preferredItemId.get(titleKey(row.title)) || row.itemId;
+        if (!plpMap.has(itemId)) plpMap.set(itemId, { itemId, title: row.title, campaigns: new Set(), impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0 });
+        const item = plpMap.get(itemId);
         item.title = row.title || item.title;
         item.campaigns.add(row.campaign);
         ['impressions','clicks','sold','sales','adFees'].forEach(field => item[field] += row[field] || 0);
