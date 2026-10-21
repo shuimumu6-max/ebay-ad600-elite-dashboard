@@ -450,7 +450,7 @@
       return unique(dataState.trafficRaw.map(row => `${row.start}|${row.end}`)).map(key => {
         const [start, end] = key.split('|');
         return { key, start, end };
-      }).sort((a, b) => b.end.localeCompare(a.end) || a.start.localeCompare(b.start));
+      }).sort((a, b) => Number(b.start !== b.end) - Number(a.start !== a.end) || b.end.localeCompare(a.end) || a.start.localeCompare(b.start));
     }
 
     function trafficPeriodRows() {
