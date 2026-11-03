@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>eBay AD600 Elite 流量与广告看板</title>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script src="https://unpkg.com/lucide@0.468.0"></script>
   <script src="./data.js"></script>
@@ -739,9 +739,9 @@
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
-      return `<div class="page-head"><div><h2>Item 完整明细</h2><p>字段顺序按钉钉“上架链接汇总”表整理，每个 Item 一行。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
+      return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
-        <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，浅紫色列已移到表格前方。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}。</div>
+        <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}。</div>
         <section class="panel">${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
     }
 
@@ -749,19 +749,19 @@
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
       const samePeriod = Boolean(trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const sorted = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
-      return `<div class="table-wrap"><table><thead><tr><th colspan="2" style="text-align:center">基础信息</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
+      return `<div class="table-wrap"><table><thead><tr><th colspan="2" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
         ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}
+        ${sortHeader('Impression', 'totalImpressions', 'detail')}${sortHeader('Top 20变化', 'top20Change', 'detail')}${sortHeader('非搜索变化', 'nonSearchChange', 'detail')}${sortHeader('eBay Page views', 'ebayViews', 'detail')}${sortHeader('External Page views', 'externalViews', 'detail')}${sortHeader('Quantity sold', 'quantitySold', 'detail')}${sortHeader('Click-through rate', 'totalCtr', 'detail')}${sortHeader('Sales conversion rate', 'totalConversion', 'detail')}
         ${sortHeader('售价', 'price', 'detail', 'plg-col')}${sortHeader('销量', 'plgTotalSold', 'detail', 'plg-col')}<th class="plg-col">费率</th><th class="plg-col">建议费率</th>${sortHeader('PLG Impressions', 'adImpressions', 'detail', 'plg-col')}${sortHeader('PLG Clicks', 'adClicks', 'detail', 'plg-col')}${sortHeader('CTR', 'adCtr', 'detail', 'plg-col')}${sortHeader('PLG Sold', 'adSold', 'detail', 'plg-col')}${sortHeader('PLG Sales', 'adSales', 'detail', 'plg-col')}${sortHeader('Ad fees', 'adFees', 'detail', 'plg-col')}${sortHeader('ROAS', 'roas', 'detail', 'plg-col')}
         <th class="plp-col">Impressions</th><th class="plp-col">Clicks</th><th class="plp-col">CTR</th><th class="plp-col">Sold quantity</th><th class="plp-col">Ad fees</th><th class="plp-col">Sales</th><th class="plp-col">Conversion rate</th><th class="plp-col">ROAS</th><th class="plp-col">Average CPC</th><th class="plp-col">ACOS</th><th class="plp-col">主推关键词</th><th class="plp-col">建议出价</th><th class="plp-col">实际出价</th>
         ${sortHeader('曝光', 'naturalImpressions', 'detail')}${sortHeader('eBay Page views', 'naturalViews', 'detail')}${sortHeader('SOLD', 'naturalSold', 'detail')}${sortHeader('点击率', 'naturalCtr', 'detail')}${sortHeader('Sales conversion rate', 'naturalConversion', 'detail')}
-        ${sortHeader('Impression', 'totalImpressions', 'detail')}${sortHeader('Top 20变化', 'top20Change', 'detail')}${sortHeader('非搜索变化', 'nonSearchChange', 'detail')}${sortHeader('eBay Page views', 'ebayViews', 'detail')}${sortHeader('External Page views', 'externalViews', 'detail')}${sortHeader('Quantity sold', 'quantitySold', 'detail')}${sortHeader('Click-through rate', 'totalCtr', 'detail')}${sortHeader('Sales conversion rate', 'totalConversion', 'detail')}
         <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
       </tr></thead><tbody>${sorted.map(row => `<tr>
         <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>
+        <td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? pct(row.top20Change) : '—'}</td><td>${row.hasTraffic ? pct(row.nonSearchChange) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td>
         <td class="plg-col">${row.hasPlg ? money(row.price) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td class="plg-col">—</td><td class="plg-col">—</td><td class="plg-col">${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td class="plg-col">${row.hasPlg ? pct(row.adCtr) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adSold) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adSales) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adFees) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
         <td class="plp-col">${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpCtr) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpFees) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpSales) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpConversion) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpAvgCpc) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpAcos) : '—'}</td><td class="plp-col">—</td><td class="plp-col">—</td><td class="plp-col">—</td>
         <td>${row.hasTraffic ? fmt(row.naturalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.naturalViews) : '—'}</td><td>${row.hasPlg ? fmt(row.naturalSold) : '—'}</td><td>${row.hasTraffic ? pct(row.naturalCtr) : '—'}</td><td>${samePeriod && row.hasTraffic && row.hasPlg ? pct(row.naturalSold / row.naturalViews || 0) : '—'}</td>
-        <td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? pct(row.top20Change) : '—'}</td><td>${row.hasTraffic ? pct(row.nonSearchChange) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td>
         ${'<td>—</td>'.repeat(13)}
       </tr>`).join('')}</tbody></table></div>`;
     }
@@ -989,27 +989,62 @@
     }
 
     function exportData() {
+      const rows = itemPerformance();
+      if (!rows.length) return toast('没有可导出的 Item 数据。', true);
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
+      const [plpStart, plpEnd] = plpDateRange();
       const samePeriod = Boolean(trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
-      const items = itemPerformance().map((row, index) => ({
-        序号: index + 1, 'item ID': row.itemId, 链接: row.link, 标题: row.title,
-        '自然-曝光': row.hasTraffic ? row.naturalImpressions : '', '自然-eBay page views': row.hasTraffic ? row.naturalViews : '', '自然-SOLD': row.hasPlg ? row.naturalSold : '',
-        '自然-点击率': row.hasTraffic ? row.naturalCtr : '', '自然-Sales conversion rate': samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : '',
-        '链接汇总-Impression': row.hasTraffic ? row.totalImpressions : '', '链接汇总-Top 20变化': row.hasTraffic ? row.top20Change : '', '链接汇总-非搜索变化': row.hasTraffic ? row.nonSearchChange : '',
-        '链接汇总-eBay page views': row.hasTraffic ? row.ebayViews : '', '链接汇总-External page views': row.hasTraffic ? row.externalViews : '', '链接汇总-Quantity sold': row.hasTraffic ? row.quantitySold : '',
-        '链接汇总-Click-through rate': row.hasTraffic ? row.totalCtr : '', '链接汇总-Sales conversion rate': row.hasTraffic ? row.totalConversion : '',
-        'PLG-售价': row.hasPlg ? row.price : '', 'PLG-销量': row.hasPlg ? row.plgTotalSold : '', 'PLG-费率': '', 'PLG-建议费率': '',
-        'PLG-Impressions': row.hasPlg ? row.adImpressions : '', 'PLG-Clicks': row.hasPlg ? row.adClicks : '', 'PLG-CTR': row.hasPlg ? row.adCtr : '', 'PLG-Sold quantity': row.hasPlg ? row.adSold : '',
-        'PLG-Sales': row.hasPlg ? row.adSales : '', 'PLG-Ad fees': row.hasPlg ? row.adFees : '', 'PLG-ROAS': row.hasPlg ? row.roas : '',
-        'PLP Manual-Impressions': row.hasPlp ? row.plpImpressions : '', 'PLP Manual-Clicks': row.hasPlp ? row.plpClicks : '', 'PLP Manual-CTR': row.hasPlp ? row.plpCtr : '', 'PLP Manual-Sold quantity': row.hasPlp ? row.plpSold : '', 'PLP Manual-Ad fees': row.hasPlp ? row.plpFees : '', 'PLP Manual-Sales': row.hasPlp ? row.plpSales : '', 'PLP Manual-Conversion rate': row.hasPlp ? row.plpConversion : '', 'PLP Manual-ROAS': row.hasPlp ? row.plpRoas : '', 'PLP Manual-Average CPC': row.hasPlp ? row.plpAvgCpc : '', 'PLP Manual-ACOS': row.hasPlp ? row.plpAcos : '', 'PLP Manual-主推关键词': '', 'PLP Manual-建议出价': '', 'PLP Manual-实际出价': '',
-        'PLP Smart-Impressions': '', 'PLP Smart-Clicks': '', 'PLP Smart-CTR': '', 'PLP Smart-Sold quantity': '', 'PLP Smart-Ad fees': '', 'PLP Smart-Sales': '', 'PLP Smart-Conversion rate': '', 'PLP Smart-ROAS': '', 'PLP Smart-Average CPC': '', 'PLP Smart-ACOS': '', 'PLP Smart-主推关键词': '', 'PLP Smart-建议出价': '', 'PLP Smart-实际出价': '',
-        Traffic统计区间: trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '', PLG统计区间: rangeText(plgStart, plgEnd)
-      }));
-      if (!items.length) return toast('没有可导出的 Item 数据。', true);
+      const ordered = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
+      const container = document.createElement('div');
+      container.innerHTML = itemFullTable(rows, trafficRows, plgStart, plgEnd);
+      container.querySelectorAll('.sort-indicator').forEach(node => node.remove());
+      const table = container.querySelector('table');
+      const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
+      const sheet = XLSX.utils.aoa_to_sheet([
+        ['eBay AD600 Elite · Item 完整明细'],
+        ['Traffic：' + trafficRange + '；PLG：' + rangeText(plgStart, plgEnd) + '；PLP：' + rangeText(plpStart, plpEnd) + '；共 ' + rows.length + ' 个 Item；— 表示无数据或未提供']
+      ]);
+      XLSX.utils.sheet_add_dom(sheet, table, { origin: 'A3', raw: true });
+      const headers = [...table.tHead.rows[1].cells].map(cell => cell.textContent.trim());
+      const keys = [
+        'itemId','title','totalImpressions','top20Change','nonSearchChange','ebayViews','externalViews','quantitySold','totalCtr','totalConversion',
+        'price','plgTotalSold',null,null,'adImpressions','adClicks','adCtr','adSold','adSales','adFees','roas',
+        'plpImpressions','plpClicks','plpCtr','plpSold','plpFees','plpSales','plpConversion','plpRoas','plpAvgCpc','plpAcos',null,null,null,
+        'naturalImpressions','naturalViews','naturalSold','naturalCtr','naturalConversion', ...Array(13).fill(null)
+      ];
+      const colors = ['E9EEF5','EEF5FB','FFF7E8','F4F0FB','EDF7F1','F2F3F5'];
+      const columnColors = [...table.tHead.rows[0].cells].flatMap((cell, index) => Array(cell.colSpan).fill(colors[index]));
+      const lastColumn = headers.length - 1;
+      sheet['!merges'] = [...(sheet['!merges'] || []), { s: { r: 0, c: 0 }, e: { r: 0, c: lastColumn } }, { s: { r: 1, c: 0 }, e: { r: 1, c: lastColumn } }];
+      sheet['!cols'] = headers.map((label, index) => ({ wch: index === 0 ? 19 : index === 1 ? 60 : /rate|views|Conversion/i.test(label) ? 21 : 17 }));
+      sheet['!rows'] = [{ hpt: 30 }, { hpt: 32 }, { hpt: 28 }, { hpt: 44 }, ...rows.map(() => ({ hpt: 42 }))];
+      sheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: rows.length + 3, c: lastColumn } }) };
+      for (let r = 0; r < rows.length + 4; r += 1) {
+        for (let c = 0; c < headers.length; c += 1) {
+          const address = XLSX.utils.encode_cell({ r, c });
+          const cell = sheet[address] || (sheet[address] = { t: 's', v: '' });
+          if (r >= 4 && c === 0) {
+            cell.t = 's'; cell.v = ordered[r - 4].itemId;
+            cell.l = { Target: ordered[r - 4].link, Tooltip: '打开 eBay 链接' };
+          } else if (r >= 4 && keys[c] && cell.v !== '—') {
+            const value = ordered[r - 4][keys[c]];
+            if (typeof value === 'number' && Number.isFinite(value)) {
+              cell.t = 'n'; cell.v = value;
+              cell.z = /CTR|rate|率|变化|ACOS/i.test(headers[c]) ? '0.00%' : /售价|Sales|fees|CPC|出价/i.test(headers[c]) ? '$#,##0.00' : /ROAS/i.test(headers[c]) ? '0.00' : '#,##0';
+            }
+          }
+          cell.s = {
+            font: { name: '微软雅黑', sz: r === 0 ? 16 : 11, bold: r === 0 || r === 2 || r === 3, color: { rgb: r === 0 ? 'FFFFFF' : r === 1 ? '52657A' : r >= 4 && c === 0 ? '1769AA' : '20354D' } },
+            fill: { patternType: 'solid', fgColor: { rgb: r === 0 ? '1769AA' : r === 1 ? 'F3F6FA' : r < 4 ? columnColors[c] : r % 2 === 0 ? 'FFFFFF' : 'F8FAFC' } },
+            alignment: { vertical: 'center', horizontal: r < 2 || (r >= 4 && c < 2) ? 'left' : r < 4 ? 'center' : 'right', wrapText: true },
+            border: { bottom: { style: 'thin', color: { rgb: 'DFE6EE' } }, right: { style: 'thin', color: { rgb: 'DFE6EE' } } }
+          };
+        }
+      }
       const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(items), 'Item链接表现');
-      XLSX.writeFile(workbook, `eBay-Item链接表现-${new Date().toISOString().slice(0,10)}.xlsx`);
+      XLSX.utils.book_append_sheet(workbook, sheet, 'Item链接表现');
+      XLSX.writeFile(workbook, 'eBay-Item链接表现-' + new Date().toLocaleDateString('sv-SE') + '.xlsx');
     }
 
     function exportDailyData() {
