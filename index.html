@@ -593,8 +593,8 @@
       return `<div class="panel filters">
         <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
         ${dateScope === '每日记录' ? '' : `<div class="field"><label>Traffic 统计区间</label><select class="input" id="trafficPeriodFilter">${periods.length ? periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : ''}</option>`).join('') : '<option value="">未上传</option>'}</select></div>`}
-        <div class="field"><label>${dateScope === '每日记录' ? '' : 'PLG '}开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
-        <div class="field"><label>${dateScope === '每日记录' ? '' : 'PLG '}结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
+        <div class="field"><label>${dateScope === '每日记录' ? '' : '广告'}开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
+        <div class="field"><label>${dateScope === '每日记录' ? '' : '广告'}结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
       </div>`;
     }
 
@@ -950,7 +950,11 @@
       query?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
       document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; render(); });
       document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; render(); });
-      document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => { ui.trafficPeriod = e.target.value; render(); });
+      document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => {
+        ui.trafficPeriod = e.target.value;
+        [ui.start, ui.end] = ui.trafficPeriod.split('|');
+        render();
+      });
       const zone = document.getElementById('dropZone');
       if (zone) {
         ['dragenter','dragover'].forEach(name => zone.addEventListener(name, e => { e.preventDefault(); zone.classList.add('drag'); }));
@@ -1053,6 +1057,14 @@
     function render() {
       charts.forEach(chart => chart.dispose());
       charts = [];
+      if ((ui.page === 'dashboard' || ui.page === 'detail') && !ui.trafficPeriod) {
+        const period = trafficPeriods()[0];
+        if (period) {
+          ui.trafficPeriod = period.key;
+          ui.start = ui.start || period.start;
+          ui.end = ui.end || period.end;
+        }
+      }
       const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'ads' ? advertisingPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : detailPage();
       document.getElementById('app').innerHTML = baseLayout(pageContent);
       bindEvents();
