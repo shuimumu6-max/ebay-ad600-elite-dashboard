@@ -468,12 +468,37 @@
       }).sort((a, b) => Number(b.start !== b.end) - Number(a.start !== a.end) || b.end.localeCompare(a.end) || a.start.localeCompare(b.start));
     }
 
+    function trafficSelection() {
+      const daily = dataState.trafficRaw.filter(row => row.start && row.start === row.end && isTargetModelTitle(row.title));
+      const dates = unique(daily.map(row => row.start)).sort();
+      const start = ui.start || dates[0] || '';
+      const end = ui.end || dates.at(-1) || '';
+      if (!start || !end || start > end) return { rows: [], note: '请选择有效日期，开始日期不能晚于结束日期。', complete: false };
+      const snapshot = dataState.trafficRaw.filter(row => row.start === start && row.end === end && isTargetModelTitle(row.title));
+      if (snapshot.length && (start === end || ui.trafficPeriod !== 'custom')) return { rows: snapshot, note: start === end ? 'Traffic：单日报表。' : 'Traffic：原始区间累计报表，与日报汇总分别使用，不重复相加。', complete: true };
+      const selected = daily.filter(row => row.start >= start && row.start <= end).sort((a, b) => a.start.localeCompare(b.start));
+      const covered = new Set(selected.map(row => row.start));
+      const dayCount = Math.floor((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
+      const missingCount = dayCount - covered.size;
+      const missing = [];
+      for (let stamp = Date.parse(start); missing.length < Math.min(missingCount, 10) && stamp <= Date.parse(end); stamp += 86400000) {
+        const date = new Date(stamp).toISOString().slice(0, 10);
+        if (!covered.has(date)) missing.push(date);
+      }
+      const fields = ['totalImpressions','quantitySold','top20Promoted','top20Organic','restSearch','totalSearch','nonSearchPromoted','nonSearchOrganic','promotedEbayImpressions','promotedOffsiteImpressions','organicEbayImpressions','totalPageViews','promotedEbayViews','promotedExternalViews','organicEbayViews','organicExternalViews'];
+      const items = new Map();
+      for (const row of selected) {
+        if (!items.has(row.itemId)) items.set(row.itemId, { ...row, key: `${start}|${end}|${row.itemId}`, start, end, top20Change: null, nonSearchChange: null, ...Object.fromEntries(fields.map(field => [field, 0])) });
+        const item = items.get(row.itemId);
+        item.title = row.title || item.title;
+        fields.forEach(field => item[field] += row[field] || 0);
+      }
+      const coverage = missingCount ? `仅覆盖 ${covered.size}/${dayCount} 天，缺少日报：${missing.join('、')}${missingCount > 10 ? `等 ${missingCount} 天` : ''}；Traffic 合计不完整，缺失日期不补零。` : `已按日报汇总 ${covered.size} 天。`;
+      return { rows: [...items.values()], note: `Traffic：${coverage} CTR 和转化率按汇总值重算；变化率不直接累加，显示 —。日报与已有累计报表存在对账差异，本模式按日报口径展示。`, complete: missingCount === 0 };
+    }
+
     function trafficPeriodRows() {
-      const periods = trafficPeriods();
-      if (!periods.length) return [];
-      const selected = periods.find(period => period.key === ui.trafficPeriod) || periods[0];
-      const { start, end } = selected;
-      return dataState.trafficRaw.filter(row => row.start === start && row.end === end && isTargetModelTitle(row.title));
+      return trafficSelection().rows;
     }
 
     function latestTrafficRows() {
@@ -533,8 +558,8 @@
           naturalSold: plg?.organicSold || 0,
           naturalCtr: traffic ? traffic.organicEbayViews / traffic.organicEbayImpressions || 0 : 0,
           totalImpressions: traffic?.totalImpressions || 0,
-          top20Change: traffic?.top20Change || 0,
-          nonSearchChange: traffic?.nonSearchChange || 0,
+          top20Change: traffic?.top20Change ?? null,
+          nonSearchChange: traffic?.nonSearchChange ?? null,
           ebayViews, externalViews,
           totalPageViews: traffic?.totalPageViews || 0,
           quantitySold: traffic?.quantitySold || 0,
@@ -589,12 +614,12 @@
 
     function filterPanel(dateScope = 'PLG') {
       const periods = trafficPeriods();
-      const selectedPeriod = periods.find(period => period.key === ui.trafficPeriod)?.key || periods[0]?.key || '';
+      const selectedPeriod = ui.trafficPeriod === 'custom' ? 'custom' : periods.find(period => period.start === ui.start && period.end === ui.end)?.key || 'custom';
       return `<div class="panel filters">
         <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
-        ${dateScope === '每日记录' ? '' : `<div class="field"><label>Traffic 统计区间</label><select class="input" id="trafficPeriodFilter">${periods.length ? periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : ''}</option>`).join('') : '<option value="">未上传</option>'}</select></div>`}
-        <div class="field"><label>${dateScope === '每日记录' ? '' : '广告'}开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
-        <div class="field"><label>${dateScope === '每日记录' ? '' : '广告'}结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
+        ${dateScope === '每日记录' ? '' : `<div class="field"><label>报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期（日度汇总）</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
+        <div class="field"><label>开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
+        <div class="field"><label>结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
       </div>`;
     }
 
@@ -602,7 +627,7 @@
 
     function dashboardPage() {
       const rows = itemPerformance();
-      if (!rows.length) return emptyDashboard();
+      if (!rows.length) return `<div class="page-head"><h2>经营看板</h2></div>${filterPanel()}<div class="snapshot-note">${esc(trafficSelection().note)}</div><div class="panel empty">当前日期范围没有数据，请调整开始、结束日期。</div>`;
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
@@ -612,19 +637,20 @@
       const externalViews = sum(rows, 'externalViews');
       const sold = sum(rows, 'quantitySold');
       const totalViews = sum(rows, 'totalPageViews');
+      const hasTraffic = rows.some(row => row.hasTraffic);
       const adSales = sum(rows, 'adSales');
       const adFees = sum(rows, 'adFees');
       const plpSales = sum(rows, 'plpSales');
       const plpFees = sum(rows, 'plpFees');
       return `<div class="page-head"><div><h2>经营看板</h2><p>按同一 Item 和日期统一查看整体流量、自然流量、PLG 与 PLP 广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
         ${filterPanel()}
-        <div class="snapshot-note">Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。各数据源分别统计，不互相补算。</div>
+        <div class="snapshot-note">统计范围：${rangeText(ui.start, ui.end)}；Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。${esc(trafficSelection().note)}</div>
         <section class="metrics">
-          ${metric('链接总曝光', fmt(impressions), `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
-          ${metric('eBay Page views', fmt(ebayViews), '站内广告 + 站内自然')}
-          ${metric('External Page views', fmt(externalViews), '站外广告 + 站外自然')}
-          ${metric('Quantity sold', fmt(sold), `整体转化率 ${pct(sold / totalViews || 0)}`)}
-          ${metric('链接总 CTR', pct(ebayViews / impressions || 0), 'eBay Page views ÷ 总曝光')}
+          ${metric('链接总曝光', hasTraffic ? fmt(impressions) : '—', `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
+          ${metric('eBay Page views', hasTraffic ? fmt(ebayViews) : '—', '站内广告 + 站内自然')}
+          ${metric('External Page views', hasTraffic ? fmt(externalViews) : '—', '站外广告 + 站外自然')}
+          ${metric('Quantity sold', hasTraffic ? fmt(sold) : '—', hasTraffic ? `整体转化率 ${pct(sold / totalViews || 0)}` : '当前区间缺少 Traffic')}
+          ${metric('链接总 CTR', hasTraffic ? pct(ebayViews / impressions || 0) : '—', 'eBay Page views ÷ 总曝光')}
           ${metric('广告销售额', money(adSales + plpSales), `PLG ${money(adSales)} + PLP ${money(plpSales)}`)}
           ${metric('总广告费', money(adFees + plpFees), `PLG ${money(adFees)} + PLP ${money(plpFees)}`)}
           ${metric('综合 ROAS', fmt((adSales + plpSales) / (adFees + plpFees) || 0, 2), '广告销售额 ÷ 总广告费')}
@@ -741,13 +767,13 @@
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
-        <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}。</div>
+        <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}。${esc(trafficSelection().note)}</div>
         <section class="panel">${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
     }
 
     function itemFullTable(rows, trafficRows, plgStart, plgEnd) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
-      const samePeriod = Boolean(trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
+      const samePeriod = Boolean(trafficSelection().complete && trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const sorted = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
       return `<div class="table-wrap"><table><thead><tr><th colspan="2" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
         ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}
@@ -758,7 +784,7 @@
         <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
       </tr></thead><tbody>${sorted.map(row => `<tr>
         <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>
-        <td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? pct(row.top20Change) : '—'}</td><td>${row.hasTraffic ? pct(row.nonSearchChange) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td>
+        <td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.top20Change != null ? pct(row.top20Change) : '—'}</td><td>${row.nonSearchChange != null ? pct(row.nonSearchChange) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td>
         <td class="plg-col">${row.hasPlg ? money(row.price) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td class="plg-col">—</td><td class="plg-col">—</td><td class="plg-col">${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td class="plg-col">${row.hasPlg ? pct(row.adCtr) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adSold) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adSales) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adFees) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
         <td class="plp-col">${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpCtr) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpFees) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpSales) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpConversion) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpAvgCpc) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpAcos) : '—'}</td><td class="plp-col">—</td><td class="plp-col">—</td><td class="plp-col">—</td>
         <td>${row.hasTraffic ? fmt(row.naturalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.naturalViews) : '—'}</td><td>${row.hasPlg ? fmt(row.naturalSold) : '—'}</td><td>${row.hasTraffic ? pct(row.naturalCtr) : '—'}</td><td>${samePeriod && row.hasTraffic && row.hasPlg ? pct(row.naturalSold / row.naturalViews || 0) : '—'}</td>
@@ -948,11 +974,11 @@
       document.getElementById('clearBtn')?.addEventListener('click', clearData);
       const query = document.getElementById('queryFilter');
       query?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
-      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; render(); });
-      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; render(); });
+      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; render(); });
+      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; render(); });
       document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => {
         ui.trafficPeriod = e.target.value;
-        [ui.start, ui.end] = ui.trafficPeriod.split('|');
+        if (ui.trafficPeriod !== 'custom') [ui.start, ui.end] = ui.trafficPeriod.split('|');
         render();
       });
       const zone = document.getElementById('dropZone');
@@ -994,7 +1020,7 @@
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
-      const samePeriod = Boolean(trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
+      const samePeriod = Boolean(trafficSelection().complete && trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const ordered = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
       const container = document.createElement('div');
       container.innerHTML = itemFullTable(rows, trafficRows, plgStart, plgEnd);
@@ -1003,7 +1029,7 @@
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
       const sheet = XLSX.utils.aoa_to_sheet([
         ['eBay AD600 Elite · Item 完整明细'],
-        ['Traffic：' + trafficRange + '；PLG：' + rangeText(plgStart, plgEnd) + '；PLP：' + rangeText(plpStart, plpEnd) + '；共 ' + rows.length + ' 个 Item；— 表示无数据或未提供']
+        ['Traffic：' + trafficRange + '；PLG：' + rangeText(plgStart, plgEnd) + '；PLP：' + rangeText(plpStart, plpEnd) + '；共 ' + rows.length + ' 个 Item；— 表示无数据或未提供；' + trafficSelection().note]
       ]);
       XLSX.utils.sheet_add_dom(sheet, table, { origin: 'A3', raw: true });
       const headers = [...table.tHead.rows[1].cells].map(cell => cell.textContent.trim());
