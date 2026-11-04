@@ -84,6 +84,11 @@
     .filters { padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; margin-bottom: 14px; }
     .filters .field:first-child { grid-column: span 2; }
     .field { min-width: 0; }
+    .field-help { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .traffic-source-help { grid-column: 1 / -1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; font-size: 12px; line-height: 1.7; }
+    .traffic-source-help summary { cursor: pointer; color: var(--blue); font-weight: 600; }
+    .traffic-source-help p { margin: 8px 0 0; }
+    .traffic-source-help ul { margin: 6px 0 0; padding-left: 20px; }
     .field label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
     .input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; margin-bottom: 14px; }
@@ -661,9 +666,21 @@
       return `<div class="panel filters">
         <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
         ${dateScope === '每日记录' ? '' : `<div class="field"><label>报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期（同区间累计优先）</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
-        <div class="field" style="${dateScope === '每日记录' ? 'display:none' : ''}"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter"><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（用于趋势/对账）</option></select></div>
+        <div class="field" style="${dateScope === '每日记录' ? 'display:none' : ''}"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter" aria-describedby="trafficSourceBrief"><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（用于趋势/对账）</option></select><small class="field-help" id="trafficSourceBrief">两种来源可能存在差额，不能仅凭差额判错。具体规则及原因见下方说明。</small></div>
         <div class="field"><label>开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
         <div class="field"><label>结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
+        <details class="traffic-source-help"><summary>Traffic 来源说明：${dateScope === '每日记录' ? '每日记录只使用单日报表' : '累计快照与日报相加有何区别'}（点击展开）</summary>
+          <p><strong>同区间累计报表优先：</strong>只有累计报表内部标注的起止日期与所选日期完全一致时，才使用该区间快照；没有匹配报表则回退到已有日报相加。累计报表是某次导出时的快照，“优先使用”不代表它一定更准确。</p>
+          <p><strong>仅按日报汇总：</strong>按同一 Item 将所选日期内的原始日报相加，适合查看每日趋势和对账。缺失日期或缺失 Item 行不视为实际为零，也不会用累计差额补写每天的数据。每日记录页面始终使用单日报表。</p>
+          <p><strong>为什么可能有差额？</strong></p>
+          <ul>
+            <li><strong>数据时点不同：</strong>报表标注的结束日期相同，不代表该日已经结束、数据已经更新完成，或两次导出覆盖了相同的数据处理状态。不能只凭日期文字相同就认定两份报表完全可比。</li>
+            <li><strong>链接范围不同：</strong>Traffic报表注明只包含生成时仍处于活跃状态的链接；后来暂停的 Item 可能不在新报表中，但历史日报仍保留。缺少该行不等于该 Item 的历史表现为零。</li>
+            <li><strong>仍待确认的原因：</strong>更新延迟、后续修订、时区边界或统计规则可能影响结果，现有文件尚不能确定具体原因；不能据此认定存在跨天去重。</li>
+          </ul>
+          <p><strong>如何读“PV核对”：</strong>差额＝已有日报合计总PV－同区间累计总PV，正数表示日报更大。它只表示文件之间有差额，尚不能直接判定哪一份数据错误。“日报与累计一致”也只代表数值一致，不代表已确认每日记录齐全、结束日完整或数据最终准确。</p>
+          <p><strong>指标口径：</strong>总PV包含站内和站外访问；站内PV只是其中一部分。与后台“Views (30 days)”比较前，还要核实其日期范围和指标定义。</p>
+        </details>
       </div>`;
     }
 
