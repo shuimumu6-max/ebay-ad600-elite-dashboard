@@ -193,7 +193,7 @@
     const EMPTY_ADS = { dates: [], campaigns: [], campaignDaily: {}, plpRows: [], keywordRows: [], searchRows: [], bidChanges: [] };
     const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [], ads: EMPTY_ADS };
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', adTab: 'overview', campaigns: [], query: '', start: '', end: '', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { page: 'dashboard', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
 
     const COVERAGE = [
@@ -861,17 +861,113 @@
       return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="table-wrap"><table id="campaignTable"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}</tr></thead><tbody>${table}</tbody></table></div></section>`;
     }
 
+    function adFilterState(tab = ui.adTab) {
+      if (!ui.adFilters[tab]) ui.adFilters[tab] = { view: 'summary', itemId: '', term: '', keyword: '', matchType: '' };
+      return ui.adFilters[tab];
+    }
+
+    function adRowRatios(row) {
+      return { ...row, ctr: row.impressions > 0 ? row.clicks / row.impressions : null,
+        conversion: row.clicks > 0 ? row.sold / row.clicks : null,
+        avgCpc: row.clicks > 0 ? row.adFees / row.clicks : null,
+        roas: row.adFees > 0 ? row.sales / row.adFees : null,
+        acos: row.sales > 0 ? row.adFees / row.sales : null };
+    }
+
+    function adValue(value, format = fmt) { return value == null ? '—' : format(value); }
+
+    function summarizeAdRows(rows, kind) {
+      const map = new Map();
+      const textKey = value => clean(value).toLowerCase();
+      rows.forEach(row => {
+        const key = kind === 'links' ? row.itemId : kind === 'keywords'
+          ? JSON.stringify([textKey(row.keyword), row.matchType]) : textKey(row.searchQuery);
+        if (!map.has(key)) map.set(key, { itemId: row.itemId, title: row.title, latest: '',
+          impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0,
+          dates: new Set(), campaigns: new Set(), keywords: new Set(), matches: new Set(), bids: [], natural: new Map() });
+        const item = map.get(key);
+        ['impressions', 'clicks', 'sold', 'sales', 'adFees'].forEach(field => item[field] += Number(row[field] || 0));
+        item.dates.add(row.date); item.campaigns.add(row.campaign);
+        if (row.keyword) item.keywords.add(row.keyword);
+        if (row.matchType) item.matches.add(row.matchType);
+        if (row.bid != null && Number.isFinite(Number(row.bid))) item.bids.push(Number(row.bid));
+        if (!item.latest || row.date >= item.latest) { item.latest = row.date; item.title = row.title; item.searchQuery = row.searchQuery; }
+        if (row.naturalImpressions != null) {
+          const naturalKey = JSON.stringify([row.date, row.itemId]);
+          const values = [row.naturalImpressions, row.naturalClicks, row.naturalSold];
+          if (!item.natural.has(naturalKey)) item.natural.set(naturalKey, values);
+          else if (JSON.stringify(item.natural.get(naturalKey)) !== JSON.stringify(values)) item.natural.set(naturalKey, null);
+        }
+      });
+      return [...map.values()].map(item => {
+        const dates = [...item.dates].sort();
+        const natural = [...item.natural.values()];
+        const naturalTotal = index => !natural.length || natural.some(value => value === null) ? null : natural.reduce((total, value) => total + Number(value[index] || 0), 0);
+        return adRowRatios({ itemId: item.itemId, title: item.title, searchQuery: item.searchQuery,
+          campaign: [...item.campaigns].sort().join(' / '), keyword: [...item.keywords].sort().join(' / '), matchType: [...item.matches].sort().join(' / '),
+          date: dates[0], end: dates.at(-1), days: dates.length, impressions: item.impressions, clicks: item.clicks,
+          sold: item.sold, sales: item.sales, adFees: item.adFees,
+          bid: item.bids.length ? Math.min(...item.bids) : null, bidMax: item.bids.length ? Math.max(...item.bids) : null,
+          naturalImpressions: naturalTotal(0), naturalClicks: naturalTotal(1), naturalSold: naturalTotal(2) });
+      });
+    }
+
+    function adTableFilters(tab, sourceRows) {
+      const filter = adFilterState(tab);
+      const links = tab === 'plg' || tab === 'plp';
+      const options = unique(sourceRows.map(row => row.itemId)).sort();
+      const matches = unique([...sourceRows.map(row => row.matchType), filter.matchType]).sort();
+      return `<div class="panel filters">
+        <div class="field"><label for="adViewFilter">查看方式</label><select class="input" id="adViewFilter" data-ad-filter="view"><option value="summary" ${filter.view === 'summary' ? 'selected' : ''}>${links ? '按 Item 汇总' : tab === 'keywords' ? '按关键词＋匹配方式汇总' : '按搜索词汇总'}</option><option value="daily" ${filter.view === 'daily' ? 'selected' : ''}>日度明细</option></select></div>
+        ${links ? `<div class="field"><label for="adItemFilter">Item ID</label><input class="input" type="search" id="adItemFilter" data-ad-filter="itemId" list="adItemOptions" placeholder="输入或选择 Item ID" value="${esc(filter.itemId)}" /><datalist id="adItemOptions">${options.map(id => `<option value="${esc(id)}"></option>`).join('')}</datalist></div>`
+          : `<div class="field"><label for="adTermFilter">${tab === 'keywords' ? '关键词包含' : '搜索词包含'}</label><input class="input" type="search" id="adTermFilter" data-ad-filter="term" placeholder="输入文字筛选" value="${esc(filter.term)}" /></div>
+          ${tab === 'searches' ? `<div class="field"><label for="adKeywordFilter">触发关键词包含</label><input class="input" type="search" id="adKeywordFilter" data-ad-filter="keyword" value="${esc(filter.keyword)}" placeholder="输入触发关键词" /></div>` : ''}
+          <div class="field"><label for="adMatchFilter">匹配方式</label><select class="input" id="adMatchFilter" data-ad-filter="matchType"><option value="">全部匹配方式</option>${matches.map(value => `<option value="${esc(value)}" ${filter.matchType === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></div>`}
+        <button class="btn" id="adFilterReset">清空本页筛选</button>
+      </div>`;
+    }
+
+    function adResultMetrics(rows) {
+      const total = adRowRatios(Object.fromEntries(['impressions', 'clicks', 'sold', 'sales', 'adFees'].map(field => [field, sum(rows, field)])));
+      return `<section class="metrics">${metric('筛选结果曝光', fmt(total.impressions), '当前日期及筛选范围合计')}${metric('筛选结果点击', fmt(total.clicks), `CTR ${adValue(total.ctr, pct)}`)}${metric('筛选结果销量', fmt(total.sold), `CVR ${adValue(total.conversion, pct)}`)}${metric('筛选结果广告费', money(total.adFees), `平均 CPC ${adValue(total.avgCpc, money)}`)}${metric('筛选结果销售额', money(total.sales), `ROAS ${adValue(total.roas, value => fmt(value, 2))}`)}</section>`;
+    }
+
+    function adMetricHeaders(table) {
+      return [['曝光','impressions'],['点击','clicks'],['CTR','ctr'],['销量','sold'],['CVR','conversion'],['销售额','sales'],['广告费','adFees'],['平均 CPC','avgCpc'],['ROAS','roas'],['ACOS','acos']].map(([label,key]) => sortHeader(label,key,table)).join('');
+    }
+
+    function adMetricCells(row) {
+      return `<td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${adValue(row.ctr,pct)}</td><td>${fmt(row.sold)}</td><td>${adValue(row.conversion,pct)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${adValue(row.avgCpc,money)}</td><td>${adValue(row.roas,value => fmt(value,2))}</td><td>${adValue(row.acos,pct)}</td>`;
+    }
+
     function adLinksTable(type) {
-      const rows = sortRows(adDetailRows().filter(row => row.adType === type), type === 'PLG' ? 'plgLinks' : 'plpLinks');
-      return `<section class="panel"><div class="panel-head"><h3>${type} 链接表现</h3><small>${fmt(rows.length)} 条日度记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期','date',type==='PLG'?'plgLinks':'plpLinks')}${sortHeader('Campaign','campaign',type==='PLG'?'plgLinks':'plpLinks')}${sortHeader('Item ID','itemId',type==='PLG'?'plgLinks':'plpLinks')}${sortHeader('标题','title',type==='PLG'?'plgLinks':'plpLinks')}${sortHeader('曝光','impressions',type==='PLG'?'plgLinks':'plpLinks')}${sortHeader('点击','clicks',type==='PLG'?'plgLinks':'plpLinks')}<th>CTR</th>${sortHeader('销量','sold',type==='PLG'?'plgLinks':'plpLinks')}<th>CVR</th>${sortHeader('销售额','sales',type==='PLG'?'plgLinks':'plpLinks')}${sortHeader('广告费','adFees',type==='PLG'?'plgLinks':'plpLinks')}<th>平均CPC</th><th>ROAS</th>${type==='PLG'?'<th>自然曝光</th><th>自然点击</th><th>自然销量</th>':''}</tr></thead><tbody>${rows.map(row=>`<tr><td>${row.date}</td><td>${esc(row.campaign)}</td><td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.clicks/row.impressions||0)}</td><td>${fmt(row.sold)}</td><td>${pct(row.sold/row.clicks||0)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.adFees/row.clicks||0)}</td><td>${fmt(row.sales/row.adFees||0,2)}</td>${type==='PLG'?`<td>${fmt(row.naturalImpressions)}</td><td>${fmt(row.naturalClicks)}</td><td>${fmt(row.naturalSold)}</td>`:''}</tr>`).join('')}</tbody></table></div></section>`;
+      const tab = type === 'PLG' ? 'plg' : 'plp';
+      const table = type === 'PLG' ? 'plgLinks' : 'plpLinks';
+      const filter = adFilterState(tab);
+      const source = adDetailRows().filter(row => row.adType === type);
+      const filtered = source.filter(row => !filter.itemId || String(row.itemId).includes(filter.itemId));
+      const summary = filter.view === 'summary';
+      const rows = sortRows(summary ? summarizeAdRows(filtered,'links') : filtered.map(adRowRatios),table);
+      const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}<td>${esc(row.campaign)}</td><td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank" rel="noopener">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>${adMetricCells(row)}${type === 'PLG' ? `<td>${adValue(row.naturalImpressions)}</td><td>${adValue(row.naturalClicks)}</td><td>${adValue(row.naturalSold)}</td>` : ''}</tr>`).join('');
+      return `${adTableFilters(tab,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><h3>${type} 链接表现 · ${summary ? 'Item 汇总' : '日度明细'}</h3><small>${summary ? `${fmt(rows.length)} 个 Item，来自 ${fmt(filtered.length)} 条日度记录` : `${fmt(rows.length)} 条日度记录`}</small></div>
+        <div class="snapshot-note">按上方日期、Campaign 和本页 Item ID 筛选。汇总时同一 Item 跨日期、跨 Campaign 合并，比例按合计值重算。${summary && type === 'PLG' ? '自然指标按同日 Item 去重，多个 Campaign 的自然记录不一致时显示 —。' : ''}</div>
+        <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',table)}${summary ? sortHeader('记录天数','days',table) : ''}${sortHeader('Campaign','campaign',table)}${sortHeader('Item ID','itemId',table)}${sortHeader('标题','title',table)}${adMetricHeaders(table)}${type === 'PLG' ? sortHeader('自然曝光','naturalImpressions',table)+sortHeader('自然点击','naturalClicks',table)+sortHeader('自然销量','naturalSold',table) : ''}</tr></thead><tbody>${body || `<tr><td colspan="${(summary ? 15 : 14)+(type === 'PLG' ? 3 : 0)}">当前筛选范围没有记录，请调整日期、Campaign 或 Item ID。</td></tr>`}</tbody></table></div></section>`;
     }
 
     function adTermsTable(type) {
       const isKeyword = type === 'keywords';
-      const rows = (isKeyword ? dataState.ads.keywordRows : dataState.ads.searchRows).filter(row => withinAdsRange(row) && (!ui.campaigns.length || ui.campaigns.includes(row.campaign)));
-      const sorted = sortRows(rows, type);
-      return `<section class="panel"><div class="panel-head"><h3>${isKeyword?'关键词':'搜索词'}表现</h3><small>${fmt(rows.length)} 条记录</small></div><div class="table-wrap"><table><thead><tr>${sortHeader('日期','date',type)}${sortHeader('Campaign','campaign',type)}${isKeyword?'':sortHeader('搜索词','searchQuery',type)}${sortHeader(isKeyword?'关键词':'触发关键词','keyword',type)}${sortHeader('匹配方式','matchType',type)}${isKeyword?sortHeader('Bid','bid',type):''}${sortHeader('曝光','impressions',type)}${sortHeader('点击','clicks',type)}<th>CTR</th>${sortHeader('销量','sold',type)}${sortHeader('广告费','adFees',type)}<th>平均CPC</th><th>ROAS</th></tr></thead><tbody>${sorted.map(row=>`<tr><td>${row.date}</td><td>${esc(row.campaign)}</td>${isKeyword?'':`<td>${esc(row.searchQuery)}</td>`}<td>${esc(row.keyword)}</td><td>${esc(row.matchType)}</td>${isKeyword?`<td>${money(row.bid)}</td>`:''}<td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.clicks/row.impressions||0)}</td><td>${fmt(row.sold)}</td><td>${money(row.adFees)}</td><td>${money(row.adFees/row.clicks||0)}</td><td>${fmt(row.sales/row.adFees||0,2)}</td></tr>`).join('')}</tbody></table></div></section>`;
+      const filter = adFilterState(type);
+      const source = (isKeyword ? dataState.ads.keywordRows : dataState.ads.searchRows).filter(row => withinAdsRange(row) && (!ui.campaigns.length || ui.campaigns.includes(row.campaign)));
+      const contains = (value,query) => !query || clean(value).toLowerCase().includes(query.toLowerCase());
+      const filtered = source.filter(row => contains(isKeyword ? row.keyword : row.searchQuery,filter.term) && contains(row.keyword,filter.keyword) && (!filter.matchType || row.matchType === filter.matchType));
+      const summary = filter.view === 'summary';
+      const rows = sortRows(summary ? summarizeAdRows(filtered,type) : filtered.map(adRowRatios),type);
+      const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}<td>${esc(row.campaign)}</td>${isKeyword ? '' : `<td>${esc(row.searchQuery)}</td>`}<td>${esc(row.keyword)}</td><td>${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}</tr>`).join('');
+      return `${adTableFilters(type,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><h3>${isKeyword ? '关键词' : '搜索词'}表现 · ${summary ? '区间汇总' : '日度明细'}</h3><small>${fmt(rows.length)} 条${summary ? '汇总，来自 '+fmt(filtered.length)+' 条日度记录' : '日度记录'}</small></div>
+        <div class="snapshot-note">${isKeyword ? '同一关键词和匹配方式跨日期、跨 Campaign 合并；出价显示所选期间的最小值至最大值。' : '同一搜索词跨日期、跨 Campaign、跨触发关键词合并；触发关键词及匹配方式列展示涉及的全部值。'} 汇总跟随日期及本页筛选，比例按合计值重算。记录天数仅代表报表中存在记录的天数。</div>
+        <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',type)}${summary ? sortHeader('记录天数','days',type) : ''}${sortHeader('Campaign','campaign',type)}${isKeyword ? '' : sortHeader('搜索词','searchQuery',type)}${sortHeader(isKeyword ? '关键词' : '触发关键词','keyword',type)}${sortHeader('匹配方式','matchType',type)}${isKeyword ? sortHeader(summary ? '期间出价范围' : 'Bid','bid',type) : ''}${adMetricHeaders(type)}</tr></thead><tbody>${body || `<tr><td colspan="${summary ? 16 : 15}">当前筛选范围没有记录，请调整筛选条件。</td></tr>`}</tbody></table></div></section>`;
     }
+
 
     function advertisingPage() {
       const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词']];
@@ -983,6 +1079,15 @@
     }
 
     function bindEvents() {
+      document.querySelectorAll('[data-ad-filter]').forEach(input => input.addEventListener('change', event => {
+        adFilterState()[input.dataset.adFilter] = event.target.value.trim();
+        render();
+      }));
+      document.getElementById('adFilterReset')?.addEventListener('click', () => {
+        const filter = adFilterState();
+        Object.assign(filter, { itemId: '', term: '', keyword: '', matchType: '' });
+        render();
+      });
       document.querySelectorAll('[data-page]').forEach(button => button.addEventListener('click', () => { ui.page = button.dataset.page; render(); }));
       document.querySelectorAll('[data-ad-tab]').forEach(button => button.addEventListener('click', () => { ui.adTab = button.dataset.adTab; render(); }));
       document.querySelectorAll('[data-campaign]').forEach(button => button.addEventListener('click', () => {
