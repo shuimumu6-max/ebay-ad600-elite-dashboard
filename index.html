@@ -196,9 +196,9 @@
     const SHARED_READONLY = location.protocol !== 'file:' && !BUILDER_MODE;
     const MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
     const EMPTY_ADS = { dates: [], campaigns: [], campaignDaily: {}, plpRows: [], keywordRows: [], searchRows: [], bidChanges: [] };
-    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [], ads: EMPTY_ADS };
+    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [], ads: EMPTY_ADS, activeListings: null };
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { page: 'dashboard', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
 
     const COVERAGE = [
@@ -319,6 +319,19 @@
     async function readFile(file) {
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', raw: false });
       const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '', raw: false });
+      const activeHeader = rows.findIndex(row => row.some(cell => clean(cell) === 'Item number') && row.some(cell => clean(cell) === 'Available quantity'));
+      if (activeHeader >= 0) {
+        const map = headerMap(rows[activeHeader]);
+        const date = file.name.match(/report-(\d{4}-\d{2}-\d{2})-/)?.[1];
+        if (!date) throw new Error('在售报表文件名缺少导出日期。');
+        const items = new Map();
+        rows.slice(activeHeader + 1).forEach(row => {
+          const itemId = clean(val(row, map, 'Item number')).replace(/^="?|"$/g, '');
+          const title = clean(val(row, map, 'Title'));
+          if (/^\d+$/.test(itemId) && isTargetModelTitle(title)) items.set(itemId, { itemId, title, available: number(val(row, map, 'Available quantity')) });
+        });
+        return { type: 'Active', rows: [...items.values()], source: { id: `${file.name}|${file.size}|${file.lastModified}`, name: file.name, type: 'Active', start: date, end: date, count: items.size, importedAt: new Date(file.lastModified).toISOString(), periodKind: '在售名单快照' } };
+      }
       const plgHeader = rows.findIndex(row => row.some(cell => clean(cell) === 'Campaign name') && row.some(cell => clean(cell) === 'Item ID'));
       const trafficHeader = rows.findIndex(row => row.some(cell => clean(cell) === 'Listing title') && row.some(cell => clean(cell) === 'eBay item ID'));
       if (plgHeader >= 0) return parsePlg(rows, plgHeader, file);
@@ -404,7 +417,11 @@
     }
 
     function mergeImport(result) {
-      if (result.type === 'PLG') {
+      if (result.type === 'Active') {
+        const current = dataState.activeListings;
+        const rank = result.source.start + '|' + result.source.importedAt + '|' + result.source.name;
+        if (!current || rank > current.date + '|' + current.importedAt + '|' + current.name) dataState.activeListings = { date: result.source.start, importedAt: result.source.importedAt, name: result.source.name, items: result.rows };
+      } else if (result.type === 'PLG') {
         const map = new Map(dataState.plgRaw.map(row => [row.key, row]));
         result.rows.forEach(row => map.set(row.key, row));
         dataState.plgRaw = [...map.values()];
@@ -546,7 +563,8 @@
       return Number.isFinite(days) && days >= 0 ? Math.floor(days) : null;
     }
 
-    function itemPerformance() {
+    function itemPerformance(includeRoster = false) {
+      const activeMap = new Map((dataState.activeListings?.items || []).map(row => [row.itemId, row]));
       const listingDates = new Map();
       // 先读取PLG日期，再用Traffic日期覆盖；同一来源采用最新报表中的有效值。
       for (const rows of [dataState.plgRaw, dataState.trafficRaw]) {
@@ -577,7 +595,7 @@
         item.campaigns.add(row.campaign);
         ['impressions','clicks','sold','sales','adFees'].forEach(field => item[field] += row[field] || 0);
       }
-      const ids = unique([...trafficMap.keys(), ...plgMap.keys(), ...plpMap.keys()]);
+      const ids = unique([...trafficMap.keys(), ...plgMap.keys(), ...plpMap.keys(), ...(includeRoster ? activeMap.keys() : [])]);
       const query = ui.query.toLowerCase();
       return ids.map(itemId => {
         const traffic = trafficMap.get(itemId);
@@ -587,10 +605,12 @@
         const externalViews = traffic ? traffic.promotedExternalViews + traffic.organicExternalViews : 0;
         return {
           itemId,
+          listingStatus: !dataState.activeListings ? 'unknown' : activeMap.has(itemId) ? 'active' : 'absent',
+          listingStatusText: !dataState.activeListings ? '状态待确认' : activeMap.has(itemId) ? '在售' : '不在最新在售名单',
           link: `https://www.ebay.com/itm/${itemId}`,
           listingStartDate: listingDates.get(itemId) || '',
           listingAgeDays: listingAgeDays(listingDates.get(itemId)),
-          title: traffic?.title || plg?.title || plp?.title || '',
+          title: traffic?.title || plg?.title || plp?.title || activeMap.get(itemId)?.title || '',
           hasTraffic: Boolean(traffic), hasPlg: Boolean(plg), hasPlp: Boolean(plp),
           salesMismatch: Boolean(traffic && plg && traffic.quantitySold !== plg.totalSold),
           naturalImpressions: traffic?.organicEbayImpressions || 0,
@@ -825,35 +845,50 @@
 
     function sourceCard(source) {
       const isTraffic = source.type === 'Traffic';
-      return `<article class="source-item"><div class="source-top"><div class="source-name" title="${esc(source.name)}">${esc(source.name)}</div><span class="badge ${isTraffic ? 'amber' : 'blue'}">${esc(source.type)}</span></div><div class="source-meta"><span>${rangeText(source.start, source.end)}</span><span>${fmt(source.count)} 行 · ${isTraffic ? esc(source.periodKind || '区间累计') : '日度明细'}</span></div></article>`;
+      return `<article class="source-item"><div class="source-top"><div class="source-name" title="${esc(source.name)}">${esc(source.name)}</div><span class="badge ${isTraffic ? 'amber' : 'blue'}">${esc(source.type)}</span></div><div class="source-meta"><span>${rangeText(source.start, source.end)}</span><span>${fmt(source.count)} 行 · ${source.type === 'Active' ? '在售名单快照' : isTraffic ? esc(source.periodKind || '区间累计') : '日度明细'}</span></div></article>`;
+    }
+
+    function itemDetailRows() {
+      return itemPerformance(true).filter(row => !dataState.activeListings || (ui.listingStatus || 'active') === 'all' || row.listingStatus === (ui.listingStatus || 'active'));
+    }
+
+    function listingStatusPanel() {
+      const snapshot = dataState.activeListings;
+      const history = new Set([...dataState.trafficRaw, ...dataState.plgRaw, ...(dataState.ads.plpRows || [])].filter(row => isTargetModelTitle(row.title)).map(row => row.itemId));
+      const active = new Set((snapshot?.items || []).map(row => row.itemId));
+      const absent = [...history].filter(id => !active.has(id)).length;
+      const selected = ui.listingStatus || 'active';
+      return `<section class="metrics">${metric('当前在售 Item', snapshot ? fmt(active.size) : '待确认', snapshot ? '名单日期：' + snapshot.date : '请提供完整在售商品报表')}${metric('历史记录 Item', fmt(history.size), '全部历史数据去重，不受所选日期影响')}${metric('历史链接不在最新名单', snapshot ? fmt(absent) : '待确认', '不等同于已确认下架')}</section>
+        <div class="panel" style="padding:16px;margin-bottom:16px"><div class="field"><label for="listingStatusFilter">Item 在售状态</label><select class="input" id="listingStatusFilter">${[['active','在售'],['all','全部（含历史）'],['absent','不在最新在售名单'],['unknown','状态待确认']].map(([value,label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div><p class="field-help">${snapshot ? `名单日期：${esc(snapshot.date)}（文件导出日期），来源：${esc(snapshot.name)}。` : '尚无在售名单，当前显示数据状态待确认的链接。'}状态按最新名单中的 Item ID 判断，与经营数据所选时间范围无关；未在名单中不直接判为下架，可能涉及结束、售罄或导出范围。名单可能包含零库存链接，不代表均可购买。新在售链接即使所选区间没有表现记录也保留，指标显示“—”。筛选仅作用于本页及 Item 导出，经营看板和每日历史保留原口径。</p></div>`;
     }
 
     function detailPage() {
-      const rows = itemPerformance();
+      const rows = itemDetailRows();
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
+        ${listingStatusPanel()}
         <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}。${esc(trafficSelection().note)}</div>
         ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
-        <section class="panel">${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
+        <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(rows.length)} 个 Item</small></div>${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
     }
 
     function itemFullTable(rows, trafficRows, plgStart, plgEnd) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
       const samePeriod = Boolean(trafficSelection().complete && trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const sorted = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
-      return `<div class="table-wrap"><table><thead><tr><th colspan="4" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
-        ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}${sortHeader('上架日期', 'listingStartDate', 'detail')}${sortHeader('距今上架时间', 'listingAgeDays', 'detail')}
+      return `<div class="table-wrap"><table><thead><tr><th colspan="5" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
+        ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}${sortHeader('上架日期', 'listingStartDate', 'detail')}${sortHeader('距今上架时间', 'listingAgeDays', 'detail')}${sortHeader('在售状态', 'listingStatusText', 'detail')}
         ${sortHeader('总PV（Total page views）', 'totalPageViews', 'detail')}${sortHeader('Impression', 'totalImpressions', 'detail')}${sortHeader('站内PV（eBay）', 'ebayViews', 'detail')}${sortHeader('站外PV（External）', 'externalViews', 'detail')}${sortHeader('销量（Traffic）', 'quantitySold', 'detail')}${sortHeader('Click-through rate', 'totalCtr', 'detail')}${sortHeader('Sales conversion rate', 'totalConversion', 'detail')}${sortHeader('PV核对（日度减累计）', 'pvAudit', 'detail')}
         ${sortHeader('售价', 'price', 'detail', 'plg-col')}${sortHeader('报表总销量', 'plgTotalSold', 'detail', 'plg-col')}<th class="plg-col">费率</th><th class="plg-col">建议费率</th>${sortHeader('PLG Impressions', 'adImpressions', 'detail', 'plg-col')}${sortHeader('PLG Clicks', 'adClicks', 'detail', 'plg-col')}${sortHeader('CTR', 'adCtr', 'detail', 'plg-col')}${sortHeader('PLG Sold', 'adSold', 'detail', 'plg-col')}${sortHeader('PLG Sales', 'adSales', 'detail', 'plg-col')}${sortHeader('Ad fees', 'adFees', 'detail', 'plg-col')}${sortHeader('ROAS', 'roas', 'detail', 'plg-col')}
         <th class="plp-col">Impressions</th><th class="plp-col">Clicks</th><th class="plp-col">CTR</th><th class="plp-col">Sold quantity</th><th class="plp-col">Ad fees</th><th class="plp-col">Sales</th><th class="plp-col">Conversion rate</th><th class="plp-col">ROAS</th><th class="plp-col">Average CPC</th><th class="plp-col">ACOS</th><th class="plp-col">主推关键词</th><th class="plp-col">建议出价</th><th class="plp-col">实际出价</th>
         ${sortHeader('曝光', 'naturalImpressions', 'detail')}${sortHeader('eBay Page views', 'naturalViews', 'detail')}${sortHeader('SOLD', 'naturalSold', 'detail')}${sortHeader('点击率', 'naturalCtr', 'detail')}${sortHeader('Sales conversion rate', 'naturalConversion', 'detail')}
         <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
       </tr></thead><tbody>${sorted.map(row => `<tr>
-        <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td>
+        <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td><td style="min-width:160px">${esc(row.listingStatusText)}</td>
         <td>${row.hasTraffic ? fmt(row.totalPageViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}${row.salesMismatch ? ' <span class="badge amber">待核对</span>' : ''}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td style="white-space:normal;min-width:180px">${esc(row.pvAudit)}</td>
         <td class="plg-col">${row.hasPlg ? money(row.price) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td class="plg-col">—</td><td class="plg-col">—</td><td class="plg-col">${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td class="plg-col">${row.hasPlg ? pct(row.adCtr) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adSold) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adSales) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adFees) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
         <td class="plp-col">${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpCtr) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpFees) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpSales) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpConversion) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpAvgCpc) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpAcos) : '—'}</td><td class="plp-col">—</td><td class="plp-col">—</td><td class="plp-col">—</td>
@@ -1152,6 +1187,7 @@
       document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; render(); });
       document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; render(); });
       document.getElementById('trafficSourceFilter')?.addEventListener('change', e => { ui.trafficSource = e.target.value; render(); });
+      document.getElementById('listingStatusFilter')?.addEventListener('change', e => { ui.listingStatus = e.target.value; render(); });
       document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => {
         ui.trafficPeriod = e.target.value;
         if (ui.trafficPeriod !== 'custom') [ui.start, ui.end] = ui.trafficPeriod.split('|');
@@ -1191,7 +1227,7 @@
     }
 
     function exportData() {
-      const rows = itemPerformance();
+      const rows = itemDetailRows();
       if (!rows.length) return toast('没有可导出的 Item 数据。', true);
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
@@ -1205,12 +1241,12 @@
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
       const sheet = XLSX.utils.aoa_to_sheet([
         ['eBay AD600 Elite · Item 完整明细'],
-        ['Traffic：' + trafficRange + '；PLG：' + rangeText(plgStart, plgEnd) + '；PLP：' + rangeText(plpStart, plpEnd) + '；共 ' + rows.length + ' 个 Item；— 表示无数据或未提供；' + trafficSelection().note + ' ' + salesReconciliationNote(rows)]
+        ['Traffic：' + trafficRange + '；PLG：' + rangeText(plgStart, plgEnd) + '；PLP：' + rangeText(plpStart, plpEnd) + '；共 ' + rows.length + ' 个 Item；在售名单：' + (dataState.activeListings ? dataState.activeListings.date + ' / ' + dataState.activeListings.name : '未提供') + '；状态筛选：' + (ui.listingStatus || 'active') + '；— 表示无数据或未提供；' + trafficSelection().note + ' ' + salesReconciliationNote(rows)]
       ]);
       XLSX.utils.sheet_add_dom(sheet, table, { origin: 'A3', raw: true });
       const headers = [...table.tHead.rows[1].cells].map(cell => cell.textContent.trim());
       const keys = [
-        'itemId','title','listingStartDate','listingAgeDays','totalPageViews','totalImpressions','ebayViews','externalViews','quantitySold','totalCtr','totalConversion','pvAudit',
+        'itemId','title','listingStartDate','listingAgeDays','listingStatusText','totalPageViews','totalImpressions','ebayViews','externalViews','quantitySold','totalCtr','totalConversion','pvAudit',
         'price','plgTotalSold',null,null,'adImpressions','adClicks','adCtr','adSold','adSales','adFees','roas',
         'plpImpressions','plpClicks','plpCtr','plpSold','plpFees','plpSales','plpConversion','plpRoas','plpAvgCpc','plpAcos',null,null,null,
         'naturalImpressions','naturalViews','naturalSold','naturalCtr','naturalConversion', ...Array(13).fill(null)
@@ -1332,6 +1368,7 @@
             dataState = {
               plgRaw: seeded.plgRaw || [],
               trafficRaw: seeded.trafficRaw || [],
+              activeListings: seeded.activeListings || null,
               sources: seeded.sources || [],
               ads: seeded.ads || structuredClone(EMPTY_ADS)
             };
