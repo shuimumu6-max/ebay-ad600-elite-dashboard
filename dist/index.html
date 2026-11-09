@@ -3,52 +3,228 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>eBay 报表工具包 · 下载</title>
+<title>eBay 报表工具包 · 下载安装</title>
 <style>
-  :root { --ink:#16202c; --muted:#5c6c80; --line:#dde3ea; --brand:#1f5fbf; --soft:#f5f8fc; }
+  :root { --ink:#16202c; --muted:#5f6f83; --line:#e2e8f0; --brand:#1f5fbf; --brand-dark:#174a94;
+          --soft:#f4f7fb; --card:#fff; --green:#0f7a4a; --green-soft:#eaf7f0; }
   * { box-sizing:border-box; }
-  body { margin:0; padding:48px 20px 64px; font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; color:var(--ink); background:var(--soft); }
-  .card { max-width:760px; margin:0 auto; background:#fff; border:1px solid var(--line); border-radius:12px; padding:34px 38px 30px; box-shadow:0 10px 30px rgba(22,32,44,.06); }
-  h1 { margin:0 0 6px; font-size:24px; letter-spacing:.2px; }
-  .meta { color:var(--muted); font-size:13px; margin-bottom:26px; }
+  body { margin:0; padding:40px 18px 72px; color:var(--ink); background:var(--soft);
+         font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:820px; margin:0 auto; }
+  header { padding:0 4px 26px; }
+  h1 { margin:0 0 8px; font-size:27px; letter-spacing:.2px; }
+  .lead { margin:0 0 12px; color:#3d4d61; font-size:15.5px; }
+  .meta { color:var(--muted); font-size:13px; }
   .meta b { color:var(--ink); font-weight:600; }
-  .btn { display:inline-block; padding:14px 30px; border-radius:8px; background:var(--brand); color:#fff; font-size:16px; font-weight:600; text-decoration:none; }
-  .btn:hover { background:#184a96; }
-  .alt { margin-left:14px; font-size:13px; color:var(--muted); }
-  .alt a { color:var(--brand); }
-  .note { margin-top:14px; padding:12px 14px; border-left:3px solid #e3a008; background:#fffaf0; border-radius:0 6px 6px 0; font-size:13px; color:#6b4a00; }
-  h2 { font-size:15px; margin:30px 0 10px; }
-  ol { margin:0; padding-left:22px; }
-  ol li { margin:6px 0; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  .chip { padding:4px 11px; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--muted); font-size:12.5px; }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:26px 28px 24px;
+          margin-bottom:18px; box-shadow:0 6px 22px rgba(22,32,44,.05); }
+  .card.hero { border-color:#c3d6f2; box-shadow:0 10px 30px rgba(31,95,191,.10); }
+  .tag { display:inline-block; margin-bottom:10px; padding:3px 10px; border-radius:999px;
+         background:#e8f0fd; color:var(--brand); font-size:12px; font-weight:700; letter-spacing:.4px; }
+  h2 { margin:0 0 6px; font-size:18.5px; }
+  h2 small { display:block; margin-top:6px; color:var(--muted); font-size:13px; font-weight:400; }
+
+  .bigsteps { list-style:none; margin:18px 0 4px; padding:0; counter-reset:s; }
+  .bigsteps > li { counter-increment:s; position:relative; padding:0 0 18px 46px; }
+  .bigsteps > li:last-child { padding-bottom:0; }
+  .bigsteps > li::before { content:counter(s); position:absolute; left:0; top:1px; width:28px; height:28px;
+      border-radius:50%; background:var(--brand); color:#fff; font-size:14px; font-weight:700;
+      display:flex; align-items:center; justify-content:center; }
+  .bigsteps b { display:block; font-size:15px; margin-bottom:2px; }
+  .bigsteps span { color:var(--muted); font-size:13.5px; }
+
+  .actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:20px; }
+  .btn { display:inline-flex; align-items:center; gap:7px; padding:12px 22px; border:0; border-radius:8px;
+         background:var(--brand); color:#fff; font-size:15px; font-weight:600; cursor:pointer;
+         font-family:inherit; text-decoration:none; transition:background .15s; }
+  .btn:hover { background:var(--brand-dark); }
+  .btn.ghost { background:#fff; border:1px solid var(--line); color:var(--ink); font-weight:500; font-size:13.5px; padding:11px 16px; }
+  .btn.ghost:hover { border-color:#b9c8da; background:#f8fbfe; }
+  .btn.ok { background:var(--green); }
+  .link { color:var(--brand); font-size:13px; text-decoration:none; border-bottom:1px dashed #b9cdf0; }
+
+  .hint { margin:16px 0 0; padding:11px 14px; border-left:3px solid #e3a008; background:#fffaef;
+          border-radius:0 6px 6px 0; font-size:13px; color:#6b4a00; }
+  .hint.ok { border-color:var(--green); background:var(--green-soft); color:#0d5c39; }
+
+  details.prompt { margin-top:16px; }
+  details.prompt > summary { cursor:pointer; color:var(--brand); font-size:13.5px; font-weight:600; padding:6px 0; }
+  pre { margin:12px 0 0; padding:16px; max-height:360px; overflow:auto; background:#f8fafc;
+        border:1px solid var(--line); border-radius:8px; font:12.5px/1.7 ui-monospace,Consolas,"Courier New",monospace;
+        color:#26313f; white-space:pre-wrap; word-break:break-word; }
+
+  h3 { margin:22px 0 8px; font-size:14px; color:#3d4d61; }
+  .steps { margin:0; padding-left:22px; }
+  .steps li { margin:9px 0; }
+  .steps .sees { display:block; color:var(--muted); font-size:13px; }
+
+  .entries { display:grid; gap:12px; margin-top:16px; }
+  .entry { display:grid; grid-template-columns:132px 1fr; gap:6px 16px; padding:14px 16px;
+           border:1px solid var(--line); border-radius:9px; background:#fbfdff; }
+  .entry code { font-size:13px; font-weight:600; color:var(--ink); }
+  .entry p { margin:0; color:var(--muted); font-size:13.5px; }
+
+  .faq details { border-bottom:1px solid var(--line); padding:11px 0; }
+  .faq details:last-child { border-bottom:0; }
+  .faq summary { cursor:pointer; font-size:14px; font-weight:600; }
+  .faq p { margin:8px 0 0; color:var(--muted); font-size:13.5px; }
+
   code { background:#eef2f7; padding:1px 6px; border-radius:4px; font-size:13px; }
-  .foot { margin-top:26px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; }
+  .foot { padding:6px 4px 0; color:var(--muted); font-size:12.5px; line-height:1.9; }
+  a { color:var(--brand); }
+  @media (max-width:560px) {
+    body { padding:26px 12px 56px; }
+    .card { padding:20px 18px; }
+    .entry { grid-template-columns:1fr; }
+    h1 { font-size:23px; }
+  }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>eBay 报表工具包</h1>
-  <div class="meta">最新版本 <b>v2</b> · 发布于 2026-11-09 10:33:52 · 单店铺版（下载器 + 本地看板）</div>
+<div class="wrap">
 
-  <a class="btn" href="./installer.cmd" download>下载安装器</a>
-  <span class="alt">或手动下载 <a href="./toolkit.zip" download>程序包（约 1 MB，不含运行时）</a></span>
+  <header>
+    <h1>eBay 报表工具包</h1>
+    <p class="lead">在你自己电脑上批量下载 eBay 后台报表，再用本地看板看数据。不用装环境、不用连数据库、数据不出本机。</p>
+    <div class="meta">最新版本 <b>v3</b> · 发布于 2026-11-09 10:42:10 · 单店铺版（下载器 + 本地看板）</div>
+    <div class="chips">
+      <span class="chip">Windows 10 / 11</span>
+      <span class="chip">需要 Chrome 或 Edge 并已登录 eBay 后台</span>
+      <span class="chip">首次约 83 MB，之后每次更新约 1 MB</span>
+    </div>
+  </header>
 
-  <div class="note">浏览器若提示「此类文件可能有害」，点「保留」即可。安装器会自动把工具包装到桌面「eBay报表工具包」文件夹，首次安装约需下载 83 MB 运行时。</div>
+  <section class="card hero">
+    <div class="tag">推荐</div>
+    <h2>方式一：让 AI 帮你装
+      <small>你只需要复制一段话、回答几个问题。命令和报错都交给 AI 处理。</small>
+    </h2>
 
-  <h2>安装步骤</h2>
-  <ol>
-    <li>点上方「下载安装器」，双击下载到的 <code>installer.cmd</code>，等它跑完（桌面会出现「eBay报表工具包」文件夹）。</li>
-    <li>按窗口提示配置店铺：复制「新店铺配置示例.json」改成自己的店铺值，另存为 <code>my-shop.json</code>，设系统环境变量 <code>EBAY_SHOP_CONFIG</code> 指向它。</li>
-    <li>登录 eBay 后台，浏览器打开 <code>chrome://inspect/#remote-debugging</code>，把 <b>Allow remote debugging</b> 拨到开（只需一次），然后双击「报表控制台.cmd」。</li>
-  </ol>
+    <ol class="bigsteps">
+      <li><b>点下面的「复制 AI 安装说明」</b><span>这段说明里已经写好了下载地址、每一步命令、检查标准和禁止事项，AI 照着就能干。</span></li>
+      <li><b>粘给你的 AI 助手</b><span>能操作电脑的 AI（WorkBuddy、Cursor、Claude Code 等）会自己下载安装；只能聊天的 AI 会给你一条条命令，你复制到 PowerShell 执行。</span></li>
+      <li><b>回答店铺信息，看结果报告</b><span>AI 会问你店铺名、三个目录、PLP/PLG 活动 ID；装完它会给你一份自检报告，报告过了就能用。</span></li>
+    </ol>
 
-  <h2>日常使用</h2>
-  <ol>
-    <li><b>报表控制台.cmd</b> — 界面里勾选报表类型和日期，下载到本地。</li>
-    <li><b>打开看板.cmd</b> — 本地看板，点「上传报表」选择下载好的 CSV，数据只存本机浏览器。</li>
-    <li><b>检查更新.cmd</b> — 有新版本时双击它，只下载变化的程序文件，配置和报表数据不受影响。</li>
-  </ol>
+    <div class="actions">
+      <button class="btn" id="copyAi">复制 AI 安装说明</button>
+      <a class="btn ghost" href="./ai-install.md" download>下载说明文件</a>
+      <a class="link" href="#aiText">查看全文</a>
+    </div>
 
-  <div class="foot">更新源：<span id="base">https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/</span> ｜ 本包不含任何店铺数据，程序文件与店铺配置、报表数据完全隔离。</div>
+    <p class="hint">唯一要你自己动手的一步：浏览器打开 <code>chrome://inspect/#remote-debugging</code>，把 <b>Allow remote debugging</b> 拨到开（只需一次）。AI 会提示你。</p>
+
+    <details class="prompt" id="aiText">
+      <summary>展开 AI 安装说明全文（也可全选复制）</summary>
+      <pre id="aiPrompt">正在载入…</pre>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>方式二：自己装
+      <small>不放心让 AI 动手，就按这三步走，每步都写了「你应该看到什么」。</small>
+    </h2>
+
+    <h3>第 1 步：装程序</h3>
+    <ol class="steps">
+      <li>点这里下载安装器：<a href="./installer.cmd" download><b>installer.cmd</b></a>
+        <span class="sees">浏览器若提示「此类文件可能有害」，点「保留」/「仍要下载」。</span></li>
+      <li>双击下载到的 <code>installer.cmd</code>，等它跑完（首次要下 83 MB，别关窗口）。
+        <span class="sees">应该看到：桌面出现「eBay报表工具包」文件夹，里面有一堆程序文件和「报表控制台.cmd」。</span></li>
+    </ol>
+
+    <h3>第 2 步：填一份店铺配置</h3>
+    <ol class="steps">
+      <li>打开包里的 <code>新店铺配置示例.json</code>，照注释把店铺名、三个目录、PLP/PLG 活动 ID 换成自己店铺的，另存为 <code>my-shop.json</code>（放同一个文件夹）。</li>
+      <li>搜 Windows「编辑系统环境变量」→ 环境变量 → 用户变量「新建」：变量名 <code>EBAY_SHOP_CONFIG</code>，值填 <code>my-shop.json</code> 的完整路径。
+        <span class="sees">注意：设置完要关掉所有旧的黑窗口，重新打开才生效。</span></li>
+    </ol>
+
+    <h3>第 3 步：开一次浏览器调试开关</h3>
+    <ol class="steps">
+      <li>用 Chrome 或 Edge 登录 eBay 卖家后台，同一浏览器打开 <code>chrome://inspect/#remote-debugging</code>，把 <b>Allow remote debugging</b> 拨到开。
+        <span class="sees">只需一次；以后别把所有 eBay 标签页都关光，全关会收回授权。</span></li>
+      <li>双击「报表控制台.cmd」。
+        <span class="sees">应该看到：浏览器自动打开 http://127.0.0.1:7788 ，顶部体检显示 Chrome 调试端口正常。</span></li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>装完怎么用 <small>日常就三个入口，都在安装文件夹里。</small></h2>
+    <div class="entries">
+      <div class="entry"><code>报表控制台.cmd</code><p>下载报表。勾选报表类型和日期，界面上每个后台参数都能选，点开始下载。</p></div>
+      <div class="entry"><code>打开看板.cmd</code><p>看数据。点「上传报表」选下载好的 CSV，数据只存本机浏览器，不上传任何服务器。</p></div>
+      <div class="entry"><code>检查更新.cmd</code><p>拉新版本。只下载有变化的程序文件，配置和报表数据不受影响；旧文件自动备份。</p></div>
+    </div>
+  </section>
+
+  <section class="card faq">
+    <h2>常见问题</h2>
+
+    <details><summary>公司网络打不开这个页面，或者下载很慢怎么办？</summary>
+      <p>让管理员直接把完整压缩包（约 32 MB，含运行时）发给你，解压到桌面就能用，不需要联网安装。之后想更新再找他要新的包。</p></details>
+
+    <details><summary>双击 installer.cmd 一闪就没了 / 报错退出？</summary>
+      <p>先确认是 Windows 10 1809 以上；然后在 PowerShell 里手动跑一遍，报错会留在窗口里：<br>
+      <code>Invoke-WebRequest 'https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/setup.ps1' -OutFile "$env:TEMP\ebay-setup.ps1" -UseBasicParsing</code><br>
+      <code>powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ebay-setup.ps1"</code></p></details>
+
+    <details><summary>控制台打开了但下载不动 / 提示调试端口不可用？</summary>
+      <p>回到第 3 步：确认 <code>chrome://inspect/#remote-debugging</code> 的开关是开的，并且当前浏览器里至少有一个已登录 eBay 后台的标签页。改完在控制台点重新体检。</p></details>
+
+    <details><summary>换电脑、或者一个运营管多个店铺怎么办？</summary>
+      <p>一套文件夹只对应一个店铺。多店铺就再装一份到别的目录，各自填自己的 <code>my-shop.json</code>；两套互不影响，数据也不混。</p></details>
+
+    <details><summary>数据会不会被传到网上？会不会覆盖别人的看板？</summary>
+      <p>不会。报表和配置只在你本机；看板是本地 HTML，数据存本机浏览器。分发包内没有 Git 仓库，任何发布命令都推不出去。</p></details>
+
+    <details><summary>以后怎么更新？</summary>
+      <p>双击「检查更新.cmd」，只下载变化的程序文件（通常不到 1 MB），旧文件备份在安装目录的 <code>备份-更新前-时间戳</code> 里。也可以让 AI 重新跑一遍上面那段说明，它会先检查再更新。</p></details>
+  </section>
+
+  <div class="foot">
+    更新源：<span id="base">https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/</span><br>
+    本页与安装包不含任何店铺数据；程序文件与店铺配置、下载的报表完全隔离。
+  </div>
 </div>
+
+<script>
+  window.AI_PROMPT = "# 任务：帮我在这台 Windows 电脑上装好「eBay 报表工具包」\n\n> 用法：把下面「分隔线以下」的整段内容复制给你的 AI 助手。\n> 能操作电脑的 AI（WorkBuddy、Cursor、Claude Code 等）会自己下载安装；\n> 只能聊天的 AI 会给你一条条命令，你复制到 PowerShell 里执行即可。\n\n---\n\n你是我的 Windows 操作助手。请在我这台电脑上完成下面的安装与配置，最后给我一份结果报告。过程中遇到需要我决定或手动操作的地方，先停下来告诉我。\n\n## 背景\n\n- 工具用途：在**已登录 eBay 卖家后台的 Chrome/Edge** 上，批量自动下载各类报表（CSV）；再用本机离线看板看数据。数据只留在本机。\n- 下载页（唯一官方来源）：https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/\n- 安装目录：`%USERPROFILE%\\Desktop\\eBay报表工具包`（安装脚本固定写到桌面，不要自己改路径）\n- 环境要求：Windows 10 1809+ 或 Windows 11；自带 PowerShell 5.1 和 curl.exe；Chrome 或 Edge 且**已登录 eBay 卖家后台**。\n\n## 第 0 步：先问我要这几项，缺了就问，禁止编造\n\n1. `shopName`：店铺名，随便一个能认出来的名字（例：`AD600 Elite`）\n2. `dataDir`：报表正式保存目录（绝对路径，例：`C:/Users/我的用户名/Desktop/店铺数据`）\n3. `runsDir`：每次下载的临时结果目录（格式同上）\n4. `downloadsDir`：浏览器默认下载目录（一般是 `C:/Users/我的用户名/Downloads`）\n5. `plpCampaigns`：优先促销刊登的活动 ID 列表（通常 3 个）\n6. `plgCampaigns`：PLG 的活动 ID + 显示名列表\n\n活动 ID 在哪找：eBay 卖家后台 → 广告 → Campaigns，列表里每个活动对应的数字 ID（也可以让我把旧店铺的配置 JSON 发你，照结构抄）。看板地址 `dashboardUrl` 可选，没有就填空字符串。端口默认 `consolePort: 7788`、`bridgePort: 9233`，被占用再改。\n\n## 第 1 步：下载并安装（⚠️ 不要双击 installer.cmd）\n\n`installer.cmd` 末尾有 `pause`，在自动化执行时会卡住不动。请直接跑这两条：\n\n```powershell\n$base = 'https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/'\n$s = Join-Path $env:TEMP 'ebay-setup.ps1'\nInvoke-WebRequest \"$base/setup.ps1\" -OutFile $s -UseBasicParsing\npowershell -NoProfile -ExecutionPolicy Bypass -File $s\n```\n\n预期结果：日志最后出现「安装完成！」，并且桌面 `eBay报表工具包` 里有 `app\\`、`ui\\`、`看板\\`、`bin\\node.exe`、`报表控制台.cmd`。\n首次安装要下载约 83 MB 运行时（node.exe），慢是正常的；网络中断就重跑一次，已下载的部分不会重复下载。\n\n## 第 2 步：生成店铺配置并设为环境变量\n\n在安装目录写 `my-shop.json`，内容如下（把尖括号换成第 0 步问到的真实值）：\n\n```json\n{\n  \"shopName\": \"<店铺名>\",\n  \"dataDir\": \"<报表保存目录，正斜杠>\",\n  \"runsDir\": \"<临时结果目录，正斜杠>\",\n  \"downloadsDir\": \"<浏览器下载目录，正斜杠>\",\n  \"dashboardUrl\": \"\",\n  \"plpCampaigns\": [\"<PLP活动ID1>\", \"<PLP活动ID2>\", \"<PLP活动ID3>\"],\n  \"plgCampaigns\": [\n    { \"id\": \"<PLG活动ID>\", \"name\": \"<活动显示名>\" }\n  ],\n  \"consolePort\": 7788,\n  \"bridgePort\": 9233,\n  \"chromeExe\": \"\"\n}\n```\n\n设为当前用户的环境变量（永久生效，但**已打开的窗口读不到，必须新开窗口**）：\n\n```powershell\n[Environment]::SetEnvironmentVariable('EBAY_SHOP_CONFIG', \"$env:USERPROFILE\\Desktop\\eBay报表工具包\\my-shop.json\", 'User')\n```\n\n## 第 3 步：跑自检，把输出贴给我\n\n```powershell\nSet-Location \"$env:USERPROFILE\\Desktop\\eBay报表工具包\"\n.\\bin\\node.exe app\\check-options.mjs\n.\\bin\\node.exe app\\check-fields.mjs\n```\n\n- `check-options`：应输出后台参数与界面控件一一对应、全部通过。失败说明安装不完整或配置读不到，把原文报错贴给我。\n- `check-fields`：如果只报「08 非在售名单」「09 预定名单」缺 CSV，属于正常（这两类还没下载过）；出现其他不一致才算失败。\n\n## 第 4 步：浏览器调试开关（这一步只能我来点，你负责提示我）\n\n请提示我完成下面三件事，然后等我回复「已开」：\n1. 用 Chrome 或 Edge 打开 `chrome://inspect/#remote-debugging`；\n2. 把 **Allow remote debugging** 开关打开（只需一次）；\n3. 保留至少一个**已登录 eBay 卖家后台**的标签页，不要把所有标签页都关掉（全关会收回授权）。\n\n## 第 5 步：启动确认\n\n双击 `报表控制台.cmd`，或执行：\n\n```powershell\n& \"$env:USERPROFILE\\Desktop\\eBay报表工具包\\报表控制台.cmd\"\n```\n\n预期：浏览器自动打开 `http://127.0.0.1:7788`，页面顶部的环境体检显示 Chrome 调试端口正常。\n\n## 第 6 步：给我结果报告（按这个格式）\n\n- 安装路径、版本号（看 `app\\` 文件是否齐全）\n- 配置文件的完整路径，以及 `EBAY_SHOP_CONFIG` 是否已写入\n- `check-options` 与 `check-fields` 的关键结论（原文一两行）\n- 第 4 步我是否已完成\n- 遗留问题 / 还需要我做什么（没有就写「无」）\n\n## 禁止事项\n\n- 不要删除或移动我电脑上除临时文件外的任何文件；不要改动 `看板\\` 以外的既有资料。\n- 不要 `git init`、不要推送到任何 Git 仓库（本包内没有 `.git`，也不需要）。\n- 不要把我下载的报表、配置或店铺信息上传到任何外部服务。\n- 活动 ID、店铺名这类信息不确定时必须问我，不要猜。\n\n## 如果你不能直接操作我的电脑\n\n那就按上面 6 步，一条一条给我**可直接复制**的命令或操作，并明确告诉我「每一步应该看到什么」。我贴结果给你，你再判断下一步，不要一次性丢一堆命令给我。\n";
+  (function () {
+    var text = window.AI_PROMPT || '';
+    var pre = document.getElementById('aiPrompt');
+    if (pre) pre.textContent = text;
+
+    var btn = document.getElementById('copyAi');
+    function flash(ok) {
+      var old = btn.textContent;
+      btn.textContent = ok ? '已复制 ✓ 粘给 AI 就行' : '复制失败，请展开全文手动复制';
+      btn.classList.toggle('ok', ok);
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 2200);
+    }
+    function fallbackCopy() {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(area);
+      flash(ok);
+    }
+    btn.addEventListener('click', function () {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { flash(true); }, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    });
+  })();
+</script>
 </body>
 </html>
