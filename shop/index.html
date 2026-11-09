@@ -1652,7 +1652,10 @@
         } else {
           fullState = await loadState();
           const seeded = window.EBAY_PRELOADED_DATA;
-          if (seeded && seeded.bundleId !== localStorage.getItem('ebay-shop-preloaded-bundle')) {
+          // 用 createdAt 判断是否要导入新数据：bundleId 只哈希 CSV 内容，
+          // 构建逻辑改版（如机型识别规则）时 CSV 不变、bundleId 不变，createdAt 必变。
+          const stamp = seeded ? `${seeded.bundleId}|${seeded.createdAt}` : '';
+          if (seeded && stamp !== localStorage.getItem('ebay-shop-preloaded-stamp')) {
             fullState = {
               plgRaw: seeded.plgRaw || [],
               trafficRaw: seeded.trafficRaw || [],
@@ -1663,6 +1666,7 @@
               productCounts: seeded.productCounts || null
             };
             await saveState();
+            localStorage.setItem('ebay-shop-preloaded-stamp', stamp);
             localStorage.setItem('ebay-shop-preloaded-bundle', seeded.bundleId);
           }
         }
