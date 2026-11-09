@@ -3,7 +3,7 @@
 //   node archive-publish.mjs                 # 默认最近一次运行
 //   node archive-publish.mjs --run <运行目录>  # 指定运行目录（含 结果.json）
 //   node archive-publish.mjs --run <目录> --no-publish   # 只归档，不推看板
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyFiles, publishDashboard, dataDirState } from './publish.mjs';
 import { RUNS_DIR } from './config.mjs';
@@ -30,15 +30,38 @@ if (!runDir || !existsSync(runDir)) {
   console.error(`[归档] 没找到运行目录：${runDir || '(空)'}`);
   process.exit(1);
 }
+console.log(`[归档] 运行目录：${runDir}`);
 const summaryPath = join(runDir, '结果.json');
-if (!existsSync(summaryPath)) {
-  console.error(`[归档] 目录里没有 结果.json，无法判断哪些文件可用：${runDir}`);
-  process.exit(1);
+
+// 上次被「停止」或断电打断时没有结果清单。文件其实都下好了，
+// 不能因为缺一张清单就让人白下一次——降级成直接扫目录（跳过 _inbox 里的半成品）。
+function scanCsv(dir, out = []) {
+  let entries = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === '_inbox') continue;      // 落盘暂存区，里面的可能是半截文件
+      scanCsv(full, out);
+    } else if (/\.csv$/i.test(entry.name)) {
+      out.push({ name: entry.name, path: full, valid: true, problem: null });
+    }
+  }
+  return out;
 }
 
-console.log(`[归档] 运行目录：${runDir}`);
-const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
-const files = (summary.files || []).filter(item => item && item.path && item.valid !== false && !item.problem);
+let files;
+if (existsSync(summaryPath)) {
+  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
+  files = (summary.files || []).filter(item => item && item.path && item.valid !== false && !item.problem);
+} else {
+  files = scanCsv(runDir).filter(item => {
+    try { return statSync(item.path).size > 0; } catch { return false; }
+  });
+  if (files.length) {
+    console.log(`[归档] 这次没有结果清单（上次被中途停掉了），直接扫目录找到 ${files.length} 份 CSV`);
+  }
+}
 const ready = files.filter(item => existsSync(item.path));
 const missing = files.length - ready.length;
 console.log(`[归档] 结果清单 ${files.length} 份可用文件${missing ? `，其中 ${missing} 份原文件已被移走/删除` : ''}`);
@@ -55,6 +78,7 @@ for (const item of applied.applied) console.log(`       归档：${item.name}`);
 
 // 回写结果.json，控制台的运行清单就能显示「已归档」，不会重复提示
 try {
+  const summary = existsSync(summaryPath) ? JSON.parse(readFileSync(summaryPath, 'utf8')) : { files: [] };
   summary.apply = applied;
   summary.archivedAt = new Date().toISOString();
   writeFileSync(summaryPath, JSON.stringify(summary, null, 2), 'utf8');

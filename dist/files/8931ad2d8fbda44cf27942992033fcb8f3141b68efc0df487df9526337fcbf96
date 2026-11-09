@@ -74,6 +74,6 @@ export function tailSteps(runDirs = []) {
     args: ['archive-publish.mjs', '--run', dir, '--no-publish'],
     gapMs: 0
   }));
-  tail.push({ day: '更新看板', title: '更新看板（推 GitHub Pages）', mode: 'publish', args: ['publish-only.mjs'], gapMs: 0 });
+  tail.push({ day: '更新看板', title: '更新看板', mode: 'publish', args: ['publish-only.mjs'], gapMs: 0 });
   return tail;
 }

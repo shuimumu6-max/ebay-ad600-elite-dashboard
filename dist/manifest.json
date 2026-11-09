@@ -1,12 +1,12 @@
 {
-  "version": "v17",
-  "createdAt": "2026-11-09 15:08:25",
+  "version": "v18",
+  "createdAt": "2026-11-09 16:25:55",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
       "path": "app/archive-publish.mjs",
-      "hash": "ac8015a2c1dc00ee0012f238579e4973b01ddc9af6b503a1c1757b8fbc3d97ba",
-      "size": 3484
+      "hash": "c8f005b889021b53d96b72631cf878efbe9bff1cf1f2e4a1cf27cd67fa27e16c",
+      "size": 4509
     },
     {
       "path": "app/auto-scan.mjs",
@@ -65,18 +65,18 @@
     },
     {
       "path": "app/dashboard-server.mjs",
-      "hash": "67790efa055286cf1c1a08091c98503c4739390e61c636fdaf792dee4e4acf2d",
-      "size": 10083
+      "hash": "f9481d099e6ecc12795f3f15842891977c6cb6058c889473e31f1888b969645f",
+      "size": 10092
     },
     {
       "path": "app/download.mjs",
-      "hash": "9c5e8b2e9a32d929ff7f2af7ec0d37e20fb3e4c5eaa773cc3f95e975da3acc0c",
-      "size": 92503
+      "hash": "12f8bd4e4d2a1acb0216131a4cd17ca985cce7c5b812d52428bf56bafd0fb3ed",
+      "size": 97075
     },
     {
       "path": "app/engine.mjs",
-      "hash": "d404c73a782dc21b222c1a2e633abc0b2c0656cb0c0ab689c32d9b6cd82607df",
-      "size": 4585
+      "hash": "f4160622a4f04af2481594478b5879275c29337d395f1d379fee2f6e4d4b1249",
+      "size": 5755
     },
     {
       "path": "app/ensure-env.mjs",
@@ -165,18 +165,18 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "bec195c34d2489b6340b61f7d3c318c7d44809e1c584737007b9c65261dd2cd5",
-      "size": 105454
+      "hash": "76fd4f185ceddcf433c162dd08d00df8db6c59f260917468ceabbe0e42c8e92b",
+      "size": 106275
     },
     {
       "path": "ui/server.mjs",
-      "hash": "46aa0b651985e82fc6b48b2d9665c0f8b1f53bc9eac13d0b57e2bd54197ca1fd",
-      "size": 48406
+      "hash": "e63b88a7ac07832c539a31fe0c44845c256083f838461f7059cc7a149e8a2093",
+      "size": 48568
     },
     {
       "path": "ui/gap-plan.mjs",
-      "hash": "a15d0882e41a978b87454520ff8509d171eda47e4785dd38a89d4a9b81c1d383",
-      "size": 3410
+      "hash": "8931ad2d8fbda44cf27942992033fcb8f3141b68efc0df487df9526337fcbf96",
+      "size": 3388
     },
     {
       "path": "一键下载.cmd",

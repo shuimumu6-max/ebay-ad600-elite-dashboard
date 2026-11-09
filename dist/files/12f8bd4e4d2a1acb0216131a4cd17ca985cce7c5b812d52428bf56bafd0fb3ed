@@ -6,7 +6,7 @@
 // Traffic 与 PLP 不共享该队列，仍可并行。
 // 默认：把选中的报表下载到独立 runs/<时间>/ 目录并校验，不写正式目录、不更新看板。
 import { spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   RUNS_DIR, FOLDERS, FAST, PLP_POLL, RC_POLL, CAMPAIGNS, RC_REQUESTS, ACTIVE_TYPES, PLG_CAMPAIGNS,
@@ -19,7 +19,7 @@ import {
   probe, markFatal, fatalReason
 } from './cdp.mjs';
 import { openTab } from './pages.mjs';
-import { retry, recoverIfBlocked, clickDownload, discard, assertLoggedIn } from './engine.mjs';
+import { retry, recoverIfBlocked, clickDownload, discard, assertLoggedIn, BlockedError, isBlocked, isBlockedError } from './engine.mjs';
 import { inspectCsv, checkExpected, sha256File } from './inspect.mjs';
 import { applyFiles, publishDashboard, dataDirState } from './publish.mjs';
 import { getReport } from './reports.mjs';
@@ -216,12 +216,42 @@ const runDir = join(value('out', RUNS_DIR), stamp);
 for (const folder of Object.values(FOLDERS)) mkdirSync(join(runDir, folder), { recursive: true });
 const inbox = join(runDir, FOLDERS.inbox);
 
+// 逐日批量下载时每天之间的间隔。30 天连点是触发 eBay 风控最常见的原因（实测会被拦到
+// 一整天都下不来），多花两分钟换 30 天全下来，值。
+const BATCH_GAP_MS = Number(process.env.EBAY_BATCH_GAP_MS || 4000);
+
 const results = [];
 const timings = {};
 const warnings = [];
 const errors = [];
 const startedAt = Date.now();
 const openPages = [];
+
+// 被控制台的「停止」或系统信号打断时，先把已经下好的文件记成结果清单。
+// 否则归档那一步会因为「没有 结果.json」直接报错，用户白等二十分钟。
+function writeInterimSummary(reason) {
+  try {
+    const summaryPath = join(runDir, '结果.json');
+    if (existsSync(summaryPath)) return;                  // 正常收尾已经写过，别覆盖
+    const files = [];
+    for (const item of results) {
+      if (!item || !item.path) continue;
+      files.push({
+        name: item.name, path: item.path, task: item.task,
+        valid: item.valid !== false && !item.problem,
+        problem: item.problem || null, rowCount: item.rowCount
+      });
+    }
+    writeFileSync(summaryPath, JSON.stringify({
+      startedAt: new Date(startedAt).toISOString(),
+      interrupted: reason,
+      files
+    }, null, 2), 'utf8');
+    console.log(`\n[中断] ${reason}：已把下好的 ${files.length} 份记进结果清单，归档不会丢`);
+  } catch { /* 写不进去也不影响退出 */ }
+}
+process.on('SIGTERM', () => { writeInterimSummary('收到停止信号'); process.exit(143); });
+process.on('SIGINT', () => { writeInterimSummary('按了 Ctrl+C'); process.exit(130); });
 
 // 下载目录按文件名前缀归属到任务：不同类型的报表不会串台，可以并行落盘
 const NAME = {
@@ -573,9 +603,11 @@ const TRAFFIC_READY_CLICK = `(() => {
   return { ok: true, text: label(link), tag: link.tagName, cls: String(link.className || '').slice(0, 40) };
 })()`;
 
-// 点一次并等到文件；顺带区分「没发出请求 / 任务失败 / 只是慢」
-// 点「Download report」→ 等 eBay 生成报表（实测 40~60 秒）→ 提示条里的 download 要再点一次 → 等文件
-async function grabTraffic(page, label, { timeoutMs = 150000, clickGapMs = 12000 } = {}) {
+// 点一次并等到文件；顺带区分「没发出请求 / 任务失败 / 只是慢 / 被风控拦住」
+// 点「Download report」→ 等 eBay 生成报表（实测 8~60 秒）→ 提示条里的 download 要再点一次 → 等文件
+// timeoutMs 从 150 秒缩到 80 秒：正常 8~14 秒就出，等 150 秒只会让人以为卡死。
+// 循环里每 4 秒看一眼是不是被风控页顶掉了：是就立刻抛（BlockedError），不在超时里白等。
+async function grabTraffic(page, label, { timeoutMs = 80000, clickGapMs = 12000 } = {}) {
   await page.eval(TRAFFIC_HOOK).catch(() => {});
   await page.eval('(() => { window.__trafficTask = null; return true; })()').catch(() => {});
   const before = new Set(readdirSync(inbox));
@@ -584,11 +616,21 @@ async function grabTraffic(page, label, { timeoutMs = 150000, clickGapMs = 12000
   const started = Date.now();
   const pick = () => readdirSync(inbox)
     .filter(name => !before.has(name) && !/\.crdownload$/i.test(name) && NAME.traffic.test(name));
-  let lastClickAt = 0, sawToast = false;
+  let lastClickAt = 0, sawToast = false, lastBlockCheck = 0, sawTaskState = false;
+  // 点了按钮以后，eBay 正常会在 3~8 秒内出提示条 / 进入生成中；如果 40 秒页面一点反应都没有，
+  // 说明它根本没受理这次请求（实测：短时间内提交太多次，traffic 报表会进入无响应状态）。
+  // 这时别再等到 80 秒超时，也别反复重试——直接抛出去，让上层停手。
+  const noResponseMs = Number(process.env.EBAY_NO_RESPONSE_MS || 50000);
   while (Date.now() - started < timeoutMs) {
     await sleep(1000);
     const fresh = pick();
     if (fresh.length) return fresh;
+    if (Date.now() - lastBlockCheck > 4000) {
+      lastBlockCheck = Date.now();
+      if (await isBlocked(page)) {
+        throw new BlockedError(`${label}：页面被 eBay 风控拦住了（等一会儿自动恢复，已下载的不会重复）`);
+      }
+    }
     // 提示条一出现立刻点 download；万一没触发，隔 clickGapMs 再补一次
     if (!lastClickAt || Date.now() - lastClickAt > clickGapMs) {
       const r = await page.eval(TRAFFIC_READY_CLICK).catch(() => null);
@@ -601,6 +643,12 @@ async function grabTraffic(page, label, { timeoutMs = 150000, clickGapMs = 12000
     }
     const state = await page.eval(TRAFFIC_TASK_STATE).catch(() => null);
     if (state && /FAILED|ERROR/i.test(state.status || '')) throw new Error(`报表任务失败：${state.status}`);
+    if (state && state.status) sawTaskState = true;
+    if (!sawToast && !sawTaskState && Date.now() - started > noResponseMs) {
+      const error = new Error(`${label}：点了下载，eBay 50 秒内没有任何反应（多半是短时间内提交太多次，它在排队/限速）`);
+      error.code = 'EBAY_NO_RESPONSE';
+      throw error;
+    }
   }
   const fresh = pick();
   if (fresh.length) return fresh;
@@ -985,7 +1033,9 @@ async function runTraffic(task, start, end) {
         // 重试时整页重新加载回目标区间，拿到干净页面（原地补点成功率低）
         await page.navigate(target, { settleMs: 2500 });
       }
-      if (!(await recoverIfBlocked(page, { tries: 2, waitMs: 5000 }))) throw new Error('页面被 eBay 风控拦截');
+      if (!(await recoverIfBlocked(page, { tries: 2, backoffMs: [20000, 60000] }))) {
+        throw new BlockedError(`Traffic ${task}：页面被 eBay 风控拦住`);
+      }
 
       const ready = await waitTrafficReady(page, start, end);
       if (!ready.ok) throw new Error(`页面区间未就绪：${JSON.stringify(ready.state)}`);
@@ -1020,13 +1070,18 @@ async function runTraffic(task, start, end) {
 async function runTrafficBatch(dates) {
   const page = await newPage('trafficBatch');
   const done = [];
-  for (const day of dates) {
+  let blockedStreak = 0;
+  let stoppedEarly = 0;
+  for (let index = 0; index < dates.length; index++) {
+    const day = dates[index];
     const startAt = Date.now();
     try {
       await retry(`Traffic ${day}`, async attempt => {
         // 整页导航 + 等区间匹配 + 1.2 秒渲染缓冲：批量模式首点失败主要就是页面还没切干净
         await page.navigate(trafficUrl(day, day), { settleMs: 1200 });
-        if (!(await recoverIfBlocked(page, { tries: 2, waitMs: 5000 }))) throw new Error('页面被 eBay 风控拦截');
+        if (!(await recoverIfBlocked(page, { tries: 2, backoffMs: [20000, 60000] }))) {
+          throw new BlockedError(`Traffic ${day}：页面被 eBay 风控拦住`);
+        }
         const ready = await waitTrafficReady(page, day, day);
         if (!ready.ok) throw new Error(`页面区间未就绪：${JSON.stringify(ready.state)}`);
         const t0 = Date.now();
@@ -1043,12 +1098,33 @@ async function runTrafficBatch(dates) {
         console.log(`[Traffic] ${day}：${recorded[0].rowCount} 行，${((Date.now() - t0) / 1000).toFixed(1)}s`);
         done.push(recorded[0]);
         return recorded;
-      }, { tries: 4, delayMs: 10000, backoff: 3 });
+      }, { tries: 3, delayMs: 8000, backoff: 2.5 });
+      blockedStreak = 0;
     } catch (error) {
       errors.push({ task: `traffic_${day}`, message: error.message });
-      console.log(`[失败] Traffic ${day}: ${error.message}`);
+      const throttled = isBlockedError(error) || error.code === 'EBAY_NO_RESPONSE';
+      if (throttled) {
+        blockedStreak += 1;
+        console.log(`[限速] ${day} 没下下来（连续第 ${blockedStreak} 次）—— eBay 短时间内被我们要太多次了，不是你操作错了`);
+        if (blockedStreak >= 2) {
+          stoppedEarly = dates.length - index;
+          console.log('');
+          console.log(`[停止] 剩下的 ${stoppedEarly} 天先不下了 —— 继续点只会让它更久不理我们。`);
+          console.log('       已经下好的报表都在，不会重复。过 1~2 小时再点「补齐缺口 + 更新看板」，只补缺的那几天。');
+          console.log('');
+          errors.push({ task: 'traffic_batch', message: `eBay 短时间限速，剩余 ${stoppedEarly} 天改为稍后补齐` });
+          break;
+        }
+        // 被拦一次：等 45 秒再试下一天，给风控一点冷却时间
+        await sleep(45000);
+      } else {
+        console.log(`[失败] Traffic ${day}: ${error.message}`);
+      }
     }
+    // 每天之间留一点间隔：30 天连点是最容易触发风控的用法
+    if (index < dates.length - 1) await sleep(BATCH_GAP_MS);
   }
+  if (stoppedEarly) timings.trafficBatchStopped = { days: stoppedEarly, reason: 'EBAY_BLOCKED' };
   return done;
 }
 
@@ -1395,7 +1471,9 @@ async function runReportCenter(kind, priorityDef) {
         await page.eval(`(() => { location.href = ${JSON.stringify(REPORTS_URL)}; return true; })()`).catch(() => {});
         await sleep(3500);
       }
-      await recoverIfBlocked(page, { tries: 2, waitMs: 5000 });
+      if (!(await recoverIfBlocked(page, { tries: 2, backoffMs: [20000, 60000] }))) {
+        throw new BlockedError(`报表中心 ${label}：页面被 eBay 风控拦住`);
+      }
       const t0 = Date.now();
       const knownRefs = new Set(await page.eval(RC_REFS));
 

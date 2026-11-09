@@ -810,7 +810,8 @@ const server = http.createServer(async (req, res) => {
       try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
       // 一步一步来：实测两路并行时，两个进程抢同一个浏览器窗口和同一个下载目录，
       // 流量那一摞会大量失败（7 天只拿到 3 天）——宁可控场慢一点，也不要下不全。
-      startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0);
+      // thenArchive：下完自动归档进「数据」，不用再让用户找「归档」按钮（小白最容易卡在这一步）。
+      startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0, { thenArchive: true });
       return send(res, 200, {
         ok: true, started: true, start: plan.start, end: plan.end, days,
         queues: plan.queues.map(q => ({ label: q.label, steps: q.steps.map(s => ({ day: s.day, title: s.title })) }))

@@ -10,17 +10,31 @@ const BLOCKED = `(() => {
   return /splashui\\/challenge|Pardon Our Interruption/i.test(t);
 })()`;
 
+// 风控不是「偶发失败」，重试再快也没用——只有停下来等才是解法。
+// 用它把「被拦」和「普通失败」区分开：前者一路短路到最外层统一处理。
+export class BlockedError extends Error {
+  constructor(message = '被 eBay 风控拦截（点得太快，它让我们慢一点）') {
+    super(message);
+    this.name = 'BlockedError';
+    this.code = 'EBAY_BLOCKED';
+  }
+}
+export const isBlockedError = error => Boolean(error && error.code === 'EBAY_BLOCKED');
+
 export async function isBlocked(page) {
   try { return await page.eval(BLOCKED); } catch { return false; }
 }
 
-// 拦截页/白屏时刷新等它恢复；返回最终是否可用
-export async function recoverIfBlocked(page, { tries = 3, waitMs = 6000 } = {}) {
+// 拦截页/白屏时等它恢复；返回最终是否可用。
+// 关键：先「等」再刷新，而且越等越久——刷得越频繁，风控越觉得你是脚本。
+export async function recoverIfBlocked(page, { tries = 3, waitMs = 6000, backoffMs = [15000, 45000, 90000] } = {}) {
   for (let i = 1; i <= tries; i++) {
     if (!(await isBlocked(page))) return true;
-    console.log(`[自愈] 遇到 eBay 拦截页，第 ${i}/${tries} 次刷新等待`);
+    const pause = backoffMs[Math.min(i - 1, backoffMs.length - 1)] ?? waitMs;
+    console.log(`[限速] 遇到 eBay 拦截页（第 ${i}/${tries} 次）：先等 ${Math.round(pause / 1000)} 秒再刷新 —— 慢一点就恢复了，不会丢数据`);
+    await sleep(pause);
     await page.eval('(() => { location.reload(); return true; })()').catch(() => {});
-    await sleep(waitMs);
+    await sleep(6000);        // 刷新后给它渲染时间
   }
   return !(await isBlocked(page));
 }
@@ -48,6 +62,9 @@ export async function retry(label, fn, { tries = 3, delayMs = 3000, backoff = 1.
     } catch (error) {
       fails.push(error.message);
       console.log(`[重试] ${label} 第 ${attempt}/${tries} 次失败：${error.message}`);
+      if (isBlockedError(error)) throw error;   // 被风控：立即上抛，别在这里空转四轮
+      // 「点了没反应」也基本是限速：只再试一次，然后交给上层停手，不磨满四轮
+      if (error.code === 'EBAY_NO_RESPONSE' && attempt >= 2) throw error;
       if (attempt < tries) await sleep(Math.round(delayMs * Math.pow(backoff, attempt - 1)));
       checkFatal();
     }

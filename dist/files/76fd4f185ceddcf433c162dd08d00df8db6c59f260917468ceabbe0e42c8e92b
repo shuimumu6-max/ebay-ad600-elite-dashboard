@@ -366,6 +366,9 @@
   .hit-r .r b{font-weight:600;color:var(--ink);min-width:132px}
   .gtag{font-size:10.5px;color:var(--ink-4);border:1px solid var(--line);border-radius:4px;padding:0 5px;white-space:nowrap}
   @media (max-width:900px){.fld-wrap{grid-template-columns:1fr}.scroll{max-height:none}}
+  /* 归档完成后的提示动画：让「打开看板」这个按钮自己跳出来，不用用户找 */
+  .pulse{animation:pulseGlow 1.5s ease-in-out 4}
+  @keyframes pulseGlow{0%,100%{box-shadow:0 0 0 0 rgba(11,77,162,0)}50%{box-shadow:0 0 0 5px rgba(11,77,162,.28)}}
 </style>
 </head>
 <body>
@@ -1412,7 +1415,18 @@ es.addEventListener('run', e => {
     if (data.dashboard) $('#linkDash').href = dashboardMode === 'local' ? '#' : data.dashboard;
     if (data.dataState) renderDataState(data.dataState);
     if (data.mode === 'publish'){
-      toast(data.code === 0 ? '看板已更新并推送' : '看板更新失败，看日志', data.code !== 0);
+      if (dashboardMode === 'local'){
+        // 本地看板：没有线上可推，归档完就能看。告诉用户点哪儿，别让他猜。
+        if (data.code === 0){
+          toast('数据已归档到本机，点右上角「打开看板」就能看到数据');
+          const btn = $('#btnPublish');
+          if (btn){ btn.classList.add('pulse'); setTimeout(() => btn.classList.remove('pulse'), 6000); }
+        } else {
+          toast('归档没成功，看日志最后几行', true);
+        }
+      } else {
+        toast(data.code === 0 ? '看板已更新并推送' : '看板更新失败，看日志', data.code !== 0);
+      }
       return;
     }
     if (data.summary) renderSummary(data.summary);

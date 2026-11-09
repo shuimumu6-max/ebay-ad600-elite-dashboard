@@ -40,7 +40,7 @@ if (!existsSync(HTML)) {
 // PLP（优先促刊：链接/关键词/搜索词）、订单、非在售、预定名单它读不了，
 // 所以这里直接不下发 —— 否则页面会蹦出「N 份没读懂」，运营以为坏了。
 const SKIP_DIR_PREFIX = ['04', '05', '06', '08', '09', '10', '11'];
-const SKIP_NAME = /PLP|_Keyword_|_Search-query_|order|non-active|scheduled/i;
+const SKIP_NAME = /PLP|_Keyword_|_Search-query_|priority|order|non-active|scheduled/i;
 
 // 同一份报表可能既在 90-待处理 又在分类目录里：先按文件名去重（优先 90-待处理），
 // 再对大小相同的文件算一次哈希，杜绝同内容不同名被重复解析。
