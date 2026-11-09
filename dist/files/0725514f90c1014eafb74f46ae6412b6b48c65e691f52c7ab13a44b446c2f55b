@@ -1,0 +1,110 @@
+// 环境启动器：确保「常驻桥」在线。
+// 正常情况（浏览器没重启过）这一步完全不需要你动手；
+// 只有浏览器重启后，调试开关会回到关闭状态，这时会帮你把开关页面打开，你拨一次即可。
+//
+// 2026-11-09 改：原来拨开关的说明只在「等 5 分钟超时之后」才打出来，用户只能盯着窗口干等，
+// 5 分钟后才知道要干嘛 → 现在**先给步骤再等待**，等待缩到 90 秒，超时给具体诊断 + 可原地重试。
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ensureEnv, bridgeHealth, findChrome } from './ensure-env.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const LOG = join(here, 'launch.log');
+const WAIT_SEC = 90;
+const MAX_TRY = 5;
+
+try { writeFileSync(LOG, ''); } catch { /* 忽略 */ }
+const log = text => {
+  console.log(text);
+  try { appendFileSync(LOG, text + '\n'); } catch { /* 忽略 */ }
+};
+
+// 拨开关是人工动作，拨开后几秒内就会自动继续；这里只负责问「再试一次 / 退出」
+function ask(text) {
+  if (!process.stdin.isTTY) return Promise.resolve('q');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => rl.question(text, answer => { rl.close(); resolve(answer.trim()); }));
+}
+
+log('============================================');
+log(' eBay 报表下载环境');
+log('============================================');
+log('');
+
+if (!findChrome()) {
+  log('[X] 没找到 Google Chrome，请确认安装后重试。');
+  process.exit(1);
+}
+
+const before = await bridgeHealth();
+if (before?.connected) {
+  log('[OK] 常驻连接已在线，什么都不用做。');
+  log('     连接一直保持，期间所有下载都不会再问你要授权。');
+  log('');
+  log(' 环境已就绪。直接双击「报表控制台.cmd」或「一键下载.cmd」即可。');
+  process.exit(0);
+}
+
+// 关键：先说要做什么，再开始等，否则用户只能看着窗口发呆
+log('[1/2] 启动常驻连接服务…');
+log('');
+log(' 需要你在 Chrome 里拨一次开关（只这一次，浏览器不重启就一直有效）：');
+log('   ① 会自动弹出 chrome://inspect/#remote-debugging 这个页面');
+log('      （没弹出来就在 Chrome 地址栏手输这一串）');
+log('   ② 把页面里的「Allow remote debugging for this browser instance」拨到开');
+log('   ③ 拨开后不用点别的，这里会自动继续（最多等 90 秒）');
+log('');
+log(' 拨开后 10 秒还没反应：把 Chrome 所有窗口关掉再打开，重新拨一次。');
+log('');
+
+let result = null;
+for (let attempt = 1; attempt <= MAX_TRY; attempt++) {
+  result = await ensureEnv({
+    onLog: text => log('     ' + text),
+    // 只在第一次自动打开开关页，重试时不再重复开标签页
+    openInspect: attempt === 1,
+    waitAuthMs: WAIT_SEC * 1000
+  });
+  if (result.ok) break;
+
+  log('');
+  log('[X] 还没连上：' + (result.reason || '浏览器调试开关未打开'));
+  const after = await bridgeHealth();
+  if (!after) {
+    log('     状态：常驻桥没起来（多半被安全软件拦了）——先重启一次再试');
+  } else if (after.endpointFrom === 'fallback') {
+    log('     状态：没找到 Chrome 的调试端口 —— 开关基本可以确定还是「关」的');
+    log('     位置就在 chrome://inspect/#remote-debugging 页面里那段 Allow remote debugging');
+  } else {
+    log(`     状态：调试端口有（来源 ${after.endpointFrom}），但还没连上${after.connected ? '' : '，Chrome 可能刚重启正在重连'}`);
+    if (after.hint) log(`     提示：${after.hint}`);
+  }
+  log('');
+  log(' 按顺序试这三件事：');
+  log('   1) 地址栏输入 chrome://inspect/#remote-debugging，确认开关是「开」的状态');
+  log('   2) 完全退出 Chrome（所有窗口关掉）再打开，重新拨一次开关');
+  log('   3) 还不行：把 app\\launch.log 和 app\\bridge.log 两个文件发给管理员');
+  log('');
+
+  if (attempt >= MAX_TRY) break;
+  const answer = await ask(' 拨好之后直接按回车重试（输入 q 退出）：');
+  if (answer.toLowerCase() === 'q') break;
+  log('');
+  log(`[重试] 再检查一次…`);
+}
+
+if (result?.ok) {
+  log('[2/2] 连接已就绪。');
+  log('');
+  log(' 环境已就绪，用的是你平时那个已登录的 Chrome，不需要重新登录。');
+  log(' 这一条连接会一直保持：之后下载、重启控制台、关窗口都不会再问你要授权。');
+  log(' 只有「你关闭或重启了 Chrome」时，才需要再来一次。');
+  log('');
+  process.exit(0);
+}
+
+log('[X] 环境还没就绪。做完上面三步再来一次，或者把日志发给管理员。');
+log(` 日志：${LOG}`);
+process.exit(1);

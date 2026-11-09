@@ -1,6 +1,6 @@
 {
-  "version": "v8",
-  "createdAt": "2026-11-09 11:42:19",
+  "version": "v9",
+  "createdAt": "2026-11-09 11:57:50",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -15,8 +15,8 @@
     },
     {
       "path": "app/bridge-daemon.mjs",
-      "hash": "99e7a067e9ed4fc7dcc45128cd85d47c5db7a4150b5f5ae00f2624afb8717a5d",
-      "size": 2460
+      "hash": "b44f30dddbd3f45bf44bb0d8453bad42ec1a11b6476d0d82d900e1c8a7b656a9",
+      "size": 2875
     },
     {
       "path": "app/campaign-scan.mjs",
@@ -95,8 +95,8 @@
     },
     {
       "path": "app/launch-env.mjs",
-      "hash": "570960a026faf15845198b629650e566ffa09bca2f3759a44cefe8259a5e61aa",
-      "size": 2629
+      "hash": "0725514f90c1014eafb74f46ae6412b6b48c65e691f52c7ab13a44b446c2f55b",
+      "size": 4938
     },
     {
       "path": "app/online-update.mjs",

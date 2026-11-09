@@ -52,7 +52,14 @@ for (;;) {
   if (livedMs < 5000) quickFails += 1; else quickFails = 0;
 
   if (code === 0) {
-    // 端口被别的实例占用等情况，等久一点再来
+    // code 0 = 桥主动退出，最常见是「端口已被占用」（另一个桥/守护已经在服务）。
+    // 这种情况下本守护必须退出，否则会每 60 秒空转一次、还一直往日志里写，
+    // 装了两份工具的机器就会看到两个守护互相踢。
+    const live = await healthy();
+    if (live) {
+      log(`已有别的桥在服务（pid ${live.pid ?? '未知'}），本守护退出，不再空转。`);
+      process.exit(0);
+    }
     log(`桥退出（code 0，存活 ${Math.round(livedMs / 1000)}s），60 秒后重新检查。`);
     await sleep(60000);
   } else if (quickFails >= 5) {
