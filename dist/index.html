@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eBay 报表工具包 · 下载</title>
+<style>
+  :root { --ink:#16202c; --muted:#5c6c80; --line:#dde3ea; --brand:#1f5fbf; --soft:#f5f8fc; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:48px 20px 64px; font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; color:var(--ink); background:var(--soft); }
+  .card { max-width:760px; margin:0 auto; background:#fff; border:1px solid var(--line); border-radius:12px; padding:34px 38px 30px; box-shadow:0 10px 30px rgba(22,32,44,.06); }
+  h1 { margin:0 0 6px; font-size:24px; letter-spacing:.2px; }
+  .meta { color:var(--muted); font-size:13px; margin-bottom:26px; }
+  .meta b { color:var(--ink); font-weight:600; }
+  .btn { display:inline-block; padding:14px 30px; border-radius:8px; background:var(--brand); color:#fff; font-size:16px; font-weight:600; text-decoration:none; }
+  .btn:hover { background:#184a96; }
+  .alt { margin-left:14px; font-size:13px; color:var(--muted); }
+  .alt a { color:var(--brand); }
+  .note { margin-top:14px; padding:12px 14px; border-left:3px solid #e3a008; background:#fffaf0; border-radius:0 6px 6px 0; font-size:13px; color:#6b4a00; }
+  h2 { font-size:15px; margin:30px 0 10px; }
+  ol { margin:0; padding-left:22px; }
+  ol li { margin:6px 0; }
+  code { background:#eef2f7; padding:1px 6px; border-radius:4px; font-size:13px; }
+  .foot { margin-top:26px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>eBay 报表工具包</h1>
+  <div class="meta">最新版本 <b>v2</b> · 发布于 2026-11-09 10:33:52 · 单店铺版（下载器 + 本地看板）</div>
+
+  <a class="btn" href="./installer.cmd" download>下载安装器</a>
+  <span class="alt">或手动下载 <a href="./toolkit.zip" download>程序包（约 1 MB，不含运行时）</a></span>
+
+  <div class="note">浏览器若提示「此类文件可能有害」，点「保留」即可。安装器会自动把工具包装到桌面「eBay报表工具包」文件夹，首次安装约需下载 83 MB 运行时。</div>
+
+  <h2>安装步骤</h2>
+  <ol>
+    <li>点上方「下载安装器」，双击下载到的 <code>installer.cmd</code>，等它跑完（桌面会出现「eBay报表工具包」文件夹）。</li>
+    <li>按窗口提示配置店铺：复制「新店铺配置示例.json」改成自己的店铺值，另存为 <code>my-shop.json</code>，设系统环境变量 <code>EBAY_SHOP_CONFIG</code> 指向它。</li>
+    <li>登录 eBay 后台，浏览器打开 <code>chrome://inspect/#remote-debugging</code>，把 <b>Allow remote debugging</b> 拨到开（只需一次），然后双击「报表控制台.cmd」。</li>
+  </ol>
+
+  <h2>日常使用</h2>
+  <ol>
+    <li><b>报表控制台.cmd</b> — 界面里勾选报表类型和日期，下载到本地。</li>
+    <li><b>打开看板.cmd</b> — 本地看板，点「上传报表」选择下载好的 CSV，数据只存本机浏览器。</li>
+    <li><b>检查更新.cmd</b> — 有新版本时双击它，只下载变化的程序文件，配置和报表数据不受影响。</li>
+  </ol>
+
+  <div class="foot">更新源：<span id="base">https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/</span> ｜ 本包不含任何店铺数据，程序文件与店铺配置、报表数据完全隔离。</div>
+</div>
+</body>
+</html>
