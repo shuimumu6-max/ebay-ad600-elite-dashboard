@@ -17,7 +17,9 @@ where curl.exe >nul 2>nul
 if errorlevel 1 goto nocurl
 
 if exist "%PS%" del /q "%PS%" >nul 2>nul
-curl.exe -L --fail --retry 2 --retry-delay 2 --connect-timeout 20 -s -S -o "%PS%" "%BASE%setup.ps1"
+rem Cache-buster: GitHub Pages caches setup.ps1 for ~10 minutes at the CDN edge,
+rem which would otherwise install an outdated toolkit.
+curl.exe -L --fail --retry 2 --retry-delay 2 --connect-timeout 20 -s -S -o "%PS%" "%BASE%setup.ps1?t=%RANDOM%%RANDOM%"
 if errorlevel 1 goto dlfail
 if not exist "%PS%" goto dlfail
 
