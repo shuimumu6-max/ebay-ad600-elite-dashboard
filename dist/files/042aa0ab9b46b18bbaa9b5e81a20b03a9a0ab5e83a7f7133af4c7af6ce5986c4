@@ -74,6 +74,9 @@ let scanChild = null;                                // 活动扫描子进程（
 let runInfo = null;                                  // { startedAt, args, lines }
 // 逐天串行队列：一键补齐全天跑完一天 → 等一会儿 → 再跑下一天（同一天重复提交容易被 eBay 拒）
 let seq = null;                                      // { steps, i, gapMs, label, timer }
+// 两路并行：流量一路、广告一路（报表中心按「请求行名」排队，PLG 与优先促刊行名相同，
+// 这两类并发会互相认领文件，所以广告必须自己串行；流量行名不同，可以和广告同时跑）
+let par = null;                                      // { label, queues, runDirs, procs }
 let buffer = [];                                     // 最近日志行，供新连接补屏
 const clients = new Set();                           // SSE 连接
 
@@ -118,63 +121,61 @@ function runSellerScan() {
   });
 }
 
-// ---------- 首次初始化：一次把最近 30 天的数据下下来，看板一打开就有内容 ----------
-// 运营不用理解「哪些报表、什么粒度」：Traffic 逐日、PLG 本月+上月、优先促刊 4 类走一个 30 天区间、
-// 在售名单 1 份。以后要补哪一段，再用界面上的单项下载。
+// ---------- 首次初始化：一次把能拿到的历史数据都下下来，看板一打开就有内容 ----------
+// 口径（2026-11-09 实测修正）：eBay 报表中心「按日」粒度只给 今天/昨天/本周/上周，
+// 所以**广告数据最多只能按日回溯两周**（上月/自定义必须用 SUMMARY 汇总，没有逐日行）。
+// 因此：流量逐日 N 天（能拿满 30 天）；PLG 和优先促刊各下「上周 + 本周」两份按日数据。
 function shiftDays(iso, days) {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
 
+// 返回两路队列：流量·在售 一路，广告 一路（广告内部必须串行：PLG 与优先促刊行名相同）
 function firstRunPlan(days = 30) {
   const end = yesterdayPacific();
   const start = shiftDays(end, -(days - 1));
   const base = ['run-download.mjs', '--out', OUT_DIR, '--max-tabs', '10'];
-  const steps = [
-    {
-      // 第 0 步：先从浏览器读店铺名（只读，几秒），失败也不影响后面的下载
-      day: '识别店铺',
-      title: '识别店铺（从浏览器读取，不用手填）',
-      mode: 'seller', gapMs: 0,
-      args: [join(APP_DIR, 'auto-scan.mjs'), '--seller-only', '--json', '--quiet']
-    },
-    {
-      day: `Traffic ${start}~${end}`,
-      title: `流量报表（${start} ~ ${end}，逐日 ${days} 份）`,
-      mode: 'download', gapMs: 0,
-      args: [...base, '--only', 'traffic', '--dates', `${start}..${end}`, '--date', end]
-    },
-    {
-      day: 'PLG 上月',
-      title: 'PLG 链接广告（上月，按日）',
-      mode: 'download',
-      args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'PREVIOUSMONTH']
-    },
-    {
-      day: 'PLG 本月',
-      title: 'PLG 链接广告（本月，按日）',
-      mode: 'download',
-      args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'CURRENTMONTH']
-    },
-    {
-      day: '优先促刊',
-      title: `优先促销刊登（${start} ~ ${end}：物品刊登 / 关键词 / 活动 / 搜索词）`,
-      mode: 'download',
-      args: [...base, '--only', 'priority', '--date', end,
-        '--priority-types', 'listing,keyword,campaign,search',
-        '--priority-unit', 'DAILY',
-        '--priority-range', 'CUSTOM',
-        '--priority-custom-start', start, '--priority-custom-end', end]
-    },
-    {
-      day: '在售名单',
-      title: '在售商品名单（1 份，用于产品/机型归属）',
-      mode: 'download',
-      args: [...base, '--only', 'active', '--date', end, '--active-type', 'active']
-    }
+  const traffic = {
+    day: `Traffic ${start}~${end}`,
+    title: `流量报表（${start} ~ ${end}，逐日 ${days} 份）`,
+    args: [...base, '--only', 'traffic', '--dates', `${start}..${end}`, '--date', end]
+  };
+  const active = {
+    day: '在售名单',
+    title: '在售商品名单（1 份，用于产品/机型归属）',
+    args: [...base, '--only', 'active', '--date', end, '--active-type', 'active']
+  };
+  const plgLast = {
+    day: 'PLG 上周',
+    title: 'PLG 链接广告（上周，按日）',
+    args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'LASTWEEK']
+  };
+  const plgThis = {
+    day: 'PLG 本周',
+    title: 'PLG 链接广告（本周，按日）',
+    args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'CURRENTWEEK']
+  };
+  const prLast = {
+    day: '优先促刊 上周',
+    title: '优先促销刊登（上周，按日：物品刊登 / 关键词 / 活动 / 搜索词）',
+    args: [...base, '--only', 'priority', '--date', end,
+      '--priority-types', 'listing,keyword,campaign,search',
+      '--priority-unit', 'DAILY', '--priority-range', 'LASTWEEK']
+  };
+  const prThis = {
+    day: '优先促刊 本周',
+    title: '优先促销刊登（本周，按日：物品刊登 / 关键词 / 活动 / 搜索词）',
+    args: [...base, '--only', 'priority', '--date', end,
+      '--priority-types', 'listing,keyword,campaign,search',
+      '--priority-unit', 'DAILY', '--priority-range', 'CURRENTWEEK']
+  };
+  const queues = [
+    { label: '流量', steps: [traffic, active] },
+    { label: '广告', steps: [plgLast, plgThis, prLast, prThis] }
   ];
-  return { steps, start, end, days };
+  const steps = queues.flatMap(q => q.steps);
+  return { steps, queues, start, end, days };
 }
 
 // 下载结果目录里有没有 CSV：新用户装完第一次打开时用来判断「要不要引导初始化」
@@ -224,7 +225,7 @@ async function envState() {
       reconnectTries: h?.reconnectTries || 0,
       hint: h?.hint || '常驻桥未启动'
     },
-    running: !!child || !!seq,
+    running: !!child || !!seq || !!par,
     mode: runInfo?.mode || null,
     runStartedAt: runInfo?.startedAt || null,
     outDir: OUT_DIR,
@@ -560,6 +561,84 @@ function stopSequence() {
   return true;
 }
 
+// ---------- 两路并行（首次初始化用） ----------
+// 收益：30 天的流量报表是最慢的一段（逐日 30 份、串行提交），把广告那几份放到另一路同时跑，
+// 总时长就从「流量 + 广告」降到「流量」。
+function startParallel(label, queues) {
+  buffer = [];
+  runInfo = { startedAt: Date.now(), args: [], runDir: null, mode: 'parallel' };
+  par = {
+    label, startedAt: Date.now(), runDirs: [], procs: new Set(),
+    queues: queues.map(q => ({ label: q.label, steps: q.steps, i: 0, running: false, failures: [] }))
+  };
+  say(`[控制台] ${label}：${queues.length} 路并行（${queues.map(q => q.label).join(' / ')}）；同一路内部仍然串行，避免报表中心认错文件`);
+  broadcast('run', { phase: 'start', mode: 'parallel' });
+  pumpParallel();
+}
+
+function pumpParallel() {
+  if (!par) return;
+  for (const q of par.queues) {
+    if (!q.running && q.i < q.steps.length) spawnQueueStep(q);
+  }
+  if (par.queues.every(q => !q.running && q.i >= q.steps.length)) finishParallel();
+}
+
+function spawnQueueStep(q) {
+  const step = q.steps[q.i];
+  q.running = true;
+  say(`[控制台] [${q.label}] 开始：${step.title || step.day}`);
+  const proc = spawn(NODE, step.args, {
+    cwd: APP_DIR,
+    windowsHide: true,
+    // 并行时两路共用同一个浏览器窗口，谁都不许清「历史 /sh 页」，否则会把另一路的页面关掉
+    env: { ...process.env, EBAY_KEEP_TABS: '1' }
+  });
+  par.procs.add(proc);
+  let tail = '';
+  const onData = chunk => {
+    tail += chunk.toString('utf8');
+    const parts = tail.split(/\r?\n/);
+    tail = parts.pop() ?? '';
+    for (const line of parts) {
+      if (!line.trim()) continue;
+      say(`[${q.label}] ${line}`);
+      const m = /结果目录：(.*)$/.exec(line);
+      if (m && par) par.runDirs.push(m[1].trim());
+    }
+  };
+  proc.stdout.on('data', onData);
+  proc.stderr.on('data', onData);
+  proc.on('exit', code => {
+    if (tail.trim()) say(`[${q.label}] ${tail.trim()}`);
+    par?.procs.delete(proc);
+    q.running = false;
+    if (code !== 0) q.failures.push(`${step.title || step.day}（退出码 ${code}）`);
+    q.i++;
+    pumpParallel();
+  });
+}
+
+function finishParallel() {
+  if (!par) return;
+  const { label, queues, runDirs, startedAt } = par;
+  const fails = queues.flatMap(q => q.failures);
+  const mins = Math.round((Date.now() - startedAt) / 60000 * 10) / 10;
+  say(`[控制台] ${label} 全部结束：用时 ${mins} 分钟，得到 ${runDirs.length} 个结果目录`
+    + (fails.length ? `，失败 ${fails.length} 步：${fails.join('、')}` : '，全部成功'));
+  par = null;
+  runInfo = null;
+  broadcast('run', { phase: 'end', code: fails.length ? 1 : 0, mode: 'parallel', summary: lastSummary(), dashboard: DASHBOARD_URL, dataState: dataDirState() });
+}
+
+function stopParallel() {
+  if (!par) return false;
+  for (const proc of par.procs) { try { proc.kill(); } catch { /* 忽略 */ } }
+  par = null;
+  runInfo = null;
+  return true;
+}
+
 // ---------- HTTP ----------
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
@@ -604,7 +683,7 @@ const server = http.createServer(async (req, res) => {
     // 识别店铺名：只读浏览器里的卖家账号，几秒完成，不碰活动列表、不下载。
     // 新装用户第一次点「识别 / 改名」就走这里，不需要手填店铺名。
     if (path === '/api/detect-shop' && req.method === 'POST') {
-      if (child || seq || scanChild) return send(res, 409, { ok: false, error: '有任务在跑，等它结束再识别' });
+      if (child || seq || scanChild || par) return send(res, 409, { ok: false, error: '有任务在跑，等它结束再识别' });
       const state = await bridgeHealth().catch(() => null);
       if (!state?.connected) {
         return send(res, 200, { ok: false, error: '浏览器还没连上：先点页面顶部的「去开开关」，再点一次识别' });
@@ -621,7 +700,7 @@ const server = http.createServer(async (req, res) => {
     // 刷新活动列表（可选功能）：只读扫描报表中心的 Campaigns 卡片，把活动名填进下拉框。
     // 不点也完全能用——活动留空就是「后台默认全部活动」。
     if (path === '/api/auto-scan' && req.method === 'POST') {
-      if (scanChild || child || seq) return send(res, 409, { ok: false, error: '有任务在跑，等它结束再刷新活动列表' });
+      if (scanChild || child || seq || par) return send(res, 409, { ok: false, error: '有任务在跑，等它结束再刷新活动列表' });
       say('[控制台] 开始扫描报表中心的活动列表（只读，不提交任何下载）…');
       const proc = spawn(NODE, [join(APP_DIR, 'auto-scan.mjs'), '--json'], { cwd: dirname(APP_DIR), windowsHide: true });
       scanChild = proc;
@@ -687,22 +766,41 @@ const server = http.createServer(async (req, res) => {
     // 首次初始化：一键下载最近 30 天（Traffic 逐日 + PLG 本月/上月 + 优先促刊 4 类 + 在售名单）。
     // 目的是让新装的人打开看板就有数据，不用先研究「该下哪些报表、什么粒度」。
     if (path === '/api/first-run' && req.method === 'POST') {
-      if (child || seq || scanChild) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
+      if (child || seq || scanChild || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
       const body = await readBody(req).catch(() => ({}));
       const days = Math.min(90, Math.max(7, Number(body.days) || 30));
       const plan = firstRunPlan(days);
       if (body.dryRun) {
-        return send(res, 200, { ok: true, dryRun: true, start: plan.start, end: plan.end, steps: plan.steps.map(s => ({ day: s.day, title: s.title, args: s.args })) });
+        return send(res, 200, {
+          ok: true, dryRun: true, start: plan.start, end: plan.end,
+          queues: plan.queues.map(q => ({ label: q.label, steps: q.steps.map(s => ({ day: s.day, title: s.title })) })),
+          steps: plan.steps.map(s => ({ day: s.day, title: s.title, args: s.args }))
+        });
       }
-      say(`[控制台] 首次初始化：最近 ${days} 天（${plan.start} ~ ${plan.end}），共 ${plan.steps.length} 步，全程只读下载，不会改动任何已有数据`);
-      startSequence(plan.steps, `首次初始化（${plan.start} ~ ${plan.end}）`, 60 * 1000);
-      return send(res, 200, { ok: true, started: true, ...plan, steps: plan.steps.map(s => ({ day: s.day, title: s.title })) });
+      // 第 1 步永远是「跟店铺后台连上」：连不上就直接说，不要让人等半小时才发现
+      const state = await bridgeHealth().catch(() => null);
+      if (!state?.connected) {
+        return send(res, 200, {
+          ok: false,
+          error: '浏览器还没连上：先点页面顶部的「去开开关」，把 Allow remote debugging 拨开，再点下载'
+        });
+      }
+      say(`[控制台] 首次初始化：流量 ${days} 天 + 广告（本周/上周）；全程只读下载，不改动任何已有数据`);
+      // 先把店铺名读出来（只读，几秒），读不到也不拦着下载
+      try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
+      // 一步一步来：实测两路并行时，两个进程抢同一个浏览器窗口和同一个下载目录，
+      // 流量那一摞会大量失败（7 天只拿到 3 天）——宁可控场慢一点，也不要下不全。
+      startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0);
+      return send(res, 200, {
+        ok: true, started: true, start: plan.start, end: plan.end, days,
+        queues: plan.queues.map(q => ({ label: q.label, steps: q.steps.map(s => ({ day: s.day, title: s.title })) }))
+      });
     }
 
     // 一键补齐：扫描正式目录的缺口 → 只下载缺的那些 → 归档 → 更新看板
     // 口径（2026-11-08 定）：看板日更 = 流量单日 + PLG 链接广告 + PLP 链接广告（走 campaign 页）
     if (path === '/api/gap-fill' && req.method === 'POST') {
-      if (child || seq) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
+      if (child || seq || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
       let scanned;
       try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL }); }
       catch (error) { return send(res, 500, { ok: false, error: `扫描失败：${error.message}` }); }
@@ -751,7 +849,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (path === '/api/run' && req.method === 'POST') {
-      if (child || seq) return send(res, 409, { ok: false, error: '已经有一次下载在跑，先停止或等它结束' });
+      if (child || seq || par) return send(res, 409, { ok: false, error: '已经有一次下载在跑，先停止或等它结束' });
       const form = await readBody(req);
       let args;
       try { args = buildArgs(form); } catch (error) { return send(res, 400, { ok: false, error: error.message }); }
@@ -763,7 +861,7 @@ const server = http.createServer(async (req, res) => {
 
     // 只更新看板：拿正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages
     if (path === '/api/publish' && req.method === 'POST') {
-      if (child || seq) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再更新看板' });
+      if (child || seq || par) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再更新看板' });
       startJob(['publish-only.mjs'], 'publish', '只更新看板（不下载）');
       return send(res, 200, { ok: true });
     }
@@ -773,7 +871,7 @@ const server = http.createServer(async (req, res) => {
 
     // 对已完成的运行补做「归档 + 更新看板」：不重新下载，直接按 结果.json 归档再推看板
     if (path === '/api/archive-publish' && req.method === 'POST') {
-      if (child || seq) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再归档' });
+      if (child || seq || par) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再归档' });
       const form = await readBody(req);
       const runDir = String(form.runDir || '').trim();
       if (runDir && !isAbsolute(runDir)) return send(res, 400, { ok: false, error: '运行目录要填绝对路径' });
@@ -798,9 +896,11 @@ const server = http.createServer(async (req, res) => {
 
     if (path === '/api/stop' && req.method === 'POST') {
       const hadSeq = stopSequence();
+      const hadPar = stopParallel();
       if (!child) {
         if (hadSeq) say('[控制台] 已停止逐天补齐队列（等待中的下一步不再执行）');
-        return send(res, 200, { ok: true, stopped: hadSeq });
+        if (hadPar) say('[控制台] 已停止两路并行下载（流量 / 广告都停了）');
+        return send(res, 200, { ok: true, stopped: hadSeq || hadPar });
       }
       child.kill();
       say(hadSeq

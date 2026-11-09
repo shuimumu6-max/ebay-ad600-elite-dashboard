@@ -359,6 +359,9 @@ function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); wat
 // 开跑前清掉历史遗留的 /sh 页面。先确保窗口里还有别的标签页（没有就补一个空白页），
 // 再把 /sh 页全关：既不会让 Chrome 收回远程调试授权，也不会留一个 eBay 页占 MAX_TABS 配额。
 async function trimOldTabs() {
+  // 两路并行下载（控制台「首次初始化」）时绝不能清标签页：
+  // 另一路正在用那些页面，清掉就让对方 35 秒等不到就绪 → 整步失败（实测踩过）。
+  if (process.env.EBAY_KEEP_TABS === '1') return;
   const { targetInfos } = await cdp('Target.getTargets');
   const pages = targetInfos.filter(t => t.type === 'page');
   const stale = pages.filter(t => /ebay\.com\/sh\//i.test(t.url || ''));
