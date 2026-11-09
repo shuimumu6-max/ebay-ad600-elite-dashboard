@@ -283,7 +283,7 @@
       const byCampaign = campaign && PRODUCTS.find(product => product.titleTokens.some(token => campaign.includes(token)));
       if (byCampaign) return byCampaign.key;
       const sku = String(row?.sku ?? skuByItemId.get(String(row?.itemId ?? '')) ?? '').toLowerCase();
-      const bySku = sku && PRODUCTS.find(product => product.sku.toLowerCase() === sku);
+      const bySku = sku && PRODUCTS.find(product => (product.skus || [product.sku]).some(entry => String(entry).toLowerCase() === sku));
       if (bySku) return bySku.key;
       return PRODUCT_UNKNOWN;
     }
@@ -303,7 +303,7 @@
     // 选中状态保存在 ui.models，弹层开合保存在 ui.modelPopOpen，搜索词保存在 ui.modelSearch，
     // 因此 render() 整页重绘后弹层与搜索词都能恢复。
     function modelFilterField() {
-      const options = [...PRODUCTS.map(product => [product.key, product.label, product.sku]), [PRODUCT_UNKNOWN, '未识别', '']];
+      const options = [...PRODUCTS.map(product => [product.key, product.label, (product.skus || [product.sku]).join(' / ')]), [PRODUCT_UNKNOWN, '未识别', '']];
       const search = ui.modelSearch.toLowerCase();
       const items = options
         .filter(([key, label, sku]) => !search || label.toLowerCase().includes(search) || String(sku).toLowerCase().includes(search) || key.toLowerCase().includes(search))
