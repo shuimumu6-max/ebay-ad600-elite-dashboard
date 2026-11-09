@@ -111,11 +111,27 @@ const shopName = override.shopName === undefined
   : (String(override.shopName).trim() || '我的店铺');
 const sellerName = String(override.sellerName || '').trim();
 
+// 路径容错：把工具包整个复制到另一台电脑 / 另一个用户名下时，my-shop.json 里存的
+// 绝对路径会失效（例如别人的 C:/Users/chen.jie/...）。失效就退回本包内目录 ——
+// 宁可数据换个位置，也不能让整个工具打不开（早期版本真踩过：归档直接 ENOENT）。
+function resolveDir(value, fallback, label) {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  const parent = dirname(raw.replace(/[\\/]+$/, ''));
+  if (parent && existsSync(parent)) return raw;
+  console.warn(`[店铺配置] ${label} 指向的目录不存在：${raw}`);
+  console.warn(`           已自动改用本包内的：${fallback}（想固定目录就改 my-shop.json）`);
+  return fallback;
+}
+
 export const SHOP = {
   ...DEFAULTS,
   ...override,
   shopName,
   sellerName,
+  dataDir: resolveDir(override.dataDir, DEFAULTS.dataDir, 'dataDir'),
+  runsDir: resolveDir(override.runsDir, DEFAULTS.runsDir, 'runsDir'),
+  downloadsDir: resolveDir(override.downloadsDir, DEFAULTS.downloadsDir, 'downloadsDir'),
   // 数组类字段不做浅合并，避免半份旧店铺活动混进新店铺。
   // 空数组是**有效值**，意思是「后台默认的全部活动」——不要回退成 DEFAULTS 里的固定几个。
   plpCampaigns: override.plpCampaigns ?? DEFAULTS.plpCampaigns,
