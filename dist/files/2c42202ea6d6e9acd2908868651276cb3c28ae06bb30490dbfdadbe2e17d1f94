@@ -59,18 +59,25 @@ const DEFAULTS = {
 };
 
 function readOverride() {
-  const path = process.env.EBAY_SHOP_CONFIG;
-  if (!path) return {};
-  if (!existsSync(path)) {
-    console.warn(`[店铺配置] EBAY_SHOP_CONFIG 指向的文件不存在：${path}，已用内置默认值`);
-    return {};
+  // 优先级：环境变量 EBAY_SHOP_CONFIG → 程序目录下的 my-shop.json → 内置默认值。
+  // 第二个入口专为「不懂环境变量」的运营准备：安装目录里放一个 my-shop.json 就生效。
+  const envPath = process.env.EBAY_SHOP_CONFIG;
+  const localPath = join(PROJECT_ROOT, 'my-shop.json');
+  const candidates = envPath ? [envPath, localPath] : [localPath];
+  for (const path of candidates) {
+    if (!existsSync(path)) {
+      if (path === envPath) console.warn(`[店铺配置] EBAY_SHOP_CONFIG 指向的文件不存在：${path}，继续找安装目录的 my-shop.json`);
+      continue;
+    }
+    try {
+      const data = JSON.parse(readFileSync(path, 'utf8'));
+      console.log(`[店铺配置] 已读取：${path}`);
+      return data;
+    } catch (error) {
+      console.warn(`[店铺配置] 读取失败（${error.message}）：${path}`);
+    }
   }
-  try {
-    return JSON.parse(readFileSync(path, 'utf8'));
-  } catch (error) {
-    console.warn(`[店铺配置] 读取失败（${error.message}），已用内置默认值`);
-    return {};
-  }
+  return {};
 }
 
 const override = readOverride();
@@ -117,7 +124,7 @@ export const BRIDGE_PORT = SHOP.bridgePort;
 export function shopSummary() {
   return {
     shopName: SHOP.shopName,
-    configFile: process.env.EBAY_SHOP_CONFIG || '(内置默认值)',
+    configFile: process.env.EBAY_SHOP_CONFIG || (existsSync(join(PROJECT_ROOT, 'my-shop.json')) ? join(PROJECT_ROOT, 'my-shop.json') : '(内置默认值)'),
     dataDir: DATA_DIR,
     runsDir: RUNS_DIR,
     dashboardUrl: DASHBOARD_URL,

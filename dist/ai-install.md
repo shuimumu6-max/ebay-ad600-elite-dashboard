@@ -12,60 +12,56 @@
 
 - 工具用途：在**已登录 eBay 卖家后台的 Chrome/Edge** 上，批量自动下载各类报表（CSV）；再用本机离线看板看数据。数据只留在本机。
 - 下载页（唯一官方来源）：https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/
-- 安装目录：`%USERPROFILE%\Desktop\eBay报表工具包`（安装脚本固定写到桌面，不要自己改路径）
+- 安装目录：桌面下的 `eBay报表工具包` 文件夹（安装脚本自动定位桌面，OneDrive 重定向也能找到；不要自己换路径）
 - 环境要求：Windows 10 1809+ 或 Windows 11；自带 PowerShell 5.1 和 curl.exe；Chrome 或 Edge 且**已登录 eBay 卖家后台**。
 
 ## 第 0 步：先问我要这几项，缺了就问，禁止编造
 
 1. `shopName`：店铺名，随便一个能认出来的名字（例：`AD600 Elite`）
-2. `dataDir`：报表正式保存目录（绝对路径，例：`C:/Users/我的用户名/Desktop/店铺数据`）
-3. `runsDir`：每次下载的临时结果目录（格式同上）
-4. `downloadsDir`：浏览器默认下载目录（一般是 `C:/Users/我的用户名/Downloads`）
-5. `plpCampaigns`：优先促销刊登的活动 ID 列表（通常 3 个）
-6. `plgCampaigns`：PLG 的活动 ID + 显示名列表
+2. `plpCampaigns`：优先促销刊登的活动 ID 列表（通常 3 个）
+3. `plgCampaigns`：PLG 的活动 ID + 显示名列表
 
-活动 ID 在哪找：eBay 卖家后台 → 广告 → Campaigns，列表里每个活动对应的数字 ID（也可以让我把旧店铺的配置 JSON 发你，照结构抄）。看板地址 `dashboardUrl` 可选，没有就填空字符串。端口默认 `consolePort: 7788`、`bridgePort: 9233`，被占用再改。
+其余（报表目录、下载目录、端口）安装程序已经按默认值生成好，不用问我。
+活动 ID 在哪找：eBay 卖家后台 → 广告 → Campaigns，列表里每个活动对应的数字 ID（也可以让我把旧店铺的配置 JSON 发你，照结构抄）。
 
 ## 第 1 步：下载并安装（⚠️ 不要双击 installer.cmd）
 
-`installer.cmd` 末尾有 `pause`，在自动化执行时会卡住不动。请直接跑这两条：
+`installer.cmd` 末尾有等待按键，在自动化里会卡住。请带 `/quiet` 参数或直接跑这两条：
 
 ```powershell
 $base = 'https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/'
 $s = Join-Path $env:TEMP 'ebay-setup.ps1'
 Invoke-WebRequest "$base/setup.ps1" -OutFile $s -UseBasicParsing
-powershell -NoProfile -ExecutionPolicy Bypass -File $s
+powershell -NoProfile -ExecutionPolicy Bypass -File $s -Quiet
 ```
 
-预期结果：日志最后出现「安装完成！」，并且桌面 `eBay报表工具包` 里有 `app\`、`ui\`、`看板\`、`bin\node.exe`、`报表控制台.cmd`。
-首次安装要下载约 83 MB 运行时（node.exe），慢是正常的；网络中断就重跑一次，已下载的部分不会重复下载。
+（等价写法：`curl.exe -L -o "$env:TEMP\installer.cmd" "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/installer.cmd"` 然后 `cmd /c "$env:TEMP\installer.cmd" /quiet`。）
 
-## 第 2 步：生成店铺配置并设为环境变量
+预期结果：退出码 0，日志出现「安装完成！」，桌面的 `eBay报表工具包` 里有 `app\`、`ui\`、`看板\`、`bin\node.exe`、`报表控制台.cmd`、`my-shop.json`。
+首次安装要下载约 83 MB 运行时（node.exe），慢是正常的；失败会自动重试 3 次，仍失败请看 `%TEMP%\ebay-install-log.txt`。
 
-在安装目录写 `my-shop.json`，内容如下（把尖括号换成第 0 步问到的真实值）：
+## 第 2 步：填店铺配置
+
+安装程序已经生成 `my-shop.json`（在安装目录里），你只需把第 0 步问到的值填进去，**不需要设任何环境变量**：
+
+```powershell
+$cfg = "$env:USERPROFILE\Desktop\eBay报表工具包\my-shop.json"
+```
+
+用这个 JSON 结构覆盖 `shopName` / `plpCampaigns` / `plgCampaigns` 三项，其他键原样保留：
 
 ```json
 {
   "shopName": "<店铺名>",
-  "dataDir": "<报表保存目录，正斜杠>",
-  "runsDir": "<临时结果目录，正斜杠>",
-  "downloadsDir": "<浏览器下载目录，正斜杠>",
-  "dashboardUrl": "",
   "plpCampaigns": ["<PLP活动ID1>", "<PLP活动ID2>", "<PLP活动ID3>"],
   "plgCampaigns": [
     { "id": "<PLG活动ID>", "name": "<活动显示名>" }
-  ],
-  "consolePort": 7788,
-  "bridgePort": 9233,
-  "chromeExe": ""
+  ]
 }
 ```
 
-设为当前用户的环境变量（永久生效，但**已打开的窗口读不到，必须新开窗口**）：
-
-```powershell
-[Environment]::SetEnvironmentVariable('EBAY_SHOP_CONFIG', "$env:USERPROFILE\Desktop\eBay报表工具包\my-shop.json", 'User')
-```
+改完用 `Get-Content $cfg -Raw | ConvertFrom-Json` 验证一次 JSON 没写坏（报错就是引号或逗号问题）。
+（进阶：也可以把配置放别处，用环境变量 `EBAY_SHOP_CONFIG` 指过去，优先级更高；日常不需要。）
 
 ## 第 3 步：跑自检，把输出贴给我
 
@@ -75,8 +71,9 @@ Set-Location "$env:USERPROFILE\Desktop\eBay报表工具包"
 .\bin\node.exe app\check-fields.mjs
 ```
 
-- `check-options`：应输出后台参数与界面控件一一对应、全部通过。失败说明安装不完整或配置读不到，把原文报错贴给我。
+- 第一条应能看到 `[店铺配置] 已读取：...my-shop.json`，并输出后台参数与界面控件一一对应、全部通过。
 - `check-fields`：如果只报「08 非在售名单」「09 预定名单」缺 CSV，属于正常（这两类还没下载过）；出现其他不一致才算失败。
+- 失败时把原始报错贴给我，不要自己猜着改。
 
 ## 第 4 步：浏览器调试开关（这一步只能我来点，你负责提示我）
 
@@ -94,6 +91,7 @@ Set-Location "$env:USERPROFILE\Desktop\eBay报表工具包"
 ```
 
 预期：浏览器自动打开 `http://127.0.0.1:7788`，页面顶部的环境体检显示 Chrome 调试端口正常。
+（控制台是常驻窗口，验证完可以让用户自己留着用；你不需要等它退出。端口被占用时安装程序已自动换过，以 `my-shop.json` 里的 `consolePort` 为准。）
 
 ## 第 6 步：给我结果报告（按这个格式）
 
