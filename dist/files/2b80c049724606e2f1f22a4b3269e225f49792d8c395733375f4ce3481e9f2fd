@@ -139,7 +139,9 @@ function firstRunPlan(days = 30) {
   const traffic = {
     day: `Traffic ${start}~${end}`,
     title: `流量报表（${start} ~ ${end}，逐日 ${days} 份）`,
-    args: [...base, '--only', 'traffic', '--dates', `${start}..${end}`, '--date', end]
+    // 只跑「逐日」：`--only traffic` 会同时开一条累计报表任务，两条 traffic 请求并行更容易被 eBay 限速。
+    // 看板用的是逐日数据；累计报表要的话在控制台单独下载一份就行。
+    args: [...base, '--only', 'trafficDaily', '--dates', `${start}..${end}`, '--date', end]
   };
   const active = {
     day: '在售名单',
@@ -497,9 +499,10 @@ function startJob(args, mode, label, onExit) {
     const dir = runInfo?.runDir || null;
     if (runInfo) runInfo.runDir = dir;
     say(`[控制台] ${mode === 'publish' ? '看板更新' : mode === 'seller' ? '店铺识别' : '下载'}结束，退出码 ${code}`);
-    // 本地看板模式：没有线上看板可推，归档完就是「看板可用」，把下一步说清楚
-    if (mode === 'publish' && code === 0 && dashboardMode() === 'local') {
-      say('[控制台] 数据已归档到本机 数据/90-待处理：点右上角「打开本机看板」，把该目录里的 CSV 全选上传即可');
+    // 本地看板模式：没有线上看板可推，归档完就是「看板可用」，把下一步说清楚。
+    // 只在最后一步说一次——每归档一批就说一遍，日志会刷得人看不见重点。
+    if (mode === 'publish' && code === 0 && dashboardMode() === 'local' && (!seq || seq.i + 1 >= seq.total)) {
+      say('[控制台] 数据已归档到本机「数据」目录：点右上角「打开看板」就能看，报表会自动加载，不用手动选文件');
     }
     const summary = mode === 'publish' ? null : lastSummary();
     child = null;

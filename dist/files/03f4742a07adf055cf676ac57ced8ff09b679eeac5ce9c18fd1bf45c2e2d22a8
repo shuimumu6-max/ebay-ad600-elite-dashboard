@@ -1538,6 +1538,17 @@
         manifest = await res.json();
       } catch { return; }
       if (!manifest || !Array.isArray(manifest.files) || !manifest.files.length) return;
+      // 同一台机器上可能装了两份工具包（或复制了一份），它们共用同一个浏览器存储。
+      // 发现根目录变了就清空重来，免得新版看板里还挂着上一份包的数据。
+      const root = String(manifest.root || '');
+      const prevRoot = localStorage.getItem('ebay-shop-autoload-root');
+      if (root && prevRoot && prevRoot !== root) {
+        fullState = structuredClone(DEFAULT_STATE);
+        localStorage.removeItem('ebay-shop-autoload-stamp');
+        localStorage.removeItem('ebay-shop-preloaded-stamp');
+        toast('检测到另一份工具包，已切换成当前这份的数据');
+      }
+      if (root) localStorage.setItem('ebay-shop-autoload-root', root);
       const stamp = 'auto|' + manifest.bundleId;
       if (stamp === localStorage.getItem('ebay-shop-autoload-stamp')) return;
       loading(true, `正在读取已下载的 ${manifest.files.length} 份报表…`);

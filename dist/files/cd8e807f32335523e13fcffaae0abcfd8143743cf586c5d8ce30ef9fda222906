@@ -218,7 +218,7 @@ const inbox = join(runDir, FOLDERS.inbox);
 
 // 逐日批量下载时每天之间的间隔。30 天连点是触发 eBay 风控最常见的原因（实测会被拦到
 // 一整天都下不来），多花两分钟换 30 天全下来，值。
-const BATCH_GAP_MS = Number(process.env.EBAY_BATCH_GAP_MS || 4000);
+const BATCH_GAP_MS = Number(process.env.EBAY_BATCH_GAP_MS || 20000);
 
 const results = [];
 const timings = {};
@@ -1098,7 +1098,7 @@ async function runTrafficBatch(dates) {
         console.log(`[Traffic] ${day}：${recorded[0].rowCount} 行，${((Date.now() - t0) / 1000).toFixed(1)}s`);
         done.push(recorded[0]);
         return recorded;
-      }, { tries: 3, delayMs: 8000, backoff: 2.5 });
+      }, { tries: 2, delayMs: 60000, backoff: 1 });
       blockedStreak = 0;
     } catch (error) {
       errors.push({ task: `traffic_${day}`, message: error.message });
@@ -1865,3 +1865,6 @@ console.log(`\n总计 ${(totalMs / 1000).toFixed(1)} 秒 | 文件 ${summary.coun
 console.log(`结果目录：${runDir}`);
 if (warnings.length) console.log('警告：' + JSON.stringify(warnings));
 if (errors.length) console.log('错误：' + JSON.stringify(errors));
+// 有失败就让退出码非 0：控制台才能显示「这几步没成」，不能一边有错一边报「全部成功」。
+// 但文件还是照常留在结果目录里，归档步骤不受影响。
+if (errors.length) process.exitCode = 1;

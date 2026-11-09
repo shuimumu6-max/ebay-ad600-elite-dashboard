@@ -127,7 +127,8 @@ const server = createServer((req, res) => {
   };
 
   if (path === '/health') {
-    return send(200, JSON.stringify({ ok: true, app: 'ebay-dashboard-server', pid: process.pid }), 'application/json; charset=utf-8');
+    // 带上安装目录：同一台机器装了两份工具时，别让第二份误用第一份的服务（数据目录不一样）
+    return send(200, JSON.stringify({ ok: true, app: 'ebay-dashboard-server', pid: process.pid, root: ROOT }), 'application/json; charset=utf-8');
   }
 
   if (path === '/auto-data.json') {
@@ -135,6 +136,7 @@ const server = createServer((req, res) => {
     return send(200, JSON.stringify({
       version: 1,
       bundleId: b.bundleId,
+      root: ROOT,                       // 页面用它区分「这是哪一份工具包的数据」
       count: b.files.length,
       totalBytes: b.totalBytes,
       files: b.files.map(({ index, name, size }) => ({ index, name, size }))
@@ -212,7 +214,7 @@ try {
   const saved = Number(readFileSync(PORT_FILE, 'utf8').trim());
   if (saved) preferred.push(saved);
 } catch { /* 第一次跑，没有端口记录 */ }
-for (let p = 7801; p <= 7810; p++) preferred.push(p);
+for (let p = 7801; p <= 7830; p++) preferred.push(p);
 
 let chosen = 0;
 for (const port of [...new Set(preferred)]) {
@@ -224,7 +226,7 @@ for (const port of [...new Set(preferred)]) {
 }
 
 if (!chosen) {
-  console.error('[X] 7801~7810 都被占用了，看板服务起不来。');
+  console.error('[X] 7801~7830 都被占用了，看板服务起不来。');
   log('启动失败：端口全被占用');
   process.exit(1);
 }
