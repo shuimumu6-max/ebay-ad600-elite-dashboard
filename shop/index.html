@@ -736,6 +736,7 @@
           naturalSold: plg?.organicSold || 0,
           naturalCtr: traffic ? traffic.organicEbayViews / traffic.organicEbayImpressions || 0 : 0,
           totalImpressions: traffic?.totalImpressions || 0,
+          searchImpressions: traffic?.totalSearch || 0,
           top20Change: traffic?.top20Change ?? null,
           nonSearchChange: traffic?.nonSearchChange ?? null,
           ebayViews, externalViews,
@@ -847,6 +848,9 @@
           externalViews: sum(rows, 'externalViews'),
           sold: sum(rows, 'quantitySold'),
           hasTraffic: rows.some(row => row.hasTraffic),
+          searchImpressions: sum(rows, 'searchImpressions'),
+          adImpressions: sum(rows, 'adImpressions') + sum(rows, 'plpImpressions'),
+          adClicks: sum(rows, 'adClicks') + sum(rows, 'plpClicks'),
           adSales: sum(rows, 'adSales'),
           adFees: sum(rows, 'adFees'),
           plpSales: sum(rows, 'plpSales'),
@@ -864,6 +868,36 @@
       const date = new Date(`${iso}T00:00:00Z`);
       date.setUTCDate(date.getUTCDate() + days);
       return date.toISOString().slice(0, 10);
+    }
+
+    // 周度对比（对齐 Excel 框架「周度对比」块）：本期 = 所选区间，上期 = 等长紧邻前一段。
+    // 指标取两期同一汇总口径的差值与变化率；总销售额/客单价/GBP 行因现有报表无对应字段未纳入。
+    function weeklyComparison() {
+      const prevRange = previousRange();
+      if (!prevRange || !ui.start || !ui.end) return '';
+      const current = metricsForRange(ui.start, ui.end) || {};
+      const previous = metricsForRange(prevRange[0], prevRange[1]) || {};
+      const pick = (metrics, key) => Number(metrics?.[key] || 0);
+      const rows = [
+        ['广告花费（USD）', pick(current, 'adFees') + pick(current, 'plpFees'), pick(previous, 'adFees') + pick(previous, 'plpFees'), 'money'],
+        ['广告销售额（USD）', pick(current, 'adSales') + pick(current, 'plpSales'), pick(previous, 'adSales') + pick(previous, 'plpSales'), 'money'],
+        ['总曝光', pick(current, 'impressions'), pick(previous, 'impressions'), 'int'],
+        ['搜索曝光', pick(current, 'searchImpressions'), pick(previous, 'searchImpressions'), 'int'],
+        ['广告曝光', pick(current, 'adImpressions'), pick(previous, 'adImpressions'), 'int'],
+        ['总销量（Traffic）', pick(current, 'sold'), pick(previous, 'sold'), 'int'],
+        ['页面浏览总数', pick(current, 'totalViews'), pick(previous, 'totalViews'), 'int'],
+        ['广告点击', pick(current, 'adClicks'), pick(previous, 'adClicks'), 'int']
+      ];
+      const cell = (value, kind) => kind === 'money' ? money(value) : fmt(value);
+      const body = rows.map(([label, current_, previous_, kind]) => {
+        const difference = current_ - previous_;
+        const change = Math.abs(difference) < 1e-9 ? '—' : `${difference > 0 ? '+' : '-'}${cell(Math.abs(difference), kind)}`;
+        let rate = '—';
+        if (previous_ === 0 && current_ > 0) rate = '新增';
+        else if (previous_ > 0 && Math.abs(difference) >= 1e-9) rate = `${difference > 0 ? '+' : '-'}${pct(Math.abs(difference) / previous_)}`;
+        return `<tr><td style="text-align:left">${esc(label)}</td><td>${cell(previous_, kind)}</td><td>${cell(current_, kind)}</td><td>${change}</td><td>${rate}</td></tr>`;
+      }).join('');
+      return `<section class="panel"><div class="panel-head"><h3>周度对比</h3><small>上期 ${rangeText(prevRange[0], prevRange[1])} ｜ 本期 ${rangeText(ui.start, ui.end)}（等长区间）</small></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th style="text-align:left">对比指标</th><th>上期</th><th>本期</th><th>变化</th><th>变化率</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
     }
 
     // 明细分页：每页 20/50/100/200/500，页码导航；导出不受分页限制（导出走全量）。
@@ -923,6 +957,7 @@
           ${metric('总广告费', money(adFees + plpFees), `PLG ${money(adFees)} + PLP ${money(plpFees)}`)}
           ${metric('综合 ROAS', fmt((adSales + plpSales) / (adFees + plpFees) || 0, 2), '广告销售额 ÷ 总广告费')}
         </section>
+        ${weeklyComparison()}
         <section class="dashboard-grid">
           <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
           <div class="panel"><div class="panel-head"><h3>Item eBay PV 排名</h3><small>Traffic 站内 Page views</small></div><div id="ebayPvChart" class="chart"></div></div>
