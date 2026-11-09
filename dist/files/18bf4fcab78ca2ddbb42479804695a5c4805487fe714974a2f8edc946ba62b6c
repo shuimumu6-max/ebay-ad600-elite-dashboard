@@ -64,7 +64,8 @@ function reloadCampaigns() {
 
 // ---------- 运行态 ----------
 let child = null;
-let scanChild = null;                                // 活动扫描子进程（只读，不影响下载）let runInfo = null;                                  // { startedAt, args, lines }
+let scanChild = null;                                // 活动扫描子进程（只读，不影响下载）
+let runInfo = null;                                  // { startedAt, args, lines }
 // 逐天串行队列：一键补齐全天跑完一天 → 等一会儿 → 再跑下一天（同一天重复提交容易被 eBay 拒）
 let seq = null;                                      // { steps, i, gapMs, label, timer }
 let buffer = [];                                     // 最近日志行，供新连接补屏
