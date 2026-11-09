@@ -7,7 +7,7 @@ import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureEnv, bridgeHealth, startBridgeDaemon, openInspectPage, findChrome } from '../app/ensure-env.mjs';
 import { yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS } from '../app/config.mjs';
-import { dataDirState } from '../app/publish.mjs';
+import { dataDirState, dashboardMode } from '../app/publish.mjs';
 import { scanGaps, pacificToday } from '../app/scan-gaps.mjs';
 import { catalogSnapshot } from '../app/reports.mjs';
 import { SHOP, shopSummary, configFilePath, saveConfigPatch } from '../app/shop-config.mjs';
@@ -230,6 +230,8 @@ async function envState() {
     runStartedAt: runInfo?.startedAt || null,
     outDir: OUT_DIR,
     dashboard: DASHBOARD_URL,
+    // 'online' = 维护者本机（有看板仓库，能推线上）；'local' = 发给运营的包（数据只留本机）
+    dashboardMode: dashboardMode(),
     dataState: dataDirState(),
     // 新用户第一次打开：下载结果目录里还没有任何 CSV，就在页面上引导「自动下载最近 30 天」
     firstRun: { needed: !runsCsvSeen, days: 30, outDir: OUT_DIR },
@@ -453,6 +455,20 @@ function presetFor(days) {
   return hit ? hit[0] : null;
 }
 
+// 等同双击「打开看板.cmd」：交给 open-dashboard.mjs 开浏览器并打印数据位置。
+// 之所以不在服务里直接读文件，是因为看板是纯前端 + 浏览器 IndexedDB，只能由浏览器打开。
+function openLocalDashboard() {
+  try {
+    const proc = spawn(NODE, [join(APP_DIR, 'open-dashboard.mjs')], {
+      cwd: join(here, '..'), windowsHide: true, stdio: 'ignore', detached: true
+    });
+    proc.unref();
+    say('[控制台] 已打开本地看板（数据目录：数据/90-待处理）');
+  } catch (error) {
+    say(`[控制台] 打开看板失败：${error.message}`);
+  }
+}
+
 // 统一启动后台任务：下载（download.mjs）与只更新看板（publish-only.mjs）共用日志流
 function startJob(args, mode, label, onExit) {
   buffer = [];
@@ -481,6 +497,10 @@ function startJob(args, mode, label, onExit) {
     const dir = runInfo?.runDir || null;
     if (runInfo) runInfo.runDir = dir;
     say(`[控制台] ${mode === 'publish' ? '看板更新' : mode === 'seller' ? '店铺识别' : '下载'}结束，退出码 ${code}`);
+    // 本地看板模式：没有线上看板可推，归档完就是「看板可用」，把下一步说清楚
+    if (mode === 'publish' && code === 0 && dashboardMode() === 'local') {
+      say('[控制台] 数据已归档到本机 数据/90-待处理：点右上角「打开本机看板」，把该目录里的 CSV 全选上传即可');
+    }
     const summary = mode === 'publish' ? null : lastSummary();
     child = null;
     const queueMore = !!seq && (seq.i + 1 < seq.total || seq.thenArchive);
@@ -862,7 +882,19 @@ const server = http.createServer(async (req, res) => {
     // 只更新看板：拿正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages
     if (path === '/api/publish' && req.method === 'POST') {
       if (child || seq || par) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再更新看板' });
+      // 本地看板模式（运营的机器）没有线上看板可推：数据归档完看板就有了，直接把看板打开
+      if (dashboardMode() === 'local') {
+        openLocalDashboard();
+        return send(res, 200, { ok: true, local: true, message: '数据已在本机，已帮你打开看板' });
+      }
       startJob(['publish-only.mjs'], 'publish', '只更新看板（不下载）');
+      return send(res, 200, { ok: true });
+    }
+
+    // 打开本地看板（本地模式专用）
+    if (path === '/api/open-dashboard' && req.method === 'POST') {
+      if (!existsSync(join(APP_DIR, 'open-dashboard.mjs'))) return send(res, 404, { ok: false, error: '这个版本的包里没有看板启动器' });
+      openLocalDashboard();
       return send(res, 200, { ok: true });
     }
 

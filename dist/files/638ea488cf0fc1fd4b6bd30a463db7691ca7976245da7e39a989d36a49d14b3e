@@ -11,6 +11,7 @@
 //   2. 程序目录放一份 my-shop.json（安装器会自动生成），或用环境变量
 //      EBAY_SHOP_CONFIG=C:\path\to\my-shop.json 指向它。
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,22 +44,20 @@ function normalizeCampaigns(list) {
     .filter(c => c.id);
 }
 
-// 当前店铺的默认值（保持原行为，不改动就不会影响现有使用）
+// 当前店铺的默认值。
+// 关键：这里的路径必须是「相对于本工具包」的，不能写死某台电脑的目录 ——
+// 分发包发到别人电脑上时没有 my-shop.json，全靠这份默认值，写死维护者路径会在
+// 运营机器上建出 C:\Users\xxx\Desktop\ebay ad600 Elite... 这种莫名其妙的目录。
+// 维护者本机用自己的 my-shop.json 覆盖（不进分发包），想改默认行为就改那里。
 const DEFAULTS = {
-  shopName: 'AD600 Elite',
-  dataDir: 'C:/Users/XPTTOP20/Desktop/ebay ad600 Elite流量+PLG广告数据',
-  runsDir: 'C:/Users/XPTTOP20/Desktop/测试下载',
-  downloadsDir: 'C:/Users/XPTTOP20/Desktop/downloads',
-  dashboardUrl: 'https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/',
-  plpCampaigns: ['165210337019', '165349120019', '165542388019'],
-  plgCampaigns: [
-    { id: '165842950019', name: 'US.TD.PLG.UD900E.管培.非核心' },
-    { id: '165842906019', name: 'US.TD.PLG.UD900E.管培.核心' },
-    { id: '165777897019', name: 'US.TD.PLG.AD600.Elite' },
-    { id: '165233419019', name: 'US.TD.PLG.topdon_scanner.管培' },
-    { id: '165065608019', name: 'US.TD.PLG.topdon_scanner.管培.自动规则' },
-    { id: '44420301019', name: 'US.TD.PLG.topdon_scanner' }
-  ],
+  shopName: '',
+  dataDir: join(PROJECT_ROOT, '数据'),
+  runsDir: join(PROJECT_ROOT, '下载结果'),
+  downloadsDir: join(homedir(), 'Downloads'),
+  dashboardUrl: '',
+  // 空 = 报表中心后台的「全部活动」，不需要运营先知道活动 ID
+  plpCampaigns: [],
+  plgCampaigns: [],
   consolePort: 7788,
   bridgePort: 9233,
   chromeExe: ''

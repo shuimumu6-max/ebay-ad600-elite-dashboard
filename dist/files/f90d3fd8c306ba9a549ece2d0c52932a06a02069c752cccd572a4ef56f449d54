@@ -7,5 +7,9 @@ console.log('正式数据目录状态:', JSON.stringify(dataDirState()));
 const result = publishDashboard();
 if (result.stdout) console.log(result.stdout);
 if (result.stderr) console.error(result.stderr);
-console.log(result.ok ? `发布完成：${SHOP.dashboardUrl}` : `发布失败（退出码 ${result.code}）`);
+if (result.local) {
+  console.log(result.message);
+} else {
+  console.log(result.ok ? `发布完成：${SHOP.dashboardUrl}` : `发布失败（退出码 ${result.code}）`);
+}
 process.exitCode = result.ok ? 0 : 1;

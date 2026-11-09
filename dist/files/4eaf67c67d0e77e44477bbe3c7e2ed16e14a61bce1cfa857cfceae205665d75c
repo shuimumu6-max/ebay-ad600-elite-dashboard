@@ -1,0 +1,6 @@
+@echo off
+chcp 65001 >nul
+title Update Check
+"%~dp0bin\node.exe" "%~dp0update.mjs" %*
+echo.
+pause

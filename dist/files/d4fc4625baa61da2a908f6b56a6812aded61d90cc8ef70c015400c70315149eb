@@ -1,0 +1,5 @@
+@echo off
+chcp 65001 >nul
+title Open Dashboard
+"%~dp0bin\node.exe" "%~dp0app\open-dashboard.mjs"
+if errorlevel 1 pause

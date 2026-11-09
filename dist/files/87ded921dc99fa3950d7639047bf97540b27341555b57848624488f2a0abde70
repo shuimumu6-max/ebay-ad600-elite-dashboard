@@ -1,0 +1,54 @@
+// 打开本地看板（双击「打开看板.cmd」时调用）。
+// 存在的意义：.cmd 里不写中文路径就不会有编码问题；顺带把「数据在哪、要上传哪些」说清楚。
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const HTML = join(ROOT, '看板', 'ebay-shop-dashboard.html');
+
+if (!existsSync(HTML)) {
+  console.error('[X] 找不到看板文件：' + HTML);
+  console.error('    这个包不完整，请重新运行安装器（或用「检查更新.cmd」拉一次）。');
+  process.exit(1);
+}
+
+// 统计正式目录里已归档的 CSV，用来告诉用户「上传哪个文件夹」
+function collectCsv(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (/不参与看板|暂存/.test(entry.name)) continue;
+      collectCsv(full, out);
+    } else if (extname(entry.name).toLowerCase() === '.csv') {
+      try { out.push({ name: entry.name, size: statSync(full).size, mtime: statSync(full).mtimeMs }); } catch { /* 跳过读不到的文件 */ }
+    }
+  }
+  return out;
+}
+
+const dataDir = join(ROOT, '数据');
+const pending = join(dataDir, '90-待处理');
+const csvs = collectCsv(dataDir).sort((a, b) => b.mtime - a.mtime);
+
+console.log('本地看板：' + HTML);
+if (csvs.length) {
+  const newest = new Date(csvs[0].mtime);
+  console.log(`已归档报表：${csvs.length} 份，最新一份 ${newest.toLocaleString('zh-CN', { hour12: false })}`);
+  console.log('');
+  console.log('看板打开后点「选择文件」，进入这个文件夹，把 CSV 全选上传：');
+  console.log('  ' + pending);
+  console.log('（也可以直接把文件从资源管理器拖进页面）');
+} else {
+  console.log('');
+  console.log('还没有下载过报表：先双击「报表控制台.cmd」，点「自动下载最近 30 天」，');
+  console.log('跑完再回到这里打开看板。');
+}
+console.log('');
+
+const child = spawn(process.env.COMSPEC || 'cmd.exe', ['/c', 'start', '', HTML], {
+  detached: true, stdio: 'ignore', windowsHide: true
+});
+child.unref();

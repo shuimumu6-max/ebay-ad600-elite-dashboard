@@ -48,8 +48,22 @@ export function applyFiles(results) {
   return { applied, skipped };
 }
 
+// 'online' = 本机有看板源码与 git 仓库（维护者自己用，推 GitHub Pages）
+// 'local'  = 分发给运营的包（没有看板源码、没有仓库）：数据只归档到本机，看板直接读 CSV
+export function dashboardMode() {
+  return existsSync(join(REPO_DIR, 'update-dashboard.mjs')) ? 'online' : 'local';
+}
+
 // 调用看板仓库自己的更新脚本（已修正为本机路径），并推送 GitHub Pages
 export function publishDashboard() {
+  if (dashboardMode() === 'local') {
+    // 发给运营的包里不存在看板源码，也不该往任何仓库推 —— 这里不能算失败，
+    // 否则「下载 + 归档」整条链路会因为最后一步报错被判断成失败。
+    return {
+      ok: true, local: true, code: 0, stdout: '', stderr: '',
+      message: '本地看板模式：数据已归档到本机，双击「打开看板.cmd」即可查看（不需要推送到线上）'
+    };
+  }
   const result = spawnSync(process.execPath, ['update-dashboard.mjs', '--publish'], {
     cwd: REPO_DIR,
     env: {

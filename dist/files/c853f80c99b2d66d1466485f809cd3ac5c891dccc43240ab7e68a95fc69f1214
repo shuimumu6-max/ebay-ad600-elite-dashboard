@@ -1001,6 +1001,38 @@ $('#btnFirstRunSkip').addEventListener('click', () => {
   $('#firstRun').hidden = true;
 });
 
+/* ---------- 看板模式：online = 维护者本机（能推 GitHub Pages）；local = 发给运营的包 ---------- */
+/* local 模式下没有「线上看板」这个概念：数据只在本机，按钮直接打开本地看板 */
+let dashboardMode = 'online';
+function applyDashboardMode(){
+  const local = dashboardMode === 'local';
+  const link = $('#linkDash');
+  if (link){
+    link.textContent = local ? '打开本机看板 ↗' : '在线看板 ↗';
+    link.title = local ? '数据只在这台电脑上，点这里打开看板' : '打开线上看板';
+  }
+  const btnPub = $('#btnPublish');
+  if (btnPub){
+    btnPub.textContent = local ? '打开看板' : '只更新看板';
+    btnPub.title = local
+      ? '数据已经在 数据/90-待处理，点这里打开看板并上传'
+      : '用正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages';
+  }
+  const pub = $('#btnArchivePublish');
+  if (pub) pub.textContent = local ? '归档 + 打开看板' : '归档 + 更新看板';
+}
+async function openLocalDashboard(){
+  const r = await (await fetch('/api/open-dashboard', { method: 'POST' })).json();
+  if (!r.ok) return toast(r.error || '打开看板失败', true);
+  toast('已打开看板：点「选择文件」，把 数据\\90-待处理 里的 CSV 全选上传');
+}
+// 顶栏「看板」链接：线上模式是普通外链；本地模式改成打开本机看板
+$('#linkDash')?.addEventListener('click', e => {
+  if (dashboardMode !== 'local') return;
+  e.preventDefault();
+  openLocalDashboard();
+});
+
 /* ---------- 店铺名：不用填，能从浏览器读就读；读不到再随手起个名 ---------- */
 let shopPlaceholder = false;
 function renderShopName(name, placeholder){
@@ -1117,15 +1149,19 @@ function syncChips(sel){
 // 数据联动：只下载 / 归档 / 归档+更新看板
 const segValue = id => document.querySelector('#' + id + ' button.on')?.dataset.v;
 seg($('#segSync'), v => {
+  const local = dashboardMode === 'local';
   const map = {
-    local: '默认只落到结果目录并自动分类，不动正式数据、不推送看板。',
-    apply: '下载后把校验通过的文件复制进正式目录 90-待处理，不推送看板。',
-    publish: '下载 → 归档正式目录 → 重新生成看板数据 → 推送 GitHub Pages。'
+    local: '默认只落到结果目录并自动分类，不动正式数据。',
+    apply: '下载后把校验通过的文件复制进正式目录 90-待处理。',
+    publish: local
+      ? '下载 → 归档到本机 数据/90-待处理 → 跑完打开看板（数据不上传任何服务器）。'
+      : '下载 → 归档正式目录 → 重新生成看板数据 → 推送 GitHub Pages。'
   };
   $('#hintSync').textContent = map[v];
 });
-// 只更新看板（不下载）
+// 只更新看板（不下载）：本地模式没有线上看板可推，直接打开本机看板
 $('#btnPublish').addEventListener('click', async () => {
+  if (dashboardMode === 'local') return openLocalDashboard();
   if (!confirm('用正式目录里已归档的数据重新生成看板并推送到线上？')) return;
   $('#btnPublish').disabled = true;
   const r = await (await fetch('/api/publish', { method: 'POST' })).json();
@@ -1159,14 +1195,17 @@ $('#btnArchivePublish').addEventListener('click', async () => {
   const runDir = $('#runPick').value;
   const label = $('#runPick').selectedOptions[0]?.textContent || '';
   if (!runDir) return toast('先选一次运行', true);
-  if (!confirm(`把这次运行的文件归档进正式目录，然后重新生成看板并推送线上？\n\n${label}`)) return;
+  const local = dashboardMode === 'local';
+  if (!confirm(local
+    ? `把这次运行的文件归档到本机 数据/90-待处理，然后打开看板？\n\n${label}`
+    : `把这次运行的文件归档进正式目录，然后重新生成看板并推送线上？\n\n${label}`)) return;
   $('#btnArchivePublish').disabled = true;
   const r = await (await fetch('/api/archive-publish', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runDir })
   })).json();
   if (!r.ok){ $('#btnArchivePublish').disabled = false; return toast(r.error || '启动失败', true); }
   clearLog(); setRunning(true);
-  $('#runHint').textContent = '正在归档并更新看板…';
+  $('#runHint').textContent = local ? '正在归档并准备看板…' : '正在归档并更新看板…';
 });
 loadRuns();
 
@@ -1274,10 +1313,14 @@ async function refreshState(){
     }
     if (s.outDir && !$('#outDir').value) $('#outDir').placeholder = s.outDir;
     if (s.shop) renderShopName(s.shop.name, s.shop.placeholder);
+    if (s.dashboardMode && s.dashboardMode !== dashboardMode){
+      dashboardMode = s.dashboardMode;
+      applyDashboardMode();
+    }
     // 首次使用引导：还没有任何 CSV 时出现；点过「不用」或正在跑就收起
     const fr = $('#firstRun');
     if (fr) fr.hidden = !s.firstRun?.needed || !!s.running || sessionStorage.getItem('firstRunSkip') === '1';
-    if (s.dashboard) $('#linkDash').href = s.dashboard;
+    if (s.dashboard) $('#linkDash').href = dashboardMode === 'local' ? '#' : s.dashboard;
     if (s.dataState) renderDataState(s.dataState);
     $('#dotRun').className = 'dot ' + (s.running ? 'busy' : 'ok');
     $('#txtRun').textContent = s.running ? '下载中…' : '空闲';
@@ -1366,7 +1409,7 @@ es.addEventListener('run', e => {
     }
     setRunning(false);
     loadRuns();                                   // 跑完 / 归档完都刷新一次运行清单
-    if (data.dashboard) $('#linkDash').href = data.dashboard;
+    if (data.dashboard) $('#linkDash').href = dashboardMode === 'local' ? '#' : data.dashboard;
     if (data.dataState) renderDataState(data.dataState);
     if (data.mode === 'publish'){
       toast(data.code === 0 ? '看板已更新并推送' : '看板更新失败，看日志', data.code !== 0);

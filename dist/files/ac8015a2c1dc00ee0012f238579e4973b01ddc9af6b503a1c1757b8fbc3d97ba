@@ -69,5 +69,10 @@ console.log('[发布] 重新生成看板数据并推送 GitHub Pages…');
 const result = publishDashboard();
 if (result.stdout) console.log(result.stdout);
 if (result.stderr) console.error(result.stderr);
-console.log(result.ok ? '[发布] 完成' : `[发布] 失败（退出码 ${result.code}）`);
+if (result.local) {
+  console.log(`[完成] ${result.message}`);
+  console.log(`       数据目录：${JSON.stringify(dataDirState())}`);
+} else {
+  console.log(result.ok ? '[发布] 完成' : `[发布] 失败（退出码 ${result.code}）`);
+}
 process.exitCode = result.ok ? 0 : 1;
