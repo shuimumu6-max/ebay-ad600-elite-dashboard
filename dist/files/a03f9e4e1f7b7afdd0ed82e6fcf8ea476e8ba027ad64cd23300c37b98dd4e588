@@ -2,7 +2,7 @@
 // 只监听 127.0.0.1，不对外暴露；职责：环境体检、参数拼装、启动下载、实时日志、结果读取。
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureEnv, bridgeHealth, startBridgeDaemon, openInspectPage, findChrome } from '../app/ensure-env.mjs';
@@ -20,6 +20,12 @@ const PORT = Number(process.env.CONSOLE_PORT || SHOP.consolePort);
 let OUT_DIR = process.env.REPORT_OUT_DIR || SHOP.runsDir;
 const LOG_FILE = join(here, 'console.log');
 const DASHBOARD_URL = process.env.DASHBOARD_URL || SHOP.dashboardUrl;
+
+// 新装（或换机器）时「数据」「下载结果」两个目录还不存在：先建好，
+// 否则补缺 / 归档会在 scandir 上抛 ENOENT（已踩过一次）。
+for (const dir of [OUT_DIR, SHOP.dataDir]) {
+  try { mkdirSync(dir, { recursive: true }); } catch { /* 忽略：真写不进去会在下载时报更明确的错 */ }
+}
 
 // 活动列表可在运行中热更新（点「刷新活动列表」跑完自动扫描后不用重启控制台）：
 // 空数组 = 报表中心后台默认的全部活动，这是默认状态，完全不需要配置。
