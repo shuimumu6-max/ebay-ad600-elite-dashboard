@@ -910,21 +910,18 @@
       const adFees = sum(rows, 'adFees');
       const plpSales = sum(rows, 'plpSales');
       const plpFees = sum(rows, 'plpFees');
-      const prevRange = previousRange();
-      const prev = prevRange ? metricsForRange(prevRange[0], prevRange[1]) : null;
-      const d = (current, previous) => deltaBadge(current, previous);
       return `<div class="page-head"><div><h2>经营看板</h2><p>按同一 Item 和日期统一查看整体流量、自然流量、PLG 与 PLP 广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
         ${filterPanel()}
         <section class="metrics">
-          ${metric('链接总曝光', hasTraffic ? fmt(impressions) : '—', `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic${prev ? '；环比 ' + rangeText(prevRange[0], prevRange[1]) : ''}`, d(impressions, prev?.hasTraffic ? prev.impressions : null))}
-          ${metric('总PV（Total page views）', hasTraffic ? fmt(totalViews) : '—', '站内 + 站外全部访问', d(totalViews, prev?.hasTraffic ? prev.totalViews : null))}
-          ${metric('站内PV（eBay）', hasTraffic ? fmt(ebayViews) : '—', '站内广告 + 站内自然', d(ebayViews, prev?.hasTraffic ? prev.ebayViews : null))}
-          ${metric('站外PV（External）', hasTraffic ? fmt(externalViews) : '—', '站外广告 + 站外自然', d(externalViews, prev?.hasTraffic ? prev.externalViews : null))}
-          ${metric('销量（Traffic）', hasTraffic ? fmt(sold) : '—', hasTraffic ? `Traffic转化率 ${pct(sold / totalViews || 0)}${rows.some(row => row.salesMismatch) ? '；存在销量差异，待核对' : ''}` : '当前区间缺少 Traffic', d(sold, prev?.hasTraffic ? prev.sold : null))}
-          ${metric('链接总 CTR', hasTraffic ? pct(ebayViews / impressions || 0) : '—', 'eBay Page views ÷ 总曝光', hasTraffic ? d(ebayViews / impressions || 0, prev?.hasTraffic ? (prev.ebayViews / prev.impressions || 0) : null) : '')}
-          ${metric('广告销售额', money(adSales + plpSales), `PLG ${money(adSales)} + PLP ${money(plpSales)}`, d(adSales + plpSales, prev ? prev.adSales + prev.plpSales : null))}
-          ${metric('总广告费', money(adFees + plpFees), `PLG ${money(adFees)} + PLP ${money(plpFees)}`, d(adFees + plpFees, prev ? prev.adFees + prev.plpFees : null))}
-          ${metric('综合 ROAS', fmt((adSales + plpSales) / (adFees + plpFees) || 0, 2), '广告销售额 ÷ 总广告费', d((adSales + plpSales) / (adFees + plpFees) || 0, prev ? (prev.adSales + prev.plpSales) / (prev.adFees + prev.plpFees) || 0 : null))}
+          ${metric('链接总曝光', hasTraffic ? fmt(impressions) : '—', `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
+          ${metric('总PV（Total page views）', hasTraffic ? fmt(totalViews) : '—', '站内 + 站外全部访问')}
+          ${metric('站内PV（eBay）', hasTraffic ? fmt(ebayViews) : '—', '站内广告 + 站内自然')}
+          ${metric('站外PV（External）', hasTraffic ? fmt(externalViews) : '—', '站外广告 + 站外自然')}
+          ${metric('销量（Traffic）', hasTraffic ? fmt(sold) : '—', hasTraffic ? `Traffic转化率 ${pct(sold / totalViews || 0)}` : '当前区间缺少 Traffic')}
+          ${metric('链接总 CTR', hasTraffic ? pct(ebayViews / impressions || 0) : '—', 'eBay Page views ÷ 总曝光')}
+          ${metric('广告销售额', money(adSales + plpSales), `PLG ${money(adSales)} + PLP ${money(plpSales)}`)}
+          ${metric('总广告费', money(adFees + plpFees), `PLG ${money(adFees)} + PLP ${money(plpFees)}`)}
+          ${metric('综合 ROAS', fmt((adSales + plpSales) / (adFees + plpFees) || 0, 2), '广告销售额 ÷ 总广告费')}
         </section>
         <section class="dashboard-grid">
           <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
