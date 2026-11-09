@@ -1,0 +1,249 @@
+// 本机看板服务：只监听 127.0.0.1，把「看板/ebay-shop-dashboard.html」和「数据」目录里的 CSV 一起端出来。
+// 用途：双击「打开看板.cmd」后，看板页面自己把报表拉进去，运营不用再点「选择文件」。
+// 不联网、不上传、不需要任何账号；关掉进程就什么都不留。
+//
+// 为什么不用 file:// 直接塞一个数据脚本：CSV 总量可能几十上百 MB，内嵌成 JS 会把页面拖死；
+// 走 http 可以按文件流式返回，还能让看板判断「数据有没有变」，没变就跳过重新解析。
+import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DATA_DIR } from './config.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const BOARD_DIR = join(ROOT, '看板');
+const HTML = join(BOARD_DIR, 'ebay-shop-dashboard.html');
+const PORT_FILE = join(BOARD_DIR, '服务端口.txt');
+const LOG_FILE = join(BOARD_DIR, '服务日志.txt');
+
+const argv = process.argv.slice(2);
+const argOf = name => {
+  const i = argv.indexOf(`--${name}`);
+  return i === -1 ? '' : (argv[i + 1] || '');
+};
+const IDLE_MINUTES = Number(argOf('idle-min')) || 90;   // 无人访问这么久就自己退出，不留后台进程
+
+function log(line) {
+  const text = `[${new Date().toLocaleString('zh-CN', { hour12: false })}] ${line}\n`;
+  try { appendFileSync(LOG_FILE, text, 'utf8'); } catch { /* 日志写不了不影响主流程 */ }
+}
+
+if (!existsSync(HTML)) {
+  console.error('[X] 找不到看板文件：' + HTML);
+  console.error('    这个包不完整，请重新运行安装器，或双击「检查更新.cmd」拉一次。');
+  process.exit(1);
+}
+
+// ---------- 收集待加载的 CSV ----------
+// 看板本地版目前只认三类报表：Traffic（单日/累计）、PLG 常规链接广告、在售名单。
+// PLP（优先促刊：链接/关键词/搜索词）、订单、非在售、预定名单它读不了，
+// 所以这里直接不下发 —— 否则页面会蹦出「N 份没读懂」，运营以为坏了。
+const SKIP_DIR_PREFIX = ['04', '05', '06', '08', '09', '10', '11'];
+const SKIP_NAME = /PLP|_Keyword_|_Search-query_|order|non-active|scheduled/i;
+
+// 同一份报表可能既在 90-待处理 又在分类目录里：先按文件名去重（优先 90-待处理），
+// 再对大小相同的文件算一次哈希，杜绝同内容不同名被重复解析。
+function collectCsv(dir, out = [], inPending = false) {
+  if (!existsSync(dir)) return out;
+  let entries = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (/不参与看板|暂存/.test(entry.name)) continue;
+      if (!inPending && SKIP_DIR_PREFIX.some(prefix => entry.name.startsWith(prefix))) continue;
+      collectCsv(full, out, inPending || entry.name === '90-待处理');
+    } else if (extname(entry.name).toLowerCase() === '.csv') {
+      if (SKIP_NAME.test(entry.name)) continue;
+      try {
+        const stat = statSync(full);
+        if (!stat.size) continue;
+        out.push({ name: entry.name, full, size: stat.size, mtime: stat.mtimeMs, inPending });
+      } catch { /* 读不到的跳过 */ }
+    }
+  }
+  return out;
+}
+
+function buildBundle() {
+  const all = collectCsv(DATA_DIR);
+  // 1) 同名只留一份，优先「90-待处理」（那里是归档落点，名字最干净）
+  const byName = new Map();
+  for (const item of all) {
+    const key = item.name.toLowerCase();
+    const prev = byName.get(key);
+    if (!prev || (item.inPending && !prev.inPending) || (item.inPending === prev.inPending && item.mtime > prev.mtime)) {
+      byName.set(key, item);
+    }
+  }
+  // 2) 同大小的再比内容，去掉重复归档
+  const bySize = new Map();
+  const kept = [];
+  for (const item of byName.values()) {
+    const bucket = bySize.get(item.size) || [];
+    let dup = false;
+    if (bucket.length) {
+      const hash = sha256(item.full);
+      for (const prev of bucket) {
+        if (prev.hash === hash) { dup = true; break; }
+      }
+      if (!dup) bucket.push({ hash, item });
+    } else {
+      bucket.push({ hash: sha256(item.full), item });
+      bySize.set(item.size, bucket);
+    }
+    if (!dup) kept.push(item);
+  }
+  kept.sort((a, b) => a.name.localeCompare(b.name));
+  const files = kept.map((item, index) => ({ index, name: item.name, size: item.size, full: item.full, mtime: item.mtime }));
+  const stamp = files.map(f => `${f.name}|${f.size}|${Math.round(f.mtime)}`).join('\n');
+  const bundleId = createHash('sha256').update(stamp || 'empty').digest('hex').slice(0, 16);
+  return { bundleId, files, totalBytes: files.reduce((sum, f) => sum + f.size, 0) };
+}
+
+function sha256(path) {
+  try { return createHash('sha256').update(readFileSync(path)).digest('hex'); } catch { return ''; }
+}
+
+// 目录里可能有几十份 CSV，每次请求都全量 stat 会拖慢页面：缓存 3 秒
+let cache = { at: 0, bundle: null };
+function bundle(force = false) {
+  if (!force && cache.bundle && Date.now() - cache.at < 3000) return cache.bundle;
+  cache = { at: Date.now(), bundle: buildBundle() };
+  return cache.bundle;
+}
+
+// ---------- HTTP ----------
+let lastHit = Date.now();
+
+const server = createServer((req, res) => {
+  lastHit = Date.now();
+  const url = new URL(req.url, 'http://127.0.0.1');
+  const path = decodeURIComponent(url.pathname);
+  const send = (code, body, type = 'text/plain; charset=utf-8') => {
+    res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
+    res.end(body);
+  };
+
+  if (path === '/health') {
+    return send(200, JSON.stringify({ ok: true, app: 'ebay-dashboard-server', pid: process.pid }), 'application/json; charset=utf-8');
+  }
+
+  if (path === '/auto-data.json') {
+    const b = bundle();
+    return send(200, JSON.stringify({
+      version: 1,
+      bundleId: b.bundleId,
+      count: b.files.length,
+      totalBytes: b.totalBytes,
+      files: b.files.map(({ index, name, size }) => ({ index, name, size }))
+    }), 'application/json; charset=utf-8');
+  }
+
+  if (path.startsWith('/auto-data/')) {
+    const index = Number(path.slice('/auto-data/'.length));
+    const b = bundle();
+    const target = Number.isInteger(index) ? b.files[index] : null;
+    if (!target) return send(404, '没有这份报表');
+    let body;
+    try { body = readFileSync(target.full); } catch { return send(500, '读不到这份报表'); }
+    res.writeHead(200, {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-length': body.length,
+      'cache-control': 'no-store'
+    });
+    return res.end(body);
+  }
+
+  if (path === '/' || path === '/index.html') {
+    let body;
+    try { body = readFileSync(HTML); } catch { return send(500, '读不到看板文件'); }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(body);
+  }
+
+  // 看板用到的其它静态资源（现在没有，保留以防以后加图标/字体）
+  const safe = resolve(BOARD_DIR, '.' + path);
+  if (safe.startsWith(BOARD_DIR + sep) && existsSync(safe) && !safe.endsWith('.txt') && statSync(safe).isFile()) {
+    try {
+      const body = readFileSync(safe);
+      res.writeHead(200, { 'content-type': guessType(safe), 'cache-control': 'no-store' });
+      return res.end(body);
+    } catch { return send(500, '读不到文件'); }
+  }
+
+  send(404, '没有这个地址');
+});
+
+function guessType(file) {
+  const ext = extname(file).toLowerCase();
+  if (ext === '.html' || ext === '.htm') return 'text/html; charset=utf-8';
+  if (ext === '.js') return 'text/javascript; charset=utf-8';
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.ico') return 'image/x-icon';
+  return 'application/octet-stream';
+}
+
+// ---------- 启动：挑一个空闲端口 ----------
+function listen(port) {
+  return new Promise((resolveListen, rejectListen) => {
+    const onError = error => {
+      server.removeListener('listening', onListening);
+      rejectListen(error);
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolveListen(port);
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+const preferred = [];
+const fromArg = Number(argOf('port'));
+if (fromArg) preferred.push(fromArg);
+try {
+  const saved = Number(readFileSync(PORT_FILE, 'utf8').trim());
+  if (saved) preferred.push(saved);
+} catch { /* 第一次跑，没有端口记录 */ }
+for (let p = 7801; p <= 7810; p++) preferred.push(p);
+
+let chosen = 0;
+for (const port of [...new Set(preferred)]) {
+  try {
+    await listen(port);
+    chosen = port;
+    break;
+  } catch { /* 这个端口被占用，换下一个 */ }
+}
+
+if (!chosen) {
+  console.error('[X] 7801~7810 都被占用了，看板服务起不来。');
+  log('启动失败：端口全被占用');
+  process.exit(1);
+}
+
+try { writeFileSync(PORT_FILE, String(chosen), 'utf8'); } catch { /* 端口文件写不了不影响使用 */ }
+const b = bundle(true);
+log(`已启动：http://127.0.0.1:${chosen}/  报表 ${b.files.length} 份 / ${(b.totalBytes / 1048576).toFixed(1)} MB`);
+
+// 空闲自动退出：不常驻、不留后台进程
+const idleMs = Math.max(5, IDLE_MINUTES) * 60 * 1000;
+const ticker = setInterval(() => {
+  if (Date.now() - lastHit > idleMs) {
+    log('长时间没人访问，自动退出');
+    clearInterval(ticker);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  }
+}, 60000);
+ticker.unref();
+
+process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));

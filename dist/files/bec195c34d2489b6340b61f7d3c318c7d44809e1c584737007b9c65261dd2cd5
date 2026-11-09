@@ -1015,7 +1015,7 @@ function applyDashboardMode(){
   if (btnPub){
     btnPub.textContent = local ? '打开看板' : '只更新看板';
     btnPub.title = local
-      ? '数据已经在 数据/90-待处理，点这里打开看板并上传'
+      ? '数据已经在 数据 目录，点这里打开看板（报表会自动加载）'
       : '用正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages';
   }
   const pub = $('#btnArchivePublish');
@@ -1024,7 +1024,7 @@ function applyDashboardMode(){
 async function openLocalDashboard(){
   const r = await (await fetch('/api/open-dashboard', { method: 'POST' })).json();
   if (!r.ok) return toast(r.error || '打开看板失败', true);
-  toast('已打开看板：点「选择文件」，把 数据\\90-待处理 里的 CSV 全选上传');
+  toast('已打开看板，报表会自动加载；想补文件也可以直接拖进页面');
 }
 // 顶栏「看板」链接：线上模式是普通外链；本地模式改成打开本机看板
 $('#linkDash')?.addEventListener('click', e => {

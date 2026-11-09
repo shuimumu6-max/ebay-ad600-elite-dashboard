@@ -1499,17 +1499,19 @@
       if (ui.page === 'ads' && ui.adTab === 'overview') setTimeout(renderAdCharts, 0);
     }
 
-    async function importFiles(files) {
+    async function importFiles(files, options = {}) {
       const csvFiles = files.filter(file => file.name.toLowerCase().endsWith('.csv'));
       if (!csvFiles.length) return toast('请选择 CSV 文件。', true);
       loading(true, `正在处理 ${csvFiles.length} 个文件…`);
       const messages = [];
+      let failed = 0;
       for (const file of csvFiles) {
         try {
           const result = await readFile(file);
           mergeImport(result);
           messages.push(`${result.type}：${result.rows.length} 行`);
         } catch (error) {
+          failed += 1;
           messages.push(`${file.name}：${error.message}`);
         }
       }
@@ -1517,8 +1519,39 @@
       loading(false);
       ui.page = 'dashboard';
       render();
-      toast(`导入完成。${messages.join('；')}`);
+      // 自动加载（本地看板服务）时文件多、消息长，只说结论，细节留在控制台
+      toast(options.auto
+        ? `已自动加载 ${csvFiles.length - failed} 份报表${failed ? `（另有 ${failed} 份不是本看板支持的类型，已跳过）` : ''}`
+        : `导入完成。${messages.join('；')}`);
       document.getElementById('fileInput').value = '';
+    }
+
+    // 双击「打开看板.cmd」时，页面由本机小服务托管（127.0.0.1）：直接把「数据」目录里已归档的 CSV 拉进来。
+    // 用 bundleId 记住上次加载的是哪一批，内容没变就不再重复解析；file:// 双击打开时协议不对，完全不进这里。
+    async function autoLoadFromLocalServer() {
+      const isLocalHost = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+      if (location.protocol !== 'http:' || !isLocalHost) return;
+      let manifest;
+      try {
+        const res = await fetch('/auto-data.json', { cache: 'no-store' });
+        if (!res.ok) return;
+        manifest = await res.json();
+      } catch { return; }
+      if (!manifest || !Array.isArray(manifest.files) || !manifest.files.length) return;
+      const stamp = 'auto|' + manifest.bundleId;
+      if (stamp === localStorage.getItem('ebay-shop-autoload-stamp')) return;
+      loading(true, `正在读取已下载的 ${manifest.files.length} 份报表…`);
+      const files = [];
+      for (const entry of manifest.files) {
+        try {
+          const res = await fetch(`/auto-data/${entry.index}?v=${manifest.bundleId}`, { cache: 'no-store' });
+          if (!res.ok) continue;
+          files.push(new File([await res.blob()], entry.name, { type: 'text/csv' }));
+        } catch { /* 单份读不到不影响其它 */ }
+      }
+      if (!files.length) { loading(false); return; }
+      await importFiles(files, { auto: true });
+      localStorage.setItem('ebay-shop-autoload-stamp', stamp);
     }
 
     function exportData() {
@@ -1691,6 +1724,8 @@
         toast('无法读取本地数据，将以空白工作台启动。', true);
         applyModelFilter();
       }
+      // 本地看板服务模式：自己把已归档的 CSV 拉进来（file:// 双击打开时这一步什么都不做）
+      try { await autoLoadFromLocalServer(); } catch { /* 自动加载失败不影响手动上传 */ }
       render();
     })();
   </script>
