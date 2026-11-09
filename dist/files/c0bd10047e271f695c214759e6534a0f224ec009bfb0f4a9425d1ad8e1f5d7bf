@@ -560,6 +560,9 @@ function runSeqStep() {
       const fails = seq.failures;
       say(`[控制台] ${seq.label} 全部结束：共 ${seq.total} 步`
         + (fails.length ? `，失败 ${fails.length} 步：${fails.join('、')}` : '，全部成功'));
+      // 多步任务最后一步是「更新看板」，它没有下载 summary，所以失败明细要在这里单独推给前端，
+      // 否则用户只看到进度条走完、不知道该不该再补一次。
+      broadcast('run', { phase: 'seq-end', label: seq.label, failures: fails, total: seq.total });
       seq = null;
       return;
     }

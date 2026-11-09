@@ -1401,6 +1401,14 @@ es.addEventListener('run', e => {
     $('#runHint').textContent = `第 ${data.index - 1}/${data.total} 步已完成，${sec} 秒后继续：${data.next}`;
     return;
   }
+  if (data.phase === 'seq-end'){
+    // 多步任务（首次初始化 / 一键补齐）的最后一步是更新看板，没有下载 summary，
+    // 所以「有几步没成」由后端单独推过来，这里给出唯一的最终结论。
+    const n = (data.failures || []).length;
+    if (n) toast(`${data.label}结束：${n} 项没下完，已下好的都已归档。详情看日志；过 1 小时可点「补齐缺口」接着补`, true);
+    else toast(`${data.label}完成，数据已归档，可以打开看板了`);
+    return;
+  }
   if (data.phase === 'end'){
     if (data.queue?.more){
       // 队列里还有下一步：只刷新清单，不停表、不弹「下载完成」
@@ -1432,7 +1440,16 @@ es.addEventListener('run', e => {
     if (data.summary) renderSummary(data.summary);
     const errs = (data.summary?.errors || []).length;
     const bad = (data.summary?.counts?.invalid || 0);
-    toast(errs ? `结束，但有 ${errs} 个错误` : bad ? `结束，${bad} 份未通过校验` : '下载完成', !!errs || !!bad);
+    if (errs){
+      // 只说「有 9 个错误」等于没说：把第一条的核心原因带出来，用户才知道要不要现在处理。
+      const first = String((data.summary.errors || [])[0]?.message || '').replace(/^Traffic\s+\S+：/, '');
+      const throttled = /限速|没有任何反应|风控/.test(first);
+      toast(throttled
+        ? `有 ${errs} 项没下完：eBay 在限速，已下的都在。过 1 小时点「补齐缺口」接着补`
+        : `有 ${errs} 项没下完：${first.slice(0, 60)}（详情看日志）`, true);
+      return;
+    }
+    toast(bad ? `结束，${bad} 份未通过校验` : '下载完成', !!bad);
   }
 });
 

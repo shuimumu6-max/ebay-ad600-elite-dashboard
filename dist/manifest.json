@@ -1,6 +1,6 @@
 {
-  "version": "v19",
-  "createdAt": "2026-11-09 17:10:21",
+  "version": "v20",
+  "createdAt": "2026-11-09 17:11:37",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -165,13 +165,13 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "31b2dd782e7ae81f54cdc73f0de8a2480018bb93b13f55f5e02f4ac926a686fa",
-      "size": 106409
+      "hash": "e618acec999517b8e6f527a2c6e056559f2c1dd50a5621c9955c1c592853be72",
+      "size": 107489
     },
     {
       "path": "ui/server.mjs",
-      "hash": "2b80c049724606e2f1f22a4b3269e225f49792d8c395733375f4ce3481e9f2fd",
-      "size": 48964
+      "hash": "c0bd10047e271f695c214759e6534a0f224ec009bfb0f4a9425d1ad8e1f5d7bf",
+      "size": 49283
     },
     {
       "path": "ui/gap-plan.mjs",
