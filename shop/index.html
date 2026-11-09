@@ -65,7 +65,7 @@
     .pager-btn:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
     .pager-btn:disabled { color: #b3bcc8; cursor: not-allowed; }
     .pager-page { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; }
-    .product-notice { margin-bottom: 14px; padding: 11px 14px; border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; background: var(--amber-soft); color: #6b4a00; font-size: 12px; line-height: 1.7; }
+    .product-notice { margin-bottom: 14px; padding: 11px 14px; border: 1px solid var(--line); border-left: 3px solid #9aa6b3; border-radius: 6px; background: #f6f8fa; color: var(--muted); font-size: 12px; line-height: 1.7; }
     .workspace { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: calc(100vh - 62px); }
     .sidebar { padding: 18px 12px; background: #f8f9fb; border-right: 1px solid var(--line); }
     .nav { display: grid; gap: 5px; position: sticky; top: 80px; }
@@ -108,16 +108,11 @@
     .badge.red { color: var(--red); background: var(--red-soft); }
     .empty { padding: 58px 20px; color: var(--muted); text-align: center; }
     .empty svg { width: 30px; height: 30px; margin-bottom: 8px; color: #9aa6b3; }
-    .filters { padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .filters { padding: 16px 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 14px 18px; margin-bottom: 16px; }
     .filters .field:first-child { grid-column: span 2; }
     .field { min-width: 0; }
-    .field-help { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-    .traffic-source-help { grid-column: 1 / -1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; font-size: 12px; line-height: 1.7; }
-    .traffic-source-help summary { cursor: pointer; color: var(--blue); font-weight: 600; }
-    .traffic-source-help p { margin: 8px 0 0; }
-    .traffic-source-help ul { margin: 6px 0 0; padding-left: 20px; }
-    .field label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
-    .input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); }
+    .field label { display: block; margin-bottom: 7px; color: #5c6c80; font-size: 12px; font-weight: 600; letter-spacing: .015em; }
+    .input { width: 100%; height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); font-size: 13px; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; margin-bottom: 14px; }
     .metric { min-height: 104px; padding: 15px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
     .metric-label { color: var(--muted); font-size: 12px; }
@@ -159,7 +154,6 @@
     tbody tr:hover td.plg-col { background: #fff1d2; }
     .item-title { max-width: 330px; overflow: hidden; text-overflow: ellipsis; }
     .snapshot { margin-top: 14px; }
-    .snapshot-note { margin: 0 0 12px; padding: 10px 12px; color: var(--amber); background: var(--amber-soft); border-left: 3px solid #e3a008; font-size: 12px; line-height: 1.6; }
     .snapshot-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
     .snapshot-metric { padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
     .snapshot-metric span { display: block; color: var(--muted); font-size: 11px; }
@@ -810,21 +804,9 @@
         ${modelFilterField()}
         <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
         ${dateScope === '每日记录' ? '' : `<div class="field"><label>报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期（同区间累计优先）</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
-        <div class="field" style="${dateScope === '每日记录' ? 'display:none' : ''}"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter" aria-describedby="trafficSourceBrief"><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（用于趋势/对账）</option></select><small class="field-help" id="trafficSourceBrief">两种来源可能存在差额，不能仅凭差额判错。具体规则及原因见下方说明。</small></div>
+        <div class="field" style="${dateScope === '每日记录' ? 'display:none' : ''}"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter"><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（用于趋势/对账）</option></select></div>
         <div class="field"><label>开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
         <div class="field"><label>结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
-        <details class="traffic-source-help"><summary>Traffic 来源说明：${dateScope === '每日记录' ? '每日记录只使用单日报表' : '累计快照与日报相加有何区别'}（点击展开）</summary>
-          <p><strong>同区间累计报表优先：</strong>只有累计报表内部标注的起止日期与所选日期完全一致时，才使用该区间快照；没有匹配报表则回退到已有日报相加。累计报表是某次导出时的快照，“优先使用”不代表它一定更准确。</p>
-          <p><strong>仅按日报汇总：</strong>按同一 Item 将所选日期内的原始日报相加，适合查看每日趋势和对账。缺失日期或缺失 Item 行不视为实际为零，也不会用累计差额补写每天的数据。每日记录页面始终使用单日报表。</p>
-          <p><strong>为什么可能有差额？</strong></p>
-          <ul>
-            <li><strong>数据时点不同：</strong>报表标注的结束日期相同，不代表该日已经结束、数据已经更新完成，或两次导出覆盖了相同的数据处理状态。不能只凭日期文字相同就认定两份报表完全可比。</li>
-            <li><strong>链接范围不同：</strong>Traffic报表注明只包含生成时仍处于活跃状态的链接；后来暂停的 Item 可能不在新报表中，但历史日报仍保留。缺少该行不等于该 Item 的历史表现为零。</li>
-            <li><strong>仍待确认的原因：</strong>更新延迟、后续修订、时区边界或统计规则可能影响结果，现有文件尚不能确定具体原因；不能据此认定存在跨天去重。</li>
-          </ul>
-          <p><strong>如何读“PV核对”：</strong>差额＝已有日报合计总PV－同区间累计总PV，正数表示日报更大。它只表示文件之间有差额，尚不能直接判定哪一份数据错误。“日报与累计一致”也只代表数值一致，不代表已确认每日记录齐全、结束日完整或数据最终准确。</p>
-          <p><strong>指标口径：</strong>总PV包含站内和站外访问；站内PV只是其中一部分。与后台“Views (30 days)”比较前，还要核实其日期范围和指标定义。</p>
-        </details>
       </div>`;
     }
 
@@ -913,7 +895,7 @@
 
     function dashboardPage() {
       const rows = itemPerformance();
-      if (!rows.length) return `<div class="page-head"><h2>经营看板</h2></div>${filterPanel()}<div class="snapshot-note">${esc(trafficSelection().note)}</div><div class="panel empty">当前日期范围没有数据，请调整开始、结束日期。</div>`;
+      if (!rows.length) return `<div class="page-head"><h2>经营看板</h2></div>${filterPanel()}<div class="panel empty">当前日期范围没有数据，请调整开始、结束日期。</div>`;
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
@@ -931,12 +913,8 @@
       const prevRange = previousRange();
       const prev = prevRange ? metricsForRange(prevRange[0], prevRange[1]) : null;
       const d = (current, previous) => deltaBadge(current, previous);
-      const noPrevNote = prevRange && !prev ? `<div class="snapshot-note">上一区间（${rangeText(prevRange[0], prevRange[1])}）没有可比数据，环比暂显示为空。</div>` : '';
       return `<div class="page-head"><div><h2>经营看板</h2><p>按同一 Item 和日期统一查看整体流量、自然流量、PLG 与 PLP 广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
         ${filterPanel()}
-        <div class="snapshot-note">统计范围：${rangeText(ui.start, ui.end)}；Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。${esc(trafficSelection().note)}</div>
-        ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
-        ${noPrevNote}
         <section class="metrics">
           ${metric('链接总曝光', hasTraffic ? fmt(impressions) : '—', `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic${prev ? '；环比 ' + rangeText(prevRange[0], prevRange[1]) : ''}`, d(impressions, prev?.hasTraffic ? prev.impressions : null))}
           ${metric('总PV（Total page views）', hasTraffic ? fmt(totalViews) : '—', '站内 + 站外全部访问', d(totalViews, prev?.hasTraffic ? prev.totalViews : null))}
@@ -992,7 +970,6 @@
       const sold = sum(rows, 'quantitySold');
       const onsiteViews = sum(rows, 'promotedEbayViews') + sum(rows, 'organicEbayViews');
       return `<section class="panel snapshot"><div class="panel-head"><h3>Traffic 区间快照</h3><span class="badge ${start === end ? 'green' : 'amber'}">${start === end ? '单日' : '区间累计'}</span></div><div class="panel-body">
-        ${start !== end ? `<p class="snapshot-note">这份 Traffic 是 ${rangeText(start, end)} 的累计数据，只用于区间汇总，不会混入上方的日度趋势。</p>` : ''}
         <div class="snapshot-metrics">
           <div class="snapshot-metric"><span>链接总曝光</span><strong>${fmt(impressions)}</strong></div>
           <div class="snapshot-metric"><span>总 Page views</span><strong>${fmt(views)}</strong></div>
@@ -1011,7 +988,6 @@
       const missingTraffic = plgDates.filter(date => !trafficDates.includes(date));
       return `<div class="page-head"><div><h2>Item 每日记录</h2><p>按“日期 + Item ID”合并单日 Traffic、PLG 和 PLP。</p></div><div class="actions"><button class="btn" id="dailyExportBtn">${icon('download')}导出每日记录</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传日报</button>`}</div></div>
         ${filterPanel('每日记录')}
-        ${missingTraffic.length ? `<div class="snapshot-note">当前 PLG 有 ${fmt(plgDates.length)} 天日度数据，但单日 Traffic 有 ${fmt(trafficDates.length)} 天。缺少整体日度数据：${esc(missingTraffic.join('、'))}。请在 eBay 把 Traffic 报表开始和结束日期都设为同一天后下载。</div>` : `<div class="snapshot-note" style="color:var(--green);background:var(--green-soft);border-color:var(--green)">当前已导入的 PLG 日期均有对应单日 Traffic，可以查看完整 Item 日度表现。</div>`}
         <section class="metrics">
           ${metric('记录日期', fmt(dates.length), rangeText(dates[0], dates[dates.length - 1]))}
           ${metric('Item 数', fmt(itemCount), '全店铺机型口径')}
@@ -1050,7 +1026,7 @@
         <div class="snapshot-metric"><span>单日 Traffic</span><strong>${fmt(trafficDailyDates.length)} 天</strong></div>
         <div class="snapshot-metric"><span>Traffic 区间快照</span><strong>${fmt(rangeCount)} 份</strong></div>
         <div class="snapshot-metric"><span>缺单日 Traffic</span><strong>${fmt(missingTraffic.length)} 天</strong></div>
-      </div>${missingTraffic.length ? `<p class="snapshot-note" style="margin-top:12px;margin-bottom:0">缺少单日 Traffic：${esc(missingTraffic.join('、'))}。当前仍可查看 PLG 日度趋势，链接总曝光、总 Page views 等 Traffic 指标暂不能按日展示。</p>` : ''}</div></section>`;
+      </div></div></section>`;
     }
 
     function sourceCard(source) {
@@ -1081,8 +1057,6 @@
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
         ${listingStatusPanel()}
-        <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}。${esc(trafficSelection().note)}</div>
-        ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
         <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(rows.length)} 个 Item</small></div>${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
     }
 
@@ -1233,14 +1207,13 @@
       const rows = sortRows(summary ? summarizeAdRows(filtered,'links') : filtered.map(adRowRatios),table);
       const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}<td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank" rel="noopener">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>${adMetricCells(row)}${type === 'PLG' ? `<td>${adValue(row.naturalImpressions)}</td><td>${adValue(row.naturalClicks)}</td><td>${adValue(row.naturalSold)}</td>` : ''}<td>${esc(row.campaign)}</td></tr>`).join('');
       return `${adTableFilters(tab,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><h3>${type} 链接表现 · ${summary ? 'Item 汇总' : '日度明细'}</h3><small>${summary ? `${fmt(rows.length)} 个 Item，来自 ${fmt(filtered.length)} 条日度记录` : `${fmt(rows.length)} 条日度记录`}</small></div>
-        <div class="snapshot-note">按上方日期、Campaign 和本页 Item ID 筛选。汇总时同一 Item 跨日期、跨 Campaign 合并，比例按合计值重算。${summary && type === 'PLG' ? '自然指标按同日 Item 去重，多个 Campaign 的自然记录不一致时显示 —。' : ''}</div>
         <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',table)}${summary ? sortHeader('记录天数','days',table) : ''}${sortHeader('Item ID','itemId',table)}${sortHeader('标题','title',table)}${adMetricHeaders(table)}${type === 'PLG' ? sortHeader('自然曝光','naturalImpressions',table)+sortHeader('自然点击','naturalClicks',table)+sortHeader('自然销量','naturalSold',table) : ''}${sortHeader('Campaign','campaign',table)}</tr></thead><tbody>${body || `<tr><td colspan="${(summary ? 15 : 14)+(type === 'PLG' ? 3 : 0)}">当前筛选范围没有记录，请调整日期、Campaign 或 Item ID。</td></tr>`}</tbody></table></div></section>`;
     }
 
     function advertisingPage() {
       const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接']];
       const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : adLinksTable('PLP');
-      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接独立分析（全店铺多产品口径不细化到关键词与搜索词）；不包含运营调整。</p></div></div><div class="panel filters"><div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div><div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
+      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接独立分析（全店铺多产品口径不细化到关键词与搜索词）；不包含运营调整。</p></div></div><div class="panel filters">${modelFilterField()}<div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div><div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div></div>${productNotice()}${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
     }
 
     function coveragePage() {
