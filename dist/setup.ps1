@@ -56,7 +56,9 @@ try {
   Line "安装目录：$Dest"
   Line ''
 
-  $manifest = Invoke-RestMethod -Uri "$base/manifest.json" -UseBasicParsing -TimeoutSec 60
+  # 加时间戳：GitHub Pages 的 CDN 会缓存十分钟，不加会装到旧版本
+  $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $manifest = Invoke-RestMethod -Uri "$base/manifest.json?t=$stamp" -UseBasicParsing -TimeoutSec 60
   Line "最新版本：$($manifest.version)（$($manifest.createdAt)）"
   Line ''
 
@@ -80,7 +82,7 @@ try {
   Line '[2/3] 正在下载程序文件（约 1 MB）...' 'White'
   $zip = Join-Path $env:TEMP 'ebay-toolkit.zip'
   $expand = Join-Path $env:TEMP ('ebay-toolkit-' + [Guid]::NewGuid().ToString('N'))
-  Get-Remote "$base/toolkit.zip" $zip
+  Get-Remote "$base/toolkit.zip?t=$stamp" $zip
   Expand-Archive -Path $zip -DestinationPath $expand -Force
   Copy-Item (Join-Path $expand 'eBay报表工具包\*') $Dest -Recurse -Force
   Remove-Item $zip -Force -ErrorAction SilentlyContinue

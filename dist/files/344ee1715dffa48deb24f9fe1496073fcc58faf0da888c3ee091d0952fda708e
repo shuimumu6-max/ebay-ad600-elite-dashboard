@@ -19,7 +19,10 @@ const sha256 = buffer => createHash('sha256').update(buffer).digest('hex');
 
 const fail = text => { console.error(`[X] ${text}`); process.exit(1); };
 
-const manifest = await fetch(`${BASE}manifest.json`, { headers: { 'cache-control': 'no-cache' } })
+// GitHub Pages 的 CDN 会缓存 manifest 十分钟左右，请求头里的 no-cache 管不住它，
+// 所以加时间戳查询串强制取最新清单（files/<hash> 是内容寻址，永久可缓存，不加）。
+const manifestUrl = `${BASE}manifest.json?t=${Date.now()}`;
+const manifest = await fetch(manifestUrl, { headers: { 'cache-control': 'no-cache' } })
   .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
   .catch(error => fail(`读不到更新清单（${BASE}manifest.json）：${error.message}。检查网络，或用 --base 指定更新源。`));
 
