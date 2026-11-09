@@ -402,7 +402,7 @@
   <div class="firstrun" id="firstRun" hidden>
     <div class="fr-body">
       <h3>第一次用？点一下，自动把最近 30 天的数据下下来</h3>
-      <p>会自动下载：流量报表（逐日 30 份）、PLG 链接广告（上月 + 本月）、优先促销刊登（物品刊登 / 关键词 / 活动 / 搜索词）、在售商品名单。大概 20~30 分钟，期间可以最小化窗口，但别关控制台。</p>
+      <p>会先自动识别你的店铺（只读浏览器里的登录账号，不用填任何东西），然后下载：流量报表（逐日 30 份）、PLG 链接广告（上月 + 本月）、优先促销刊登（物品刊登 / 关键词 / 活动 / 搜索词）、在售商品名单。大概 20~30 分钟，期间可以最小化窗口，但别关控制台。</p>
       <p class="fr-hint">下完这些，打开看板就能看到数据；以后只需要补缺的日子，或者自己勾想下的报表。</p>
     </div>
     <div class="fr-actions">
@@ -1001,24 +1001,54 @@ $('#btnFirstRunSkip').addEventListener('click', () => {
   $('#firstRun').hidden = true;
 });
 
-/* ---------- 店铺名：只是个显示名，随时能改，不影响任何数据 ---------- */
-function renderShopName(name){
+/* ---------- 店铺名：不用填，能从浏览器读就读；读不到再随手起个名 ---------- */
+let shopPlaceholder = false;
+function renderShopName(name, placeholder){
   const txt = $('#txtShop');
   if (!txt) return;
+  shopPlaceholder = placeholder === undefined ? (!name || name === '我的店铺') : !!placeholder;
   txt.textContent = name || '我的店铺';
-  txt.title = `当前店铺：${name || '我的店铺'}（点右边「改名」可改，只影响显示）`;
+  txt.title = shopPlaceholder
+    ? '还没识别店铺名：点右边「识别」从浏览器读（只读，几秒）'
+    : `当前店铺：${name}（点右边「改名」可改，只影响显示）`;
+  const btn = $('#btnShopName');
+  if (btn){
+    btn.textContent = shopPlaceholder ? '识别' : '改名';
+    btn.title = shopPlaceholder ? '从浏览器读店铺名，不用手填' : '只是个显示名，随时能改';
+  }
+}
+async function saveShopName(name){
+  const r = await (await fetch('/api/shop-name', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name })
+  })).json();
+  if (!r.ok) throw new Error(r.error || '改名失败');
+  renderShopName(r.name, false);
+  return r.name;
 }
 $('#btnShopName').addEventListener('click', async () => {
+  // 还没识别过：先只读读一次浏览器（不碰活动、不下载）
+  if (shopPlaceholder){
+    const btn = $('#btnShopName');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '识别中…';
+    toast('正在从浏览器读取店铺名（只读，几秒）…');
+    try {
+      const d = await (await fetch('/api/detect-shop', { method: 'POST' })).json();
+      if (d.ok && d.name){ renderShopName(d.name, false); toast(`店铺已识别：${d.name}`); return; }
+      throw new Error(d.error || '没读到店铺名');
+    } catch (error){
+      toast(`${error.message}｜也可以直接填一个`, true);
+    } finally {
+      btn.disabled = false;
+      if (shopPlaceholder) btn.textContent = label;
+    }
+  }
   const cur = $('#txtShop').textContent.trim();
   const next = prompt('店铺名（只是个显示名，随便填，随时能改）', cur === '我的店铺' ? '' : cur);
   if (next === null) return;
   try {
-    const r = await (await fetch('/api/shop-name', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: next })
-    })).json();
-    if (!r.ok) throw new Error(r.error || '改名失败');
-    renderShopName(r.name);
-    toast(`店铺名已改为「${r.name}」`);
+    toast(`店铺名已改为「${await saveShopName(next)}」`);
   } catch (error) { toast(error.message, true); }
 });
 document.addEventListener('click', e => { if (!e.target.closest('#prCampaignDD')) prToggle(false); });
@@ -1203,8 +1233,9 @@ async function refreshState(){
     const b = s.bridge || {};
     if (b.ok){
       dot.className = 'dot ok';
-      const min = Math.round((b.uptimeSec || 0) / 60);
-      txt.textContent = min >= 1 ? `已连接 · 稳定 ${min} 分钟` : '已连接';
+      // 不显示「已连续在线 N 分钟」：那是常驻进程的运行时长，跟"这次装得好不好"无关，
+      // 多开一个控制台还会显示同一个老数字，容易被误读成数据不对。
+      txt.textContent = '已连接';
       fix.hidden = true;
       txt.title = '常驻连接一直保持，下载不会再要求你点允许';
     } else if (b.needsAuth){
@@ -1242,7 +1273,7 @@ async function refreshState(){
       updateSubLabels();
     }
     if (s.outDir && !$('#outDir').value) $('#outDir').placeholder = s.outDir;
-    if (s.shop) renderShopName(s.shop.name);
+    if (s.shop) renderShopName(s.shop.name, s.shop.placeholder);
     // 首次使用引导：还没有任何 CSV 时出现；点过「不用」或正在跑就收起
     const fr = $('#firstRun');
     if (fr) fr.hidden = !s.firstRun?.needed || !!s.running || sessionStorage.getItem('firstRunSkip') === '1';

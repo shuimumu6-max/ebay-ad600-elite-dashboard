@@ -29,6 +29,9 @@ const flag = name => argv.includes(`--${name}`);
 const QUIET = flag('quiet');
 const JSON_OUT = flag('json');
 const NO_WRITE = flag('no-write');
+// 只读店铺名：不开 Download report 弹窗、不扫活动，几秒就回来。
+// 首次初始化第一步、控制台里「识别店铺」都走这个模式。
+const SELLER_ONLY = flag('seller-only');
 
 const say = text => { if (!QUIET) console.log(text); };
 
@@ -86,6 +89,27 @@ async function main() {
     } catch { /* 卖家名拿不到不致命，下面用活动归属兜底 */ }
     reply('seller', seller);
     say(`[识别] 卖家账号：${seller || '(没读到，稍后用活动列表推断)'}`);
+
+    if (SELLER_ONLY) {
+      if (!seller) throw new Error('没读到卖家名：请确认浏览器已登录 eBay 卖家后台（换账号后要重新登录）');
+      result.seller = seller;
+      if (NO_WRITE) {
+        say('[跳过] --no-write：不写任何文件');
+      } else {
+        const config = readConfig() || defaultConfig(seller);
+        const before = JSON.stringify(config);
+        if (isPlaceholder(config.shopName)) config.shopName = seller;
+        config.sellerName = seller;
+        if (!config.dataDir) config.dataDir = defaultConfig(seller).dataDir;
+        if (!config.runsDir) config.runsDir = defaultConfig(seller).runsDir;
+        if (!config.downloadsDir) config.downloadsDir = defaultConfig(seller).downloadsDir;
+        writeJson(CONFIG_PATH, config);
+        say(`[写入] ${CONFIG_PATH}${before === JSON.stringify(config) ? '（内容无变化）' : ''}`);
+      }
+      result.ok = true;
+      say(`店铺已识别：${seller}（不用再手填任何东西）`);
+      return result;
+    }
 
     // 优先促销刊登：物品刊登 / 关键词 / 搜索词 三类报表共用同一批活动
     let plp = [];

@@ -44,7 +44,7 @@ function reloadCampaigns() {
   plgList = normalize(config.plgCampaigns);
   const plpIds = (Array.isArray(config.plpCampaigns) ? config.plpCampaigns : []).map(String).filter(Boolean);
   const snapshot = readJsonFile(join(APP_DIR, 'priority-campaigns.json'));
-  const owner = shopMeta.sellerName || shopMeta.shopName;
+  const owner = String(config.sellerName || shopMeta.sellerName || shopMeta.shopName || '').trim();
   const snapshotOwner = snapshot?.seller || snapshot?.shopName;
   const pool = snapshot && (!snapshotOwner || !owner || snapshotOwner === owner)
     ? normalize(snapshot.campaigns)
@@ -64,8 +64,7 @@ function reloadCampaigns() {
 
 // ---------- 运行态 ----------
 let child = null;
-let scanChild = null;                                // 活动扫描子进程（只读，不影响下载）
-let runInfo = null;                                  // { startedAt, args, lines }
+let scanChild = null;                                // 活动扫描子进程（只读，不影响下载）let runInfo = null;                                  // { startedAt, args, lines }
 // 逐天串行队列：一键补齐全天跑完一天 → 等一会儿 → 再跑下一天（同一天重复提交容易被 eBay 拒）
 let seq = null;                                      // { steps, i, gapMs, label, timer }
 let buffer = [];                                     // 最近日志行，供新连接补屏
@@ -84,6 +83,34 @@ function broadcast(event, payload) {
   for (const res of clients) res.write(`event: ${event}\ndata: ${j(payload)}\n\n`);
 }
 
+// 只读识别店铺名（跑 auto-scan.mjs --seller-only，约 5~10 秒）。成功返回卖家名。
+function runSellerScan() {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(NODE, [join(APP_DIR, 'auto-scan.mjs'), '--seller-only', '--json', '--quiet'], {
+      cwd: dirname(APP_DIR), windowsHide: true
+    });
+    scanChild = proc;
+    let out = '';
+    proc.stdout.on('data', chunk => { out += String(chunk); });
+    proc.stderr.on('data', chunk => { out += String(chunk); });
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch { /* 忽略 */ }
+      reject(new Error('读取超时：浏览器没有响应，重新打开浏览器再试'));
+    }, 60000);
+    proc.on('close', () => {
+      clearTimeout(timer);
+      scanChild = null;
+      reloadCampaigns();
+      broadcast('shop', { name: shopMeta.shopName, seller: shopMeta.sellerName });
+      const line = out.split(/\r?\n/).reverse().find(l => l.startsWith('@@result:'));
+      let result = null;
+      try { result = line ? JSON.parse(line.slice('@@result:'.length)) : null; } catch { /* 忽略 */ }
+      if (result?.ok && result.seller) resolve(result.seller);
+      else reject(new Error(result?.error || '没读到卖家名：确认浏览器已登录 eBay 卖家后台'));
+    });
+  });
+}
+
 // ---------- 首次初始化：一次把最近 30 天的数据下下来，看板一打开就有内容 ----------
 // 运营不用理解「哪些报表、什么粒度」：Traffic 逐日、PLG 本月+上月、优先促刊 4 类走一个 30 天区间、
 // 在售名单 1 份。以后要补哪一段，再用界面上的单项下载。
@@ -98,6 +125,13 @@ function firstRunPlan(days = 30) {
   const start = shiftDays(end, -(days - 1));
   const base = ['run-download.mjs', '--out', OUT_DIR, '--max-tabs', '10'];
   const steps = [
+    {
+      // 第 0 步：先从浏览器读店铺名（只读，几秒），失败也不影响后面的下载
+      day: '识别店铺',
+      title: '识别店铺（从浏览器读取，不用手填）',
+      mode: 'seller', gapMs: 0,
+      args: [join(APP_DIR, 'auto-scan.mjs'), '--seller-only', '--json', '--quiet']
+    },
     {
       day: `Traffic ${start}~${end}`,
       title: `流量报表（${start} ~ ${end}，逐日 ${days} 份）`,
@@ -194,6 +228,8 @@ async function envState() {
     shop: {
       name: shopMeta.shopName,
       seller: shopMeta.sellerName,
+      // 还没识别出店铺名（新装用户）——界面会提示「点一下自动识别」
+      placeholder: !shopMeta.shopName || shopMeta.shopName === '我的店铺',
       configFile: configFilePath(),
       // 0 个活动不是错：代表「报表中心后台默认全部活动」，也是最省事的默认状态
       plgCount: plgList.length,
@@ -436,7 +472,7 @@ function startJob(args, mode, label, onExit) {
     // 只认本次自己报出来的结果目录；失败没报就是没有，不去抓历史目录充数
     const dir = runInfo?.runDir || null;
     if (runInfo) runInfo.runDir = dir;
-    say(`[控制台] ${mode === 'publish' ? '看板更新' : '下载'}结束，退出码 ${code}`);
+    say(`[控制台] ${mode === 'publish' ? '看板更新' : mode === 'seller' ? '店铺识别' : '下载'}结束，退出码 ${code}`);
     const summary = mode === 'publish' ? null : lastSummary();
     child = null;
     const queueMore = !!seq && (seq.i + 1 < seq.total || seq.thenArchive);
@@ -467,6 +503,12 @@ function runSeqStep() {
   const tag = step.title || `第 ${seq.i + 1}/${seq.total} 天（${step.day}）`;
   startJob(step.args, step.mode, `${seq.label} · ${tag}`, code => {
     if (!seq) return;                       // 已被手动停止
+    // 店铺识别步骤：把新读到的卖家名 / 活动列表刷进界面（失败不拦后面的下载）
+    if (step.mode === 'seller') {
+      reloadCampaigns();
+      broadcast('shop', { name: shopMeta.shopName, seller: shopMeta.sellerName });
+      if (code === 0) say(`[控制台] 店铺已识别：${shopMeta.shopName}`);
+    }
     if (step.mode === 'download') {
       const dir = runInfo?.runDir || null;
       if (dir) seq.runDirs.push(dir);
@@ -549,6 +591,23 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, name: shopMeta.shopName, file: saved });
       } catch (error) {
         return send(res, 500, { ok: false, error: `保存失败：${error.message}` });
+      }
+    }
+
+    // 识别店铺名：只读浏览器里的卖家账号，几秒完成，不碰活动列表、不下载。
+    // 新装用户第一次点「识别 / 改名」就走这里，不需要手填店铺名。
+    if (path === '/api/detect-shop' && req.method === 'POST') {
+      if (child || seq || scanChild) return send(res, 409, { ok: false, error: '有任务在跑，等它结束再识别' });
+      const state = await bridgeHealth().catch(() => null);
+      if (!state?.connected) {
+        return send(res, 200, { ok: false, error: '浏览器还没连上：先点页面顶部的「去开开关」，再点一次识别' });
+      }
+      try {
+        const name = await runSellerScan();
+        say(`[控制台] 店铺已识别：${name}`);
+        return send(res, 200, { ok: true, name, seller: shopMeta.sellerName });
+      } catch (error) {
+        return send(res, 200, { ok: false, error: error.message });
       }
     }
 

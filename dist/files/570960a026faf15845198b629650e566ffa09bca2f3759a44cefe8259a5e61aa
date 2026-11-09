@@ -28,7 +28,7 @@ if (!findChrome()) {
 const before = await bridgeHealth();
 if (before?.connected) {
   log('[OK] 常驻连接已在线，什么都不用做。');
-  log(`     已连续在线 ${Math.round((before.uptimeSec || 0) / 60)} 分钟，期间所有下载都不会再问你要授权。`);
+  log('     连接一直保持，期间所有下载都不会再问你要授权。');
   log('');
   log(' 环境已就绪。直接双击「报表控制台.cmd」或「一键下载.cmd」即可。');
   process.exit(0);
