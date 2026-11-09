@@ -1,0 +1,11 @@
+// 单独更新并发布在线看板（不下载）：读取正式数据目录 -> 生成 data.js -> git push
+// 用法：node publish-only.mjs
+import { publishDashboard, dataDirState } from './publish.mjs';
+import { SHOP } from './shop-config.mjs';
+
+console.log('正式数据目录状态:', JSON.stringify(dataDirState()));
+const result = publishDashboard();
+if (result.stdout) console.log(result.stdout);
+if (result.stderr) console.error(result.stderr);
+console.log(result.ok ? `发布完成：${SHOP.dashboardUrl}` : `发布失败（退出码 ${result.code}）`);
+process.exitCode = result.ok ? 0 : 1;

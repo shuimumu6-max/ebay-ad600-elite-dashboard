@@ -1,0 +1,603 @@
+// eBay 报表控制台：本地网页界面 + 后台调用 download.mjs
+// 只监听 127.0.0.1，不对外暴露；职责：环境体检、参数拼装、启动下载、实时日志、结果读取。
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ensureEnv, bridgeHealth, startBridgeDaemon, openInspectPage, findChrome } from '../app/ensure-env.mjs';
+import { yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS } from '../app/config.mjs';
+import { dataDirState } from '../app/publish.mjs';
+import { scanGaps, pacificToday } from '../app/scan-gaps.mjs';
+import { catalogSnapshot } from '../app/reports.mjs';
+import { SHOP, shopSummary } from '../app/shop-config.mjs';
+import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, GAP_DEFAULT_SEC } from './gap-plan.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const APP_DIR = join(here, '..', 'app');
+const NODE = process.execPath;
+const PORT = Number(process.env.CONSOLE_PORT || SHOP.consolePort);
+let OUT_DIR = process.env.REPORT_OUT_DIR || SHOP.runsDir;
+const LOG_FILE = join(here, 'console.log');
+const DASHBOARD_URL = process.env.DASHBOARD_URL || SHOP.dashboardUrl;
+
+
+// ---------- 运行态 ----------
+let child = null;
+let runInfo = null;                                  // { startedAt, args, lines }
+// 逐天串行队列：一键补齐全天跑完一天 → 等一会儿 → 再跑下一天（同一天重复提交容易被 eBay 拒）
+let seq = null;                                      // { steps, i, gapMs, label, timer }
+let buffer = [];                                     // 最近日志行，供新连接补屏
+const clients = new Set();                           // SSE 连接
+
+const j = obj => JSON.stringify(obj);
+const say = text => {
+  const line = String(text);
+  buffer.push(line);
+  if (buffer.length > 3000) buffer.shift();
+  for (const res of clients) res.write(`data: ${j({ line })}\n\n`);
+  try { appendFileSync(LOG_FILE, line + '\n'); } catch { /* 忽略 */ }
+};
+
+function broadcast(event, payload) {
+  for (const res of clients) res.write(`event: ${event}\ndata: ${j(payload)}\n\n`);
+}
+
+// ---------- 环境体检 ----------
+// 只问常驻桥（毫秒级），不再每次做 8 秒的 WS 握手探测；
+// 桥不在就顺手拉起守护，用户不用关心进程在不在。
+let lastDaemonTry = 0;
+async function envState() {
+  let h = await bridgeHealth();
+  if (!h && Date.now() - lastDaemonTry > 10000) {
+    lastDaemonTry = Date.now();
+    startBridgeDaemon();
+  }
+  const connected = !!h?.connected;
+  return {
+    chrome: {
+      ok: connected,
+      browser: connected ? 'Chrome（常驻连接已在线）' : null,
+      reason: connected ? null : (h?.hint || '常驻桥未启动')
+    },
+    bridge: {
+      ok: connected,
+      online: !!h,
+      phase: h?.phase || (h ? 'reconnecting' : 'offline'),
+      needsAuth: !!h?.needsAuth,
+      uptimeSec: h?.uptimeSec || 0,
+      reconnectTries: h?.reconnectTries || 0,
+      hint: h?.hint || '常驻桥未启动'
+    },
+    running: !!child || !!seq,
+    mode: runInfo?.mode || null,
+    runStartedAt: runInfo?.startedAt || null,
+    outDir: OUT_DIR,
+    dashboard: DASHBOARD_URL,
+    dataState: dataDirState(),
+    defaults: defaultForm(),
+    last: lastSummary()
+  };
+}
+
+function defaultForm() {
+  const date = yesterdayPacific();
+  return {
+    date,
+    rangeStart: monthStart(date),
+    rangeEnd: date,
+    plgCampaigns: PLG_CAMPAIGNS.map(c => c.id),
+    plgCampaignList: PLG_CAMPAIGNS,
+    ranges: RC_RANGES,
+    activeTypes: Object.entries(ACTIVE_TYPES).map(([key, v]) => ({ key, label: v.label })),
+    orderTypes: ORDER_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp })),
+    orderRanges: ORDER_RANGES,
+    priorityTypes: PRIORITY_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp })),
+    priorityCampaignList: PRIORITY_CAMPAIGNS,
+    priorityDefaultCampaigns: PRIORITY_DEFAULT_IDS,
+    outDir: OUT_DIR
+  };
+}
+
+function runDirsNewestFirst() {
+  if (!existsSync(OUT_DIR)) return [];
+  return readdirSync(OUT_DIR)
+    .filter(name => /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(name))
+    .map(name => ({ name, at: statSync(join(OUT_DIR, name)).mtimeMs }))
+    .sort((a, b) => b.at - a.at)
+    .map(item => join(OUT_DIR, item.name));
+}
+
+function newestRunDir() {
+  return runDirsNewestFirst()[0] || null;
+}
+
+function readSummary(dir) {
+  const file = join(dir, '结果.json');
+  if (!existsSync(file)) return null;
+  try {
+    const s = JSON.parse(readFileSync(file, 'utf8'));
+    return {
+      runDir: dir,
+      runId: s.runId,
+      totalMs: s.totalMs,
+      date: s.date,
+      rangeStart: s.rangeStart,
+      plpStart: s.plpStart,
+      plpEnd: s.plpEnd,
+      counts: s.counts,
+      warnings: s.warnings || [],
+      errors: s.errors || [],
+      files: (s.files || []).map(f => ({
+        name: f.name, kind: f.kind, label: f.label, task: f.task,
+        rowCount: f.rowCount, size: f.size, valid: f.valid, problem: f.problem || null,
+        folder: (f.path || '').split(/[\\/]/).slice(-2, -1)[0] || ''
+      }))
+    };
+  } catch { return null; }
+}
+
+// 只认本次：控制台这次启动后跑出来的结果。服务重开就是空白，不再回退历史目录，
+// 免得把上一次的旧文件当成这次的产出。
+function lastSummary() {
+  if (!runInfo?.runDir) return null;
+  return readSummary(runInfo.runDir);
+}
+
+// 最近的运行目录（带 结果.json 的），给「补做归档 + 更新看板」下拉框用
+function recentRuns(limit = 20) {
+  if (!existsSync(OUT_DIR)) return [];
+  const out = [];
+  for (const entry of readdirSync(OUT_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(OUT_DIR, entry.name);
+    const file = join(dir, '结果.json');
+    if (!existsSync(file)) continue;
+    try {
+      const s = JSON.parse(readFileSync(file, 'utf8'));
+      const files = (s.files || []).filter(f => f && f.path && f.valid !== false && !f.problem);
+      out.push({
+        name: entry.name, dir,
+        startedAt: s.startedAt || '',
+        only: Array.isArray(s.only) ? s.only : [],
+        total: (s.counts?.total ?? (s.files || []).length),
+        valid: (s.counts?.valid ?? files.length),
+        archived: !!s.apply,
+        published: !!s.publish,
+        filesReady: files.filter(f => existsSync(f.path)).length
+      });
+    } catch { /* 坏的 结果.json 跳过 */ }
+  }
+  return out.sort((a, b) => (a.name < b.name ? 1 : -1)).slice(0, limit);
+}
+
+// ---------- 参数拼装 ----------
+function buildArgs(form) {
+  const out = String(form.outDir || '').trim();
+  if (out && !isAbsolute(out)) throw new Error('结果目录要填 Windows 绝对路径');
+  if (out.includes('..')) throw new Error('结果目录不能包含 ..');
+  const args = ['run-download.mjs', '--out', out || OUT_DIR];
+  const only = [];
+  const tm = form.trafficMode || 'daily';
+  if (tm === 'daily') only.push('trafficDaily');
+  if (tm === 'range') only.push('trafficRange');
+  if (tm === 'both') only.push('traffic');
+  if (tm === 'batch') only.push('trafficDaily');
+  if (form.plg) only.push('plg');
+  if (form.active) only.push('active');
+  if (form.orders) only.push('orders');
+  if (form.priority) only.push('priority');
+  if (!only.length) throw new Error('至少要选一份报表');
+
+  args.push('--only', only.join(','));
+  const maxTabs = Number(form.maxTabs || 4);
+  if (Number.isFinite(maxTabs) && maxTabs >= 1 && maxTabs <= 10) args.push('--max-tabs', String(Math.round(maxTabs)));
+  args.push('--date', form.date || yesterdayPacific());
+  if (tm === 'batch') {
+    const dates = String(form.batchDates || '').trim();
+    if (!dates) throw new Error('批量模式需要填日期，如 2026-11-01..2026-11-05');
+    args.push('--dates', dates);
+  }
+  if (tm === 'range' || tm === 'both') {
+    args.push('--range-start', form.rangeStart);
+    if (form.rangeEnd) args.push('--range-end', form.rangeEnd);
+  }
+
+  if (form.plg) {
+    args.push('--plg-unit', form.plgUnit || 'DAILY');
+    if (form.plgRange) args.push('--plg-range', form.plgRange);
+    if (form.plgRange === 'CUSTOM') {
+      if (!form.plgCustomStart || !form.plgCustomEnd) throw new Error('自定义区间要填起止日期');
+      if (form.plgCustomStart > form.plgCustomEnd) throw new Error('自定义区间起始日晚于结束日');
+      args.push('--plg-custom-start', form.plgCustomStart, '--plg-custom-end', form.plgCustomEnd);
+    }
+    // 没传活动列表就按「全部活动」处理；显式传了空数组才算选错
+    const plgPicked = form.plgCampaigns === undefined
+      ? PLG_CAMPAIGNS.map(c => c.id)
+      : (form.plgCampaigns || []).filter(Boolean);
+    if (!plgPicked.length) throw new Error('PLG 至少要选一个活动');
+    if (plgPicked.length < PLG_CAMPAIGNS.length) args.push('--plg-campaigns', plgPicked.join(','));
+  }
+  if (form.active) args.push('--active-type', form.activeType || 'active');
+
+  if (form.orders) {
+    args.push('--order-type', form.orderType || 'all');
+    args.push('--order-range', form.orderRange || 'LAST90D');
+    if (form.orderRange === 'CUSTOM') {
+      if (!form.orderCustomStart || !form.orderCustomEnd) throw new Error('订单自定义区间要填起止日期');
+      if (form.orderCustomStart > form.orderCustomEnd) throw new Error('订单区间起始日晚于结束日');
+      args.push('--order-custom-start', form.orderCustomStart, '--order-custom-end', form.orderCustomEnd);
+    }
+  }
+
+  if (form.priority) {
+    const ptypes = (form.priorityTypes || []).filter(Boolean);
+    if (!ptypes.length) throw new Error('优先促销刊登至少要选一种报表类型');
+    const bad = ptypes.filter(k => !PRIORITY_TYPES.some(t => t.key === k));
+    if (bad.length) throw new Error(`优先促销刊登类型不支持：${bad.join(',')}`);
+    args.push('--priority-types', ptypes.join(','));
+    args.push('--priority-unit', form.priorityUnit || 'DAILY');
+    if (form.priorityRange) args.push('--priority-range', form.priorityRange);
+    if (form.priorityRange === 'CUSTOM') {
+      if (!form.priorityCustomStart || !form.priorityCustomEnd) throw new Error('优先促刊自定义区间要填起止日期');
+      if (form.priorityCustomStart > form.priorityCustomEnd) throw new Error('优先促刊区间起始日晚于结束日');
+      args.push('--priority-custom-start', form.priorityCustomStart, '--priority-custom-end', form.priorityCustomEnd);
+    }
+    const pc = (form.priorityCampaigns || []).filter(Boolean);
+    const known = new Set(PRIORITY_CAMPAIGNS.map(c => c.id));
+    const unknown = pc.filter(id => !known.has(id));
+    if (unknown.length) throw new Error(`优先促销刊登活动不在列表里：${unknown.join(',')}`);
+    if (pc.length && pc.length < PRIORITY_CAMPAIGNS.length) args.push('--priority-campaigns', pc.join(','));
+    else if (pc.length === PRIORITY_CAMPAIGNS.length) args.push('--priority-campaigns', 'all');
+  }
+  if (form.keepTabs) args.push('--keep');
+  if (form.publish) args.push('--publish');
+  else if (form.apply) args.push('--apply');
+  return args;
+}
+
+// ---------- 一键补齐：扫描缺口 → 组参 → 下载 → 自动归档 + 更新看板 ----------
+const dayList = (s, e) => {
+  const out = [];
+  for (let t = Date.parse(`${s}T00:00:00Z`); t <= Date.parse(`${e}T00:00:00Z`); t += 86400000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+};
+// 报表中心「按日」粒度只给四个预设（实测 2026-11-08）：挑能整体盖住缺口的最小那个
+function presetFor(days) {
+  if (!days.length) return null;
+  const fmt = x => x.toISOString().slice(0, 10);
+  const shift = (x, n) => { const y = new Date(x); y.setUTCDate(y.getUTCDate() + n); return y; };
+  const t0 = new Date(`${pacificToday()}T00:00:00Z`);
+  const w0 = shift(t0, -(((t0.getUTCDay() + 6) % 7)));
+  const presets = [
+    ['TODAY', fmt(t0), fmt(t0)],
+    ['YESTERDAY', fmt(shift(t0, -1)), fmt(shift(t0, -1))],
+    ['CURRENTWEEK', fmt(w0), fmt(shift(w0, 6))],
+    ['LASTWEEK', fmt(shift(w0, -7)), fmt(shift(w0, -1))]
+  ];
+  const lo = days[0];
+  const hi = days[days.length - 1];
+  const hit = presets.find(([, a, b]) => lo >= a && hi <= b);
+  return hit ? hit[0] : null;
+}
+
+// 统一启动后台任务：下载（download.mjs）与只更新看板（publish-only.mjs）共用日志流
+function startJob(args, mode, label, onExit) {
+  buffer = [];
+  runInfo = { startedAt: Date.now(), args, runDir: null, mode };
+  say(`[控制台] ${label}：${[NODE, ...args].join(' ')}`);
+  broadcast('run', { phase: 'start', args, mode });
+
+  child = spawn(NODE, args, { cwd: APP_DIR, windowsHide: true });
+  let tail = '';
+  const onData = chunk => {
+    tail += chunk.toString('utf8');
+    const parts = tail.split(/\r?\n/);
+    tail = parts.pop() ?? '';
+    for (const line of parts) {
+      if (!line.trim()) continue;
+      say(line);
+      const m = /结果目录：(.*)$/.exec(line);
+      if (m && runInfo) runInfo.runDir = m[1].trim();
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+  child.on('exit', code => {
+    if (tail.trim()) say(tail.trim());
+    // 只认本次自己报出来的结果目录；失败没报就是没有，不去抓历史目录充数
+    const dir = runInfo?.runDir || null;
+    if (runInfo) runInfo.runDir = dir;
+    say(`[控制台] ${mode === 'publish' ? '看板更新' : '下载'}结束，退出码 ${code}`);
+    const summary = mode === 'publish' ? null : lastSummary();
+    child = null;
+    const queueMore = !!seq && (seq.i + 1 < seq.total || seq.thenArchive);
+    broadcast('run', {
+      phase: 'end', code, mode, summary, dashboard: DASHBOARD_URL,
+      dataState: dataDirState(),
+      queue: seq ? { index: seq.i + 1, total: seq.total, more: queueMore } : null
+    });
+    if (onExit) onExit(code);
+  });
+}
+
+// 逐天串行：每一天跑完等 gapMs，再跑下一天；中间的空档也算「运行中」
+// opts.thenArchive：所有下载步骤跑完后，自动补「逐个归档 → 推看板」
+function startSequence(steps, label, gapMs, opts = {}) {
+  if (!steps.length) return;
+  seq = {
+    steps, i: 0, gapMs, label, timer: null, total: steps.length,
+    runDirs: [], failures: [], thenArchive: !!opts.thenArchive
+  };
+  say(`[控制台] ${label}：共 ${steps.length} 步，逐天串行，每天之间停 ${Math.round(gapMs / 1000)} 秒`);
+  runSeqStep();
+}
+
+function runSeqStep() {
+  if (!seq) return;
+  const step = seq.steps[seq.i];
+  const tag = step.title || `第 ${seq.i + 1}/${seq.total} 天（${step.day}）`;
+  startJob(step.args, step.mode, `${seq.label} · ${tag}`, code => {
+    if (!seq) return;                       // 已被手动停止
+    if (step.mode === 'download') {
+      const dir = runInfo?.runDir || null;
+      if (dir) seq.runDirs.push(dir);
+      if (code !== 0) seq.failures.push(`${step.day}（退出码 ${code}）`);
+    }
+    seq.i++;
+
+    // 下载都跑完了：把「逐个归档 + 推看板」的步骤补到队尾（运行目录要跑完才知道）
+    if (seq.i >= seq.total && seq.thenArchive) {
+      seq.thenArchive = false;
+      const tail = tailSteps(seq.runDirs);
+      seq.steps.push(...tail);
+      seq.total = seq.steps.length;
+      if (!seq.runDirs.length) say('[控制台] 这次没有任何下载成功，直接更新看板');
+    }
+
+    if (seq.i >= seq.total) {
+      const fails = seq.failures;
+      say(`[控制台] ${seq.label} 全部结束：共 ${seq.total} 步`
+        + (fails.length ? `，失败 ${fails.length} 步：${fails.join('、')}` : '，全部成功'));
+      seq = null;
+      return;
+    }
+
+    // 等一下步：下载步骤之间要留间隔；归档 / 推看板不用等，跑完立刻接上
+    const next = seq.steps[seq.i];
+    const waitMs = waitBeforeStep(step, next, seq.gapMs);
+    if (waitMs >= 1000) {
+      say(`[控制台] ${tag} 结束，等 ${Math.round(waitMs / 1000)} 秒再跑下一步（${next.title || next.day}）…`);
+      broadcast('run', { phase: 'gap', waitMs, next: next.title || next.day, index: seq.i + 1, total: seq.total });
+      seq.timer = setTimeout(() => { if (seq) { seq.timer = null; runSeqStep(); } }, waitMs);
+    } else {
+      runSeqStep();
+    }
+  });
+}
+
+function stopSequence() {
+  if (!seq) return false;
+  if (seq.timer) clearTimeout(seq.timer);
+  seq = null;
+  return true;
+}
+
+// ---------- HTTP ----------
+function send(res, code, body, type = 'application/json; charset=utf-8') {
+  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+  res.end(typeof body === 'string' ? body : j(body));
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', chunk => { data += chunk; if (data.length > 1e6) reject(new Error('请求过大')); });
+    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch { reject(new Error('请求不是合法 JSON')); } });
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://127.0.0.1');
+  const path = url.pathname;
+
+  try {
+    if (path === '/' || path === '/index.html') {
+      const file = join(here, 'index.html');
+      return send(res, 200, readFileSync(file, 'utf8'), 'text/html; charset=utf-8');
+    }
+    if (path === '/api/state') return send(res, 200, await envState());
+
+    // 需要授权时：拉起守护 + 在浏览器里打开开关页面，用户拨一次即可
+    if (path === '/api/fix-env' && req.method === 'POST') {
+      if (!findChrome()) return send(res, 500, { ok: false, error: '没找到 Chrome 安装路径' });
+      startBridgeDaemon();
+      const opened = openInspectPage();
+      say(opened
+        ? '[控制台] 已打开 chrome://inspect 开关页面：把 Allow remote debugging 拨到开，之后就不用再管了'
+        : '[控制台] 请在浏览器地址栏打开 chrome://inspect/#remote-debugging 并拨开开关');
+      return send(res, 200, { ok: opened, needsAuth: true });
+    }
+
+    if (path === '/api/preview' && req.method === 'POST') {
+      const form = await readBody(req);
+      try { return send(res, 200, { ok: true, command: [NODE, ...buildArgs(form)].join(' ') }); }
+      catch (error) { return send(res, 200, { ok: false, error: error.message }); }
+    }
+
+    if (path === '/api/logs') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        Connection: 'keep-alive'
+      });
+      res.write('retry: 2000\n\n');
+      res.write(`event: snapshot\ndata: ${j({ lines: buffer.slice(-400) })}\n\n`);
+      clients.add(res);
+      const ping = setInterval(() => res.write(': ping\n\n'), 20000);
+      req.on('close', () => { clearInterval(ping); clients.delete(res); });
+      return;
+    }
+
+    // 一键补齐：扫描正式目录的缺口 → 只下载缺的那些 → 归档 → 更新看板
+    // 口径（2026-11-08 定）：看板日更 = 流量单日 + PLG 链接广告 + PLP 链接广告（走 campaign 页）
+    if (path === '/api/gap-fill' && req.method === 'POST') {
+      if (child || seq) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
+      let scanned;
+      try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL }); }
+      catch (error) { return send(res, 500, { ok: false, error: `扫描失败：${error.message}` }); }
+      const byKey = Object.fromEntries(scanned.rows.map(r => [r.key, r]));
+      const daysOf = key => (byKey[key]?.missingRanges || []).flatMap(r => dayList(r.start, r.end));
+      const trafficDays = daysOf('trafficDaily');
+      const plgDays = daysOf('plg');
+      const plpDays = [...new Set([...daysOf('plpListing'), ...daysOf('plpKeyword'), ...daysOf('plpSearch')])].sort();
+
+      if (!trafficDays.length && !plgDays.length && !plpDays.length) {
+        return send(res, 200, { ok: true, started: false, message: '没有缺口，直接更新看板就行' });
+      }
+      const plgPreset = plgDays.length ? presetFor(plgDays) : null;
+      if (plgDays.length && !plgPreset) {
+        return send(res, 422, {
+          ok: false,
+          error: `PLG 缺口 ${plgDays[0]} ~ ${plgDays[plgDays.length - 1]} 超出「按日」粒度可选范围`
+            + `（今天 / 昨天 / 本周 / 上周），eBay 选不到就只能等或手动处理`
+        });
+      }
+
+      const allDays = [...new Set([...trafficDays, ...plpDays])].sort();
+      // 每天之间停 1~2 分钟（默认 90 秒）：同一天/相邻天连续提交容易被 eBay 回「We couldn't process your download」
+      const form = await readBody(req).catch(() => ({}));
+      const gapSec = clampGapSec(form.gapSec);
+      const { steps } = planGapFill({
+        trafficDays, plgDays, plpDays, plgPreset,
+        outDir: OUT_DIR, campaigns: PRIORITY_DEFAULT_IDS, gapSec
+      });
+      startSequence(steps, '一键补齐缺口', gapSec * 1000, { thenArchive: true });
+      return send(res, 200, {
+        ok: true, started: true, gapSec,
+        days: allDays,
+        steps: steps.map(s => ({ day: s.day, args: s.args })),
+        plan: {
+          trafficDays, plgDays, plgPreset, plpDays,
+          plpRange: plpDays.length ? [plpDays[0], plpDays[plpDays.length - 1]] : null
+        }
+      });
+    }
+
+    if (path === '/api/run' && req.method === 'POST') {
+      if (child || seq) return send(res, 409, { ok: false, error: '已经有一次下载在跑，先停止或等它结束' });
+      const form = await readBody(req);
+      let args;
+      try { args = buildArgs(form); } catch (error) { return send(res, 400, { ok: false, error: error.message }); }
+      const customOut = String(form.outDir || '').trim();
+      if (customOut) OUT_DIR = customOut;
+      startJob(args, 'download', '开始下载');
+      return send(res, 200, { ok: true, args });
+    }
+
+    // 只更新看板：拿正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages
+    if (path === '/api/publish' && req.method === 'POST') {
+      if (child || seq) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再更新看板' });
+      startJob(['publish-only.mjs'], 'publish', '只更新看板（不下载）');
+      return send(res, 200, { ok: true });
+    }
+
+    // 最近几次运行：给「补做归档 + 更新看板」用
+    if (path === '/api/runs') return send(res, 200, { ok: true, runs: recentRuns() });
+
+    // 对已完成的运行补做「归档 + 更新看板」：不重新下载，直接按 结果.json 归档再推看板
+    if (path === '/api/archive-publish' && req.method === 'POST') {
+      if (child || seq) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再归档' });
+      const form = await readBody(req);
+      const runDir = String(form.runDir || '').trim();
+      if (runDir && !isAbsolute(runDir)) return send(res, 400, { ok: false, error: '运行目录要填绝对路径' });
+      const args = ['archive-publish.mjs'];
+      if (runDir) args.push('--run', runDir);
+      const tag = runDir ? runDir.split(/[\\/]/).filter(Boolean).pop() : '最近一次运行';
+      startJob(args, 'publish', `归档 + 更新看板（${tag}）`);
+      return send(res, 200, { ok: true });
+    }
+
+    if (path === '/api/data-state') return send(res, 200, { ok: true, state: dataDirState(), dashboard: DASHBOARD_URL });
+
+    // 报表注册表 + 字段字典：控制台「字段」页用，静态数据，直接从 reports.mjs 读
+    if (path === '/api/catalog') return send(res, 200, { ok: true, ...catalogSnapshot() });
+
+    // 看板数据体检：正式目录里每类报表哪天有、哪天缺（今天与上架前不算缺）
+    if (path === '/api/scan') {
+      const report = await scanGaps({ dashboardUrl: `${DASHBOARD_URL}data.js` });
+      say(`[控制台] 体检完成：${report.rows.length} 类报表，共缺 ${report.totalMissing} 天`);
+      return send(res, 200, report);
+    }
+
+    if (path === '/api/stop' && req.method === 'POST') {
+      const hadSeq = stopSequence();
+      if (!child) {
+        if (hadSeq) say('[控制台] 已停止逐天补齐队列（等待中的下一步不再执行）');
+        return send(res, 200, { ok: true, stopped: hadSeq });
+      }
+      child.kill();
+      say(hadSeq
+        ? '[控制台] 已请求停止当前下载，逐天队列一并取消'
+        : '[控制台] 已请求停止当前下载');
+      return send(res, 200, { ok: true, stopped: true });
+    }
+
+    if (path === '/api/last') return send(res, 200, { ok: true, summary: lastSummary() });
+
+    if (path === '/api/open' && req.method === 'POST') {
+      const dir = (lastSummary()?.runDir) || newestRunDir() || OUT_DIR;
+      spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
+      return send(res, 200, { ok: true, dir });
+    }
+
+    return send(res, 404, { ok: false, error: '没有这个接口' });
+  } catch (error) {
+    return send(res, 500, { ok: false, error: error.message });
+  }
+});
+
+const URL_SELF = `http://127.0.0.1:${PORT}`;
+function openBrowser() {
+  try {
+    spawn('cmd.exe', ['/c', 'start', '', URL_SELF], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch { /* 打不开就让用户手动点 */ }
+}
+
+server.on('error', error => {
+  if (error.code === 'EADDRINUSE') {
+    console.log('[控制台] 已经在运行了，直接帮你打开页面');
+    openBrowser();
+    setTimeout(() => process.exit(0), 600);
+    return;
+  }
+  console.error('[控制台] 启动失败：' + error.message);
+  process.exit(1);
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`[控制台] 已启动： ${URL_SELF}`);
+  console.log(`[控制台] 店铺配置：${JSON.stringify(shopSummary())}`);
+  console.log(`[控制台] 输出目录：${OUT_DIR}`);
+  console.log('[控制台] 这个窗口保持开着就行，可以最小化；关掉窗口服务就停了（下载与常驻桥不受影响）。');
+  if (!process.env.NO_OPEN) openBrowser();
+
+  // 后台把常驻桥拉起来。连不上才提示，正常情况这里悄无声息。
+  ensureEnv({
+    openInspect: false,
+    waitAuthMs: 0,
+    onLog: text => say('[控制台] ' + text)
+  }).then(r => {
+    if (r.ok) {
+      say('[控制台] 常驻连接已在线，本次及以后都不需要再点允许');
+    } else if (r.needsAuth) {
+      say('[控制台] 浏览器调试开关是关的：需要拨一次开关。点页面右上角「去开开关」即可，拨好后不用重启任何东西');
+      broadcast('env', { needsAuth: true });
+    } else if (r.reason) {
+      say('[控制台] ' + r.reason);
+    }
+  }).catch(error => say('[控制台] 环境检查失败：' + error.message));
+});

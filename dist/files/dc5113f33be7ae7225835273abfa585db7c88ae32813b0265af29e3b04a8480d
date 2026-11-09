@@ -1,0 +1,1786 @@
+// eBay AD600 Elite 报表一键下载（固定脚本）
+// 用法：node download.mjs --date 2026-11-05 [--range-start 2026-11-01] [--only traffic,plg,active,plp]
+//                        [--latest] [--apply] [--publish] [--keep] [--max-tabs N] [--help]
+// 结构：任务数不限，同一时刻最多 MAX_TABS（≤10）个标签页在跑，其余任务排队。
+// 报表中心是账号级请求队列，PLG / 优先促刊 / 名单 / 订单这几类统一串行提交，避免认错文件；
+// Traffic 与 PLP 不共享该队列，仍可并行。
+// 默认：把选中的报表下载到独立 runs/<时间>/ 目录并校验，不写正式目录、不更新看板。
+import { spawn } from 'node:child_process';
+import { copyFileSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  RUNS_DIR, FOLDERS, FAST, PLP_POLL, RC_POLL, CAMPAIGNS, RC_REQUESTS, ACTIVE_TYPES, PLG_CAMPAIGNS,
+  ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_DEFAULT_IDS,
+  TRAFFIC_URL, REPORTS_URL, CAMPAIGN_URL, DEFAULT_DOWNLOAD_DIR,
+  yesterdayPacific, monthStart, toUsPeriodStart
+} from './config.mjs';
+import {
+  health, ensureBridge, evaluate, cdp, setDownloadDir, waitForNewFiles, sleep, completedDownload, withDownloadLock,
+  probe, markFatal, fatalReason
+} from './cdp.mjs';
+import { openTab } from './pages.mjs';
+import { retry, recoverIfBlocked, clickDownload, discard, assertLoggedIn } from './engine.mjs';
+import { inspectCsv, checkExpected, sha256File } from './inspect.mjs';
+import { applyFiles, publishDashboard, dataDirState } from './publish.mjs';
+import { getReport } from './reports.mjs';
+
+// ---------- 参数 ----------
+const raw = process.argv.slice(2);
+const flag = name => raw.includes(`--${name}`);
+const value = (name, fallback) => {
+  const i = raw.indexOf(`--${name}`);
+  return i >= 0 && raw[i + 1] && !raw[i + 1].startsWith('--') ? raw[i + 1] : fallback;
+};
+if (flag('help')) {
+  console.log(`eBay AD600 Elite 报表一键下载
+  node download.mjs --date 2026-11-05 [--range-start 2026-11-01]
+  --date          目标统计日，默认按太平洋时间取昨天
+  --range-start   累计 Traffic 起始日，默认目标月 1 日
+  --range-end     累计 Traffic 结束日，默认等于 --date
+  --only          只跑指定任务：traffic,trafficDaily,trafficRange,plg,active,orders,priority,plp（控制台默认 trafficDaily,priority；plp 仅 CLI 保留）
+  --active-type   名单类型：active 全部在售（默认）/ unsold 非在售 / scheduled 预定
+  --order-type    订单报表类型：all（默认）/ unpaid / unshipped / overdue / due24h / express / paidShipped / paidNoFeedback / shippedNoFeedback
+  --order-range   订单日期范围：TODAY/YESTERDAY/CURRENTWEEK/LASTWEEK/CURRENTMONTH/PREVIOUSMONTH/CURRENTYEAR/PREVIOUSYEAR/LAST90D/CUSTOM
+  --order-custom-start / --order-custom-end  订单自定义区间起止日
+  --priority-types 优先促销刊登类型，可多选（逗号分隔）：keyword,listing,campaign,search（默认 keyword）
+  --priority-type 兼容别名：只接受单值，--priority-types 优先
+  --priority-unit 优先促刊时间粒度：DAILY（默认）或 SUMMARY
+  --priority-range 优先促刊日期范围（同 --plg-range 的 8 个值）
+  --priority-custom-start / --priority-custom-end  优先促刊自定义区间起止日
+  --priority-campaigns 优先促刊活动 ID（逗号分隔，默认 PLP 3 个；传 all = 全部 31 个活动）
+  --latest        报表中心不新提交请求，直接下载最新一条已完成请求（最快）
+  --dates         批量单日 Traffic：--dates 2026-11-01..2026-11-05 或 2026-11-01,2026-11-03
+  --plp-start     PLP 报表起始日（默认等于 --date）
+  --plp-end       PLP 报表结束日（默认等于起始日；不等于起始日即按区间生成）
+  --plp-days      PLP 按日逐个出：逗号分隔的日期（campaign 页没有「按日」粒度，只能起止=同一天）
+  --plp-types     PLP 报表类型，逗号分隔：listing,keyword,search（默认三类全要）
+  --plg-unit      PLG 链接广告时间粒度：DAILY（默认）或 SUMMARY
+  --plg-range     PLG 日期范围：TODAY/YESTERDAY/CURRENTWEEK/LASTWEEK/CURRENTMONTH/PREVIOUSMONTH/LAST90D/CUSTOM
+  --plg-custom-start / --plg-custom-end  --plg-range CUSTOM 时的起止日
+  --plg-campaigns 只跑指定活动，逗号分隔（如 165777897019），默认全部活动
+  --campaigns     只跑指定 campaign（PLP 用，逗号分隔，默认配置里那三个）
+  --plp-serial    PLP 三个 campaign 改为逐个跑（排查问题时用，默认并发更快）
+  --apply         把校验通过的 CSV 复制进正式目录 90-待处理
+  --publish       在 --apply 之后运行看板更新并 git push（GitHub Pages）
+  --keep          结束后保留任务标签页（调试用；默认自动关闭，只留一个空白页保住调试授权）
+  --help          显示本说明
+  一个标签页只做一个报表任务，全部开在同一窗口；依赖已登录的 Chrome。`);
+  process.exit(0);
+}
+
+const date = value('date', yesterdayPacific());
+const rangeStart = value('range-start', monthStart(date));
+const rangeEnd = value('range-end', date);
+if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(rangeStart) || !/^\d{4}-\d{2}-\d{2}$/.test(rangeEnd)) {
+  throw new Error('日期格式必须为 YYYY-MM-DD');
+}
+if (rangeEnd < rangeStart) throw new Error(`累计结束日 ${rangeEnd} 早于起始日 ${rangeStart}`);
+const latest = flag('latest');
+// 默认保留所有任务标签页：关掉后再开容易触发 Chrome 重新授权
+const keepWindows = flag('keep');   // 默认关掉本轮任务标签页；--keep 才保留（调试用）
+const shouldApply = flag('apply') || flag('publish');
+const shouldPublish = flag('publish');
+const onlyArg = value('only', 'traffic,plg,active,plp');
+const only = new Set(onlyArg.split(',').map(x => x.trim()).filter(Boolean));
+
+// ---------- 报表级选项（控制台传入；全部有安全默认值，命令行直接跑与以前行为一致） ----------
+const isIso = s => /^\d{4}-\d{2}-\d{2}$/.test(s);
+const plpStart = value('plp-start', date);
+const plpEnd = value('plp-end', plpStart);
+if (!isIso(plpStart) || !isIso(plpEnd)) throw new Error('PLP 日期格式必须为 YYYY-MM-DD');
+if (plpStart > plpEnd) throw new Error(`PLP 起始日 ${plpStart} 晚于结束日 ${plpEnd}`);
+// campaign 页的 Generate report 只有「时间段」没有粒度：想要日度数据只能起止取同一天。
+// --plp-days 就是这种用法：每天一份，交给服务端在缺口补齐里用。
+const plpDays = (value('plp-days', '') || '')
+  .split(',').map(x => x.trim()).filter(Boolean);
+if (plpDays.some(d => !isIso(d))) throw new Error(`--plp-days 日期格式必须为 YYYY-MM-DD，收到：${plpDays.join(',')}`);
+const PLP_TYPE_SET = new Set(['listing', 'keyword', 'search']);
+const plpTypes = (value('plp-types', 'listing,keyword,search') || '')
+  .split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+if (!plpTypes.length || plpTypes.some(t => !PLP_TYPE_SET.has(t))) {
+  throw new Error(`--plp-types 只接受 listing,keyword,search，收到：${plpTypes.join(',') || '空'}`);
+}
+const plgUnit = (value('plg-unit', 'DAILY') || 'DAILY').toUpperCase();
+if (!['DAILY', 'SUMMARY'].includes(plgUnit)) throw new Error(`--plg-unit 只接受 DAILY 或 SUMMARY，收到 ${plgUnit}`);
+const PLG_RANGE_SET = new Set(['', 'TODAY', 'YESTERDAY', 'CURRENTWEEK', 'LASTWEEK', 'CURRENTMONTH', 'PREVIOUSMONTH', 'LAST90D', 'CUSTOM']);
+// 实测 2026-11-08：报表中心「按日」粒度只给 今天/昨天/本周/上周 四个范围，
+// 本月/上月/过去 90 天/自定义 只在「汇总」粒度下才出现（选不到就会被判成 no custom radio）。
+const DAILY_RANGE_SET = new Set(['', 'TODAY', 'YESTERDAY', 'CURRENTWEEK', 'LASTWEEK']);
+function assertRangeForUnit(unit, range, flag) {
+  if (unit === 'DAILY' && !DAILY_RANGE_SET.has(range)) {
+    throw new Error(`${flag} ${range || '默认'} 在「按日」粒度下不可用：eBay 只提供 今天/昨天/本周/上周，`
+      + `按月/自定义请改用对应 --*-unit SUMMARY`);
+  }
+}
+const plgRange = (value('plg-range', '') || '').toUpperCase();
+if (!PLG_RANGE_SET.has(plgRange)) throw new Error(`--plg-range 不支持 ${plgRange}`);
+assertRangeForUnit(plgUnit, plgRange, '--plg-range');
+const plgCustomStart = value('plg-custom-start', '');
+const plgCustomEnd = value('plg-custom-end', '');
+if (plgRange === 'CUSTOM') {
+  if (!isIso(plgCustomStart) || !isIso(plgCustomEnd)) {
+    throw new Error('自定义区间需要同时给出 --plg-custom-start 与 --plg-custom-end');
+  }
+  if (plgCustomStart > plgCustomEnd) throw new Error(`自定义区间起始日 ${plgCustomStart} 晚于结束日 ${plgCustomEnd}`);
+}
+// 只跑部分活动时传 ID 列表；不传=保持报表中心默认全选
+const plgCampaignIds = (value('plg-campaigns', '') || '').split(',').map(x => x.trim()).filter(Boolean);
+const unknownPlg = plgCampaignIds.filter(id => !PLG_CAMPAIGNS.some(c => c.id === id));
+if (unknownPlg.length) throw new Error(`--plg-campaigns 有未知活动：${unknownPlg.join(',')}`);
+const activeType = (value('active-type', 'active') || 'active').toLowerCase();
+if (!ACTIVE_TYPES[activeType]) {
+  throw new Error(`--active-type 只接受 ${Object.keys(ACTIVE_TYPES).join(' / ')}，收到 ${activeType}`);
+}
+
+// ---------- 订单报表 ----------
+const orderTypeKey = value('order-type', 'all');
+const orderTypeDef = ORDER_TYPES.find(t => t.key === orderTypeKey);
+if (!orderTypeDef) throw new Error(`--order-type 只接受 ${ORDER_TYPES.map(t => t.key).join(' / ')}`);
+const ORDER_RANGE_SET = new Set(ORDER_RANGES.map(r => r.value));
+const orderRange = (value('order-range', 'LAST90D') || 'LAST90D').toUpperCase();
+if (!ORDER_RANGE_SET.has(orderRange)) throw new Error(`--order-range 不支持 ${orderRange}`);
+const orderCustomStart = value('order-custom-start', '');
+const orderCustomEnd = value('order-custom-end', '');
+if (orderRange === 'CUSTOM') {
+  if (!isIso(orderCustomStart) || !isIso(orderCustomEnd)) throw new Error('订单自定义区间需要起止日期');
+  if (orderCustomStart > orderCustomEnd) throw new Error(`订单区间起始日 ${orderCustomStart} 晚于结束日 ${orderCustomEnd}`);
+}
+
+// ---------- 优先促销刊登 ----------
+// 一次可多选报表类型：每种作为独立任务进入报表中心串行队列，任务数不受标签页上限约束。
+// --priority-type 保留为单值兼容别名；两者都传时以 --priority-types 为准。
+const priorityTypeRaw = value('priority-types', value('priority-type', 'keyword'));
+const priorityTypeKeys = [...new Set(String(priorityTypeRaw).split(',').map(x => x.trim()).filter(Boolean))];
+if (!priorityTypeKeys.length) throw new Error('优先促销刊登至少要选一种报表类型');
+const badPriorityTypes = priorityTypeKeys.filter(k => !PRIORITY_TYPES.some(t => t.key === k));
+if (badPriorityTypes.length) {
+  throw new Error(`--priority-types 只接受 ${PRIORITY_TYPES.map(t => t.key).join(' / ')}，收到 ${badPriorityTypes.join(',')}`);
+}
+const priorityTypeDefs = priorityTypeKeys.map(k => PRIORITY_TYPES.find(t => t.key === k));
+const priorityTypeDef = priorityTypeDefs[0];
+const priorityUnit = (value('priority-unit', 'DAILY') || 'DAILY').toUpperCase();
+if (!['DAILY', 'SUMMARY'].includes(priorityUnit)) throw new Error(`--priority-unit 只接受 DAILY 或 SUMMARY`);
+const priorityRange = (value('priority-range', '') || '').toUpperCase();
+if (!PLG_RANGE_SET.has(priorityRange)) throw new Error(`--priority-range 不支持 ${priorityRange}`);
+assertRangeForUnit(priorityUnit, priorityRange, '--priority-range');
+const priorityCustomStart = value('priority-custom-start', '');
+const priorityCustomEnd = value('priority-custom-end', '');
+if (priorityRange === 'CUSTOM') {
+  if (!isIso(priorityCustomStart) || !isIso(priorityCustomEnd)) throw new Error('优先促刊自定义区间需要起止日期');
+  if (priorityCustomStart > priorityCustomEnd) throw new Error('优先促刊区间起始日晚于结束日');
+}
+// 活动默认与控制台一致：只跑 PLP 那 3 个；传 'all' 或留「全部活动」时保持后台全选 31 个
+const priorityCampaignRaw = value('priority-campaigns', PRIORITY_DEFAULT_IDS.join(','));
+const priorityCampaignIds = String(priorityCampaignRaw).toLowerCase() === 'all'
+  ? []
+  : String(priorityCampaignRaw).split(',').map(x => x.trim()).filter(Boolean);
+const targetCampaigns = (value('campaigns', '') || '').split(',').map(x => x.trim()).filter(Boolean);
+const campaigns = targetCampaigns.length ? targetCampaigns : CAMPAIGNS;
+
+// PLP 任务表：默认「起止区间」一份；给了 --plp-days 就按天拆成多份（每天×每个 campaign 一个任务）
+const plpRanges = plpDays.length
+  ? plpDays.map(d => ({ start: d, end: d, tag: d }))
+  : [{ start: plpStart, end: plpEnd, tag: plpEnd === plpStart ? plpStart : `${plpStart}~${plpEnd}` }];
+const plpTasks = plpRanges.flatMap(r => campaigns.map(id => ({
+  id, start: r.start, end: r.end,
+  key: plpRanges.length === 1 ? `plp_${id}` : `plp_${id}_${r.start}`,
+  label: plpRanges.length === 1 ? id : `${id} ${r.start}`
+})));
+
+// 批量日期：--dates 2026-11-01..2026-11-05 / --dates 2026-11-01,2026-11-03
+function parseDates(spec) {
+  if (!spec) return [];
+  const out = [];
+  for (const part of String(spec).split(',').map(x => x.trim()).filter(Boolean)) {
+    const range = /^(\d{4}-\d{2}-\d{2})\s*\.\.\s*(\d{4}-\d{2}-\d{2})$/.exec(part);
+    if (range) {
+      const cursor = new Date(`${range[1]}T00:00:00Z`);
+      const end = new Date(`${range[2]}T00:00:00Z`);
+      while (cursor <= end) { out.push(cursor.toISOString().slice(0, 10)); cursor.setUTCDate(cursor.getUTCDate() + 1); }
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(part)) out.push(part);
+  }
+  return [...new Set(out)].sort();
+}
+const batchDates = parseDates(value('dates', ''));
+const runDaily = only.has('traffic') || only.has('trafficDaily');
+const runRange = only.has('traffic') || only.has('trafficRange');
+const runPlg = only.has('plg');
+const runActive = only.has('active');
+const runOrders = only.has('orders');
+const runPriority = only.has('priority');
+const runPlp = only.has('plp');
+
+// ---------- 运行目录 ----------
+const stamp = new Date().toLocaleString('sv-SE', { hour12: false }).replace(' ', '_').replace(/:/g, '-');
+const runDir = join(value('out', RUNS_DIR), stamp);
+for (const folder of Object.values(FOLDERS)) mkdirSync(join(runDir, folder), { recursive: true });
+const inbox = join(runDir, FOLDERS.inbox);
+
+const results = [];
+const timings = {};
+const warnings = [];
+const errors = [];
+const startedAt = Date.now();
+const openPages = [];
+
+// 下载目录按文件名前缀归属到任务：不同类型的报表不会串台，可以并行落盘
+const NAME = {
+  traffic: /ListingsTrafficReport/i,
+  plg: /promoted-listing-general-listing-report/i,
+  active: /listings-report/i,
+  orders: /orders?-report|order-report/i,
+  priority: /priority|PLP_/i,
+  plp: /CSGP_(Listing|Keyword|Search-query)/i
+};
+const pickFiles = (before, match) => readdirSync(inbox)
+  .filter(name => !before.has(name) && !/\.crdownload$/i.test(name) && match.test(name));
+
+function folderFor(kind, task) {
+  // 空报表没有任何列名，只能按任务判断归属
+  if (kind === 'empty') {
+    if (task === 'orders') return FOLDERS.orders;
+    if (task === 'priority') return FOLDERS.priority;
+    if (task === 'plg') return FOLDERS.plg;
+    if (task === 'plp') return FOLDERS.plpListing;
+    if (task === 'trafficDaily') return FOLDERS.trafficDaily;
+    if (task === 'trafficRange') return FOLDERS.trafficRange;
+    if (task === 'active') return FOLDERS.active;
+    return FOLDERS.pending;
+  }
+  if (kind === 'traffic') return task === 'trafficDaily' ? FOLDERS.trafficDaily : FOLDERS.trafficRange;
+  if (kind === 'plg') return FOLDERS.plg;
+  if (kind === 'active') {
+    if (activeType === 'unsold') return FOLDERS.activeUnsold;
+    if (activeType === 'scheduled') return FOLDERS.activeScheduled;
+    return FOLDERS.active;
+  }
+  if (kind === 'listing') return FOLDERS.plpListing;
+  if (kind === 'keyword') return FOLDERS.plpKeyword;
+  if (kind === 'search') return FOLDERS.plpSearch;
+  if (kind === 'orders') return FOLDERS.orders;
+  if (String(kind).startsWith('priority')) return FOLDERS.priority;
+  return FOLDERS.pending;
+}
+
+function recordFiles(task, names, meta = {}) {
+  const recorded = [];
+  for (const name of names) {
+    const src = join(inbox, name);
+    let info;
+    try { info = inspectCsv(src, task === 'orders' ? 'orders' : task === 'priority' ? 'priority' : null); }
+    catch { info = { kind: 'unknown', label: '无法解析', valid: false, missingHeader: [], rowCount: 0, period: null, coverage: null, dates: [], header: '' }; }
+    const endForCheck = task === 'trafficRange'
+      ? rangeEnd
+      : (meta.targetDate || (task === 'plp' ? plpEnd : date));
+    let problem = task === 'any'
+      ? (info.valid ? null : `结构不合格：缺字段 ${info.missingHeader.join(',') || '未识别表头'}，行数 ${info.rowCount}`)
+      : checkExpected(info, task, endForCheck, meta.rangeStart || rangeStart, plpStart, {
+          plgRange, plgCustomStart, plgCustomEnd
+        });
+    // 0 行不是错误：这类状态下确实可能没有数据，但要记一条警告，免得以为是漏抓
+    if (!problem && info.empty) warnings.push(`${meta.requestLabel || task}：0 行（该状态下确实没有数据）`);
+    // 0 条记录的空报表没有列名，跳过类型比对（这是合法结果，不是抓错文件）
+    const isEmptyReport = info.kind === 'empty';
+    if (isEmptyReport) problem = null;
+    if (!isEmptyReport) {
+      if (task === 'plp' && !['listing', 'keyword', 'search'].includes(info.kind)) problem = problem || '不是 PLP 三类报表';
+      if (task === 'plg' && info.kind !== 'plg') problem = problem || `类型不符：${info.label || info.kind}`;
+      if (task === 'active' && info.kind !== 'active') problem = problem || `类型不符：${info.label || info.kind}`;
+      if (task === 'orders' && info.kind !== 'orders') problem = problem || `类型不符：${info.label || info.kind}`;
+      if (task === 'priority' && !String(info.kind).startsWith('priority')) problem = problem || `类型不符：${info.label || info.kind}`;
+      if (['trafficDaily', 'trafficRange'].includes(task) && info.kind !== 'traffic') problem = problem || `类型不符：${info.label || info.kind}`;
+    }
+    // 直接按类型归档（只有完全无法识别的才进 99-待核验），问题只记在结果里不拦文件
+    const dest = join(runDir, info.kind === 'unknown' ? FOLDERS.pending : folderFor(info.kind, task), name);
+    copyFileSync(src, dest);
+    if (info.kind === 'unknown' && problem) writeFileSync(`${dest}.原因.txt`, `${problem}\n`, 'utf8');
+    let hash = null;
+    try { hash = sha256File(src); } catch { /* ignore */ }
+    const item = {
+      task, ...meta, name, path: dest, kind: info.kind, label: info.label,
+      valid: info.valid && !problem, problem,
+      period: info.period, coverage: info.coverage, dates: info.dates,
+      rowCount: info.rowCount, itemCount: info.itemCount, size: info.size,
+      campaign: info.campaign, header: info.header, headerTemplate: info.headerTemplate,
+      missingHeader: info.missingHeader, sha256: hash
+    };
+    results.push(item);
+    recorded.push(item);
+  }
+  return recorded;
+}
+
+async function runTask(name, fn) {
+  const t0 = Date.now();
+  if (fatalReason()) {
+    timings[name] = { ...(timings[name] || {}), ms: 0, ok: false, skipped: true };
+    errors.push({ task: name, message: `未执行：${fatalReason()}` });
+    console.log(`[跳过] ${name}：${fatalReason()}`);
+    return null;
+  }
+  try {
+    const out = await fn();
+    timings[name] = { ...(timings[name] || {}), ms: Date.now() - t0, ok: true };
+    return out;
+  } catch (error) {
+    timings[name] = { ...(timings[name] || {}), ms: Date.now() - t0, ok: false };
+    errors.push({ task: name, message: error.message });
+    console.log(`[失败] ${name}: ${error.message}`);
+    return null;
+  }
+}
+
+// 连接看门狗：每 4 秒探一次活。桥进程挂了自动重拉；Chrome 调试端口断了（Chrome 被关/重启）
+// 无法自愈，连续两次确认后熔断，让剩余任务秒退，而不是在超时里空转好几分钟。
+let watchdogTimer = null;
+let probeFails = 0;
+function startWatchdog() {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(async () => {
+    if (fatalReason()) return;
+    const state = await probe();
+    if (state.ok) { probeFails = 0; return; }
+    if (state.kind === 'bridge') {
+      console.log(`[看门狗] ${state.reason}，尝试重拉桥…`);
+      const back = await ensureBridge({ timeoutMs: 12000 }).catch(error => ({ error: error.message }));
+      if (!back.error) { probeFails = 0; console.log('[看门狗] 桥已恢复，继续执行'); return; }
+    }
+    probeFails += 1;
+    if (probeFails >= 2) {
+      const reason = `${state.reason}（Chrome 远程调试已断开，需完全退出 Chrome 后重跑）`;
+      markFatal(reason);
+      drainTabQueue(reason);
+      console.log(`[熔断] ${reason} —— 剩余任务立即终止`);
+    }
+  }, 4000);
+}
+function stopWatchdog() { if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; } }
+
+// 开跑前清掉历史遗留的 /sh 页面。先确保窗口里还有别的标签页（没有就补一个空白页），
+// 再把 /sh 页全关：既不会让 Chrome 收回远程调试授权，也不会留一个 eBay 页占 MAX_TABS 配额。
+async function trimOldTabs() {
+  const { targetInfos } = await cdp('Target.getTargets');
+  const pages = targetInfos.filter(t => t.type === 'page');
+  const stale = pages.filter(t => /ebay\.com\/sh\//i.test(t.url || ''));
+  if (!stale.length) return;
+  if (pages.length === stale.length) {
+    await cdp('Target.createTarget', { url: 'about:blank', background: true }).catch(() => {});
+  }
+  for (const t of stale) await cdp('Target.closeTarget', { targetId: t.targetId }).catch(() => {});
+  console.log(`[标签页] 收敛历史页面：关闭 ${stale.length} 个 /sh 页，保留空白页保住调试授权`);
+}
+
+// 收尾保证至少留一个标签页：全关会让 Chrome 收回远程调试授权
+async function ensureOneTab() {
+  const { targetInfos } = await cdp('Target.getTargets');
+  if (!targetInfos.some(t => t.type === 'page')) {
+    await cdp('Target.createTarget', { url: 'about:blank', background: true }).catch(() => {});
+  }
+}
+
+// 标签页按需打开 + 数量上限：eBay 的 /sh 页面很重，一次开七八个会把浏览器和电脑拖死，
+// 所以同一时刻最多 MAX_TABS 个在用，其余排队；任务结束关掉标签页，槽位立刻让给下一个。
+const MAX_TABS = Math.max(1, Math.min(10, Number(value('max-tabs', '4')) || 4));
+const opened = new Map();
+const planUrl = new Map();
+let aliveTabs = 0;
+const tabQueue = [];
+
+// 任务可以很多，排队等待不能按「单个任务耗时」计时：只要有槽位被释放，等待计时就从头开始。
+// 真正卡死时靠看门狗 markFatal → drainTabQueue，或本轮结束 drain，保证 Promise.all 有出口。
+const TAB_WAIT_MS = 15 * 60 * 1000;
+async function acquireTab() {
+  if (aliveTabs < MAX_TABS) { aliveTabs++; return; }
+  await new Promise((resolve, reject) => {
+    let timer;
+    const fail = () => {
+      const i = tabQueue.indexOf(item);
+      if (i >= 0) tabQueue.splice(i, 1);
+      reject(new Error(`等待标签页槽位超时（${Math.round(TAB_WAIT_MS / 60000)} 分钟）`));
+    };
+    const arm = () => setTimeout(fail, TAB_WAIT_MS);
+    const item = {
+      resolve: () => { clearTimeout(timer); resolve(); },
+      reject: err => { clearTimeout(timer); reject(err); },
+      refresh: () => { clearTimeout(timer); timer = arm(); }
+    };
+    timer = arm();
+    tabQueue.push(item);
+  });
+}
+function releaseTab() {
+  const next = tabQueue.shift();
+  if (next) {
+    next.resolve();                       // 直接把槽位转交，不改变 aliveTabs
+    for (const it of tabQueue) it.refresh?.();  // 队列在推进，其余任务继续等，不算超时
+  } else aliveTabs = Math.max(0, aliveTabs - 1);
+}
+function drainTabQueue(reason) {
+  while (tabQueue.length) tabQueue.shift().reject(new Error(`标签页队列已终止：${reason}`));
+  aliveTabs = 0;
+}
+
+let loginChecked = false;
+async function newPage(key) {
+  const cached = opened.get(key);
+  if (cached && !cached.closed) return cached;
+  const url = planUrl.get(key);
+  if (!url) throw new Error(`没有为「${key}」规划标签页`);
+  await acquireTab();
+  let page;
+  try {
+    page = await openTab(key, url);
+  } catch (error) {
+    releaseTab();
+    throw error;
+  }
+  // 关页即释放槽位；不依赖调用方一定走 finally
+  const rawClose = page.close.bind(page);
+  let released = false;
+  page.close = async () => {
+    try { await rawClose(); }
+    finally { if (!released) { released = true; releaseTab(); } }
+  };
+  opened.set(key, page);
+  openPages.push(page);
+  if (!loginChecked) {
+    loginChecked = true;
+    try {
+      await assertLoggedIn(page);
+    } catch (error) {
+      // 登录态失败时页面已经占了槽位，必须关掉，否则并发度永久 -1
+      await page.close().catch(() => {});
+      throw error;
+    }
+  }
+  console.log(`[标签页] ${key} 已就绪（在用 ${aliveTabs}/${MAX_TABS}）`);
+  return page;
+}
+
+// 中断清理：child.kill() 与 Ctrl+C 会绕过主流程 finally，必须单独兜住，
+// 否则 eBay 标签页残留、Chrome 下载目录永久停在本轮 inbox。
+let cleanupDone = false;
+async function cleanupAll(reason) {
+  if (cleanupDone) return;
+  cleanupDone = true;
+  stopWatchdog();
+  drainTabQueue(reason);
+  await Promise.all(openPages.filter(p => !p.closed).map(p => p.close().catch(() => {})));
+  await ensureOneTab().catch(() => {});
+  await setDownloadDir(DEFAULT_DOWNLOAD_DIR).catch(() => {});
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, async () => {
+    console.log(`[中断] 收到 ${sig}，清理标签页与下载目录…`);
+    await cleanupAll(sig).catch(() => {});
+    process.exit(130);
+  });
+}
+
+// ---------- 页面表达式 ----------
+const LABEL = `(n => (n.innerText || n.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' '))`;
+
+const TRAFFIC_STATE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const label = ${LABEL};
+  const periodBtn = [...document.querySelectorAll('button[aria-haspopup], button.menu-button__button')]
+    .filter(v).find(n => /past \\d+ days|\\b20\\d{2}\\b/i.test((n.innerText || '').trim()));
+  const downloads = [...document.querySelectorAll('button')].filter(v)
+    .filter(n => /download (active |all )?listings traffic report|download report/i.test(label(n)));
+  return { url: location.href, periodText: periodBtn ? (periodBtn.innerText || '').trim() : '',
+    downloadLabels: downloads.map(label), ready: downloads.length === 1 };
+})()`;
+
+const TRAFFIC_CLICK = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const label = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v)
+    .find(n => /download (active |all )?listings traffic report|download report/i.test(label(n)));
+  if (!b) return { ok: false, reason: 'button-missing' };
+  // 按钮常在首屏之外，先滚到可见区再点，避免点到覆盖层或空白
+  try { b.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
+  b.click();
+  return { ok: true, label: label(b) };
+})()`;
+
+// 点击后校验「下载请求真的发出去了」：记录 createreporttask 的 taskId，再查任务状态
+const TRAFFIC_HOOK = `(() => {
+  if (window.__trafficHooked) return true;
+  window.__trafficHooked = true;
+  window.__trafficTask = null;
+  // 同时监听 fetch 与 XHR：eBay 两套都可能用，只盯一个会误判成「没发请求」
+  const of = window.fetch;
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const p = of.apply(this, arguments);
+    if (/createreporttask/.test(url)) {
+      p.then(r => r.clone().json()).then(j => { if (j && j.taskId) window.__trafficTask = j.taskId; }).catch(() => {});
+    }
+    return p;
+  };
+  const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, u) { this.__u = String(u); return oo.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function (b) {
+    if (/createreporttask/.test(this.__u)) {
+      this.addEventListener('load', () => { try { window.__trafficTask = JSON.parse(this.responseText).taskId; } catch {} });
+    }
+    return os.apply(this, arguments);
+  };
+  return true;
+})()`;
+
+const TRAFFIC_TASK_STATE = `(async () => {
+  const id = window.__trafficTask;
+  if (!id) return { taskId: null };
+  try {
+    const r = await fetch('/sh/fpp/gettask?client=SellerHubPerformance_SalesAndCost&taskId=' + id, { credentials: 'include' });
+    const j = await r.json();
+    return { taskId: id, status: j.status, recordCount: j.recordCount };
+  } catch (error) {
+    return { taskId: id, status: 'UNKNOWN', error: error.message };
+  }
+})()`;
+
+// eBay 改版后：报表生成完才弹提示条「Your report is ready / Preparing download.. / download」，
+// 必须再点一次 download 文件才落盘。提示条标题与外层是分开的两块 DOM，所以按「祖先链里含 ready」来认领。
+const TRAFFIC_READY_CLICK = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const label = ${LABEL};
+  const all = [];
+  const collect = root => {
+    root.querySelectorAll('*').forEach(el => {
+      if (el.shadowRoot) collect(el.shadowRoot);
+      if (/^download$/i.test(label(el))) all.push(el);
+    });
+  };
+  if (document.body) collect(document);
+  const ready = !!(document.body && /your report is ready/i.test(document.body.innerText));
+  if (!all.length) return { ok: false, toast: ready };
+  const visible = all.filter(v);
+  const pool = visible.length ? visible : all;
+  const inToast = pool.find(n => {
+    let p = n;
+    for (let i = 0; i < 6 && p; i++) { if (/your report is ready/i.test(p.innerText || '')) return true; p = p.parentElement; }
+    return false;
+  });
+  const link = inToast || (ready ? pool[pool.length - 1] : null);
+  if (!link) return { ok: false, toast: ready };
+  try { link.scrollIntoView({ block: 'center' }); } catch {}
+  link.click();
+  return { ok: true, text: label(link), tag: link.tagName, cls: String(link.className || '').slice(0, 40) };
+})()`;
+
+// 点一次并等到文件；顺带区分「没发出请求 / 任务失败 / 只是慢」
+// 点「Download report」→ 等 eBay 生成报表（实测 40~60 秒）→ 提示条里的 download 要再点一次 → 等文件
+async function grabTraffic(page, label, { timeoutMs = 150000, clickGapMs = 12000 } = {}) {
+  await page.eval(TRAFFIC_HOOK).catch(() => {});
+  await page.eval('(() => { window.__trafficTask = null; return true; })()').catch(() => {});
+  const before = new Set(readdirSync(inbox));
+  const clicked = await page.eval(TRAFFIC_CLICK);
+  if (!clicked.ok) throw new Error('页面上没有下载按钮（可能被风控或页面未渲染完）');
+  const started = Date.now();
+  const pick = () => readdirSync(inbox)
+    .filter(name => !before.has(name) && !/\.crdownload$/i.test(name) && NAME.traffic.test(name));
+  let lastClickAt = 0, sawToast = false;
+  while (Date.now() - started < timeoutMs) {
+    await sleep(1000);
+    const fresh = pick();
+    if (fresh.length) return fresh;
+    // 提示条一出现立刻点 download；万一没触发，隔 clickGapMs 再补一次
+    if (!lastClickAt || Date.now() - lastClickAt > clickGapMs) {
+      const r = await page.eval(TRAFFIC_READY_CLICK).catch(() => null);
+      if (r && r.ok) {
+        lastClickAt = Date.now();
+        console.log(`[Traffic] ${label}：提示条已出（${Math.round((Date.now() - started) / 1000)}s），点了 download，等文件落盘…`);
+      } else if (r && r.toast) {
+        sawToast = true;
+      }
+    }
+    const state = await page.eval(TRAFFIC_TASK_STATE).catch(() => null);
+    if (state && /FAILED|ERROR/i.test(state.status || '')) throw new Error(`报表任务失败：${state.status}`);
+  }
+  const fresh = pick();
+  if (fresh.length) return fresh;
+  const waited = Math.round((Date.now() - started) / 1000);
+  throw new Error(sawToast
+    ? `${waited} 秒内提示条出现但没拿到文件（已点 download，文件未落盘）`
+    : `${waited} 秒内没有文件落盘，也没等到「Your report is ready」提示条`);
+}
+
+const RC_CLOSE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => /^(取消|Cancel|Close Dialog)$/i.test(t(n)));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false };
+})()`;
+
+const RC_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => t(n) === 'Download report');
+  if (!b) return { ok: false };
+  b.click(); return { ok: true };
+})()`;
+
+const RC_HAS_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  return { ok: [...document.querySelectorAll('button')].filter(v).some(n => t(n) === 'Download report') };
+})()`;
+
+const PLP_HAS_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  return { ok: [...document.querySelectorAll('button')].filter(v).some(n => (n.innerText || '').trim() === 'Generate report') };
+})()`;
+
+const rcOpenCard = prefix => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('.se-field-card__body')].filter(v).find(n => t(n).startsWith(${JSON.stringify(prefix)}));
+  if (b) { b.click(); return { ok: true, text: t(b).slice(0, 80) }; }
+  return { ok: false };
+})()`;
+
+// radio 的 value 可能是「真引号 JSON」，也可能被 React 重渲染成带反斜杠的转义形态
+// {\\\"SOURCE\\\":...}（实测 2026-11-07/11-08：复用标签页跑第二个任务时全是转义形态）。
+// 所有按 value 找 radio 的地方都必须先去掉反斜杠，否则只在首任务能匹配上。
+const RC_NORM = `const norm = s => (s || '').split(String.fromCharCode(92)).join('');`;
+
+const rcPickRadio = fragment => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  ${RC_NORM}
+  const frag = norm(${JSON.stringify(fragment)});
+  const r = [...document.querySelectorAll('input[type=radio]')].filter(v)
+    .find(n => norm(n.value).includes(frag));
+  if (!r) return { ok: false, values: [...document.querySelectorAll('input[type=radio]')].map(n => n.value) };
+  r.click(); return { ok: true, value: r.value };
+})()`;
+
+const RC_DONE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  const b = [...(pane || document).querySelectorAll('button')].filter(v).find(n => /^(完成|Done)$/.test(t(n)));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false };
+})()`;
+
+// 只收起「属于这张卡片」的那个弹层。
+// 实测 2026-11-08：多张弹层叠着时，按 panes[0] 点「完成」会点错面板，
+// 上一张卡片的弹层就一直开着，把下一张卡片的点击吞掉（Date range 因此 30 秒没弹出来）。
+const rcDoneIn = (keyFrag, boxOnly = false) => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  ${RC_NORM}
+  const panes = [...document.querySelectorAll('.flyout-pane')].filter(v);
+  const boxOnly = ${boxOnly ? 'true' : 'false'};
+  const k = ${keyFrag ? `norm(${JSON.stringify(keyFrag)})` : 'null'};
+  const target = boxOnly
+    ? panes.find(p => p.querySelector('input[type=checkbox]'))
+    : (k ? panes.find(p => [...p.querySelectorAll('input[type=radio]')].some(n => norm(n.value).includes(k))) : panes[0]);
+  if (!target) return { ok: false, why: 'no pane' };
+  const b = [...target.querySelectorAll('button')].filter(v).find(n => /^(完成|Done)$/.test(t(n)));
+  if (!b) return { ok: false, why: 'no done button' };
+  b.click();
+  return { ok: true };
+})()`;
+
+const RC_SUBMIT = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const dlg = [...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0];
+  const b = [...(dlg || document).querySelectorAll('button')].filter(v).find(n => /^(下载|下载报告|Download)$/i.test(t(n)));
+  if (!b) return { ok: false, reason: '找不到下载按钮' };
+  if (b.disabled) return { ok: false, reason: '下载按钮未启用' };
+  b.click(); return { ok: true };
+})()`;
+
+const RC_ROWS = `(() => [...document.querySelectorAll('tr')].map(r => {
+  const text = (r.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 190);
+  const ref = (text.match(/\\b(\\d{11})\\b/) || [])[1] || '';
+  return { ref, text, status: /Completed/.test(text) ? 'Completed' : (/Failed/.test(text) ? 'Failed' : 'Other') };
+}).filter(r => r.ref))()`;
+
+// ---------- 活动多选（Campaigns 卡片） ----------
+const RC_CAMPAIGN_PANE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  return [...document.querySelectorAll('.flyout-pane')].filter(v)
+    .find(p => p.querySelector('input[type=checkbox]')) || null;
+})()`;
+
+const RC_CAMPAIGNS_STATE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)
+    .find(p => p.querySelector('input[type=checkbox]'));
+  if (!pane) return { ok: false, why: 'no pane' };
+  const root = pane.querySelector('#chkBox-campaign-root');
+  const boxes = [...pane.querySelectorAll('input[type=checkbox]')].filter(v)
+    .filter(c => c.value && c.value !== 'optionsRoot')
+    .map(c => ({ id: c.value, on: c.checked }));
+  return { ok: boxes.length > 0, rootChecked: root ? root.checked : null, boxes };
+})()`;
+
+const RC_CAMPAIGNS_CLEAR = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)
+    .find(p => p.querySelector('input[type=checkbox]'));
+  if (!pane) return { ok: false };
+  const root = pane.querySelector('#chkBox-campaign-root');
+  if (root && root.checked) root.click();
+  return { ok: true };
+})()`;
+
+const rcCampaignsCheck = ids => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)
+    .find(p => p.querySelector('input[type=checkbox]'));
+  if (!pane) return { ok: false, why: 'no pane' };
+  const want = new Set(${JSON.stringify(ids)});
+  const boxes = [...pane.querySelectorAll('input[type=checkbox]')].filter(v)
+    .filter(c => c.value && c.value !== 'optionsRoot');
+  for (const c of boxes) {
+    const should = want.has(c.value);
+    if (c.checked !== should) c.click();
+  }
+  return { ok: true, total: boxes.length };
+})()`;
+
+// ---------- 自定义区间（日历） ----------
+const RC_OPEN_DATE_CARD = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const body = [...document.querySelectorAll('.se-field-card__body')].filter(v).find(n => t(n).startsWith('Date range'));
+  if (!body) return { ok: false };
+  body.click();
+  return { ok: true };
+})()`;
+
+const RC_PICK_CUSTOM = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  ${RC_NORM}
+  const panes = [...document.querySelectorAll('.flyout-pane')].filter(v);
+  if (!panes.length) return { ok: false, why: 'no pane' };
+  const key = norm('"DATE_RANGE":"CUSTOM"');
+  // 只认「装着 Date range 选项的那个 pane」，别被残留的旧面板（Source/Campaign strategy）挡住
+  const pane = panes.find(p => [...p.querySelectorAll('input[type=radio]')].some(n => norm(n.value).includes(key))) || panes[0];
+  const r = [...pane.querySelectorAll('input[type=radio]')].filter(v)
+    .find(n => norm(n.value).includes(key));
+  if (!r) return { ok: false, why: 'no custom radio' };
+  r.click();
+  return { ok: true };
+})()`;
+
+// 在日历里导航到目标月并点中目标日；which=start|end
+const rcPickCalendarDate = (which, iso) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return `(async () => {
+  const v = n => n.getClientRects().length > 0;
+  const btn = document.querySelector('#${which}-date-btn');
+  if (!btn) return { ok: false, why: '找不到日期按钮' };
+  btn.click();
+  await new Promise(r => setTimeout(r, 1200));
+  const targetY = ${y}, targetM = ${m}, targetD = ${d};
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  for (let step = 0; step < 40; step++) {
+    const picker = [...document.querySelectorAll('.date-picker')].filter(v).pop();
+    if (!picker) return { ok: false, why: '日历没出现' };
+    const grid = picker.querySelector('[role=grid]');
+    const label = grid ? (grid.getAttribute('aria-label') || '') : '';
+    const mm = MONTHS.findIndex(x => label.startsWith(x));
+    const yy = parseInt((label.match(/(\\d{4})/) || [])[1] || '0', 10);
+    if (mm < 0) return { ok: false, why: '读不出月份：' + label };
+    if (yy === targetY && mm + 1 === targetM) {
+      const cells = [...grid.querySelectorAll('button')];
+      const cell = cells.find(c => (c.innerText || '').trim() === String(targetD));
+      if (!cell) return { ok: false, why: '当月没有这个日期：' + label + ' / ' + targetD };
+      cell.click();
+      await new Promise(r => setTimeout(r, 900));
+      return { ok: true, month: label };
+    }
+    const goPrev = (yy > targetY) || (yy === targetY && (mm + 1) > targetM);
+    const nav = picker.querySelector(goPrev ? '.prev-month' : '.next-month');
+    if (!nav || nav.disabled) return { ok: false, why: '翻月被拦住：' + label };
+    nav.click();
+    await new Promise(r => setTimeout(r, 650));
+  }
+  return { ok: false, why: '翻了太多月' };
+})()`;
+};
+
+const RC_READ_RANGE = `(() => {
+  const s = document.querySelector('.start-date');
+  const e = document.querySelector('.end-date');
+  return { start: s ? s.textContent.trim() : null, end: e ? e.textContent.trim() : null };
+})()`;
+const RC_REFS = `(() => [...document.querySelectorAll('tr')]
+  .map(r => ((r.innerText || '').match(/\\b(\\d{11})\\b/) || [])[1]).filter(Boolean))()`;
+
+const rcDownload = ref => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const row = [...document.querySelectorAll('tr')].find(r => (r.innerText || '').includes(${JSON.stringify(ref)}));
+  const el = row && [...row.querySelectorAll('a, button')].filter(v).find(n => /^Download$/i.test(t(n)));
+  if (!el) return { ok: false };
+  el.click(); return { ok: true };
+})()`;
+
+const PLP_CLOSE = `(() => {
+  const d = document.querySelector('.app-generate-report-dialog');
+  const b = d && [...d.querySelectorAll('button')].find(n => /^(Cancel|取消|Close)$/i.test((n.innerText || n.getAttribute('aria-label') || '').trim()));
+  if (b) { b.click(); return true; }
+  return false;
+})()`;
+
+const PLP_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => (n.innerText || '').trim() === 'Generate report');
+  if (!b) return { ok: false };
+  b.click(); return { ok: true };
+})()`;
+
+const plpConfigureExpr = (startUs, endUs, types) => `(() => {
+  const d = document.querySelector('.app-generate-report-dialog');
+  if (!d) return { ok: false, error: '弹窗不存在' };
+  const setValue = (el, value) => {
+    const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+  };
+  const selects = [...d.querySelectorAll('select')];
+  const period = selects.find(s => [...s.options].some(o => o.value === 'CUSTOM'));
+  if (period) setValue(period, 'CUSTOM');
+  const format = selects.find(s => s !== period && [...s.options].some(o => o.value === 'ALL'));
+  if (format) setValue(format, 'ALL');
+  const boxes = [...d.querySelectorAll('input.textbox__control')];
+  const wantedDates = ${JSON.stringify([startUs, endUs])};
+  boxes.forEach((b, i) => setValue(b, wantedDates[Math.min(i, wantedDates.length - 1)]));
+  // 报表类型：按复选框自己的文字（Listing / Keyword / Search query）判断，识别不出的保持原样
+  const wanted = ${JSON.stringify(types)};
+  const kindOf = text => /search/i.test(text) ? 'search' : /keyword/i.test(text) ? 'keyword' : /listing/i.test(text) ? 'listing' : null;
+  const checks = [...d.querySelectorAll('input.checkbox__control')];
+  const seen = [];
+  for (const c of checks) {
+    const host = c.closest('label') || c.parentElement?.parentElement || c.parentElement;
+    const text = ((host && host.innerText) || '') + ' ' + (c.getAttribute('aria-label') || '') + ' ' + (c.value || '');
+    const kind = kindOf(text);
+    const keep = kind ? wanted.includes(kind) : true;
+    if (keep && !c.checked) c.click();
+    if (!keep && c.checked) c.click();
+    seen.push(kind || 'unknown');
+  }
+  return { ok: true, selects: selects.map(s => s.value), dates: boxes.map(b => b.value),
+    checked: checks.filter(c => c.checked).length, total: checks.length, kinds: seen };
+})()`;
+
+const PLP_SHAPE = `(() => {
+  const d = document.querySelector('.app-generate-report-dialog');
+  if (!d) return { dialogOpen: false };
+  const sels = [...d.querySelectorAll('select')].map(s => s.value);
+  const boxes = [...d.querySelectorAll('input.textbox__control')].map(b => b.value);
+  const checks = [...d.querySelectorAll('input.checkbox__control')];
+  const g = [...d.querySelectorAll('button')].find(n => (n.innerText || '').trim() === 'Generate');
+  return { dialogOpen: true, selects: sels, dates: boxes, checked: checks.filter(c => c.checked).length,
+    totalChecks: checks.length, disabled: g ? g.disabled : null };
+})()`;
+
+const PLP_GENERATE = `(() => {
+  const d = document.querySelector('.app-generate-report-dialog');
+  const g = d && [...d.querySelectorAll('button')].find(n => (n.innerText || '').trim() === 'Generate');
+  if (!g || g.disabled) return { ok: false };
+  g.click(); return { ok: true };
+})()`;
+
+const PLP_STATUS = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const buttons = [...document.querySelectorAll('button')].filter(v).map(t);
+  const downloadNow = buttons.some(x => /^Download now$/i.test(x));
+  const tryAgain = buttons.some(x => /^Try again$/i.test(x));
+  const body = document.body?.innerText || '';
+  const failed = /couldn.t process (your|this) download|something went wrong|try again/i.test(body);
+  const hints = body.split('\\n')
+    .filter(l => /reports are ready|couldn.t process|processing|download now|try again/i.test(l)).slice(0, 4).map(l => l.trim());
+  return { downloadNow, tryAgain, failed, buttons: buttons.slice(0, 8), hints };
+})()`;
+
+const PLP_TRY_AGAIN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => /^Try again$/i.test(t(n)));
+  if (!b) return { ok: false };
+  b.click(); return { ok: true };
+})()`;
+
+const PLP_DOWNLOAD_NOW = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => /^Download now$/i.test(t(n)));
+  if (!b) return { ok: false };
+  b.click(); return { ok: true };
+})()`;
+
+// ---------- 日期匹配 ----------
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function dayPattern(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const mon = MONTHS[m - 1];
+  return new RegExp(`(?:${mon}\\s+0?${d},?\\s*${y})|(?:0?${m}/0?${d}/${y})`, 'i');
+}
+function periodMatches(text, start, end) {
+  if (!text) return false;
+  if (!dayPattern(start).test(text)) return false;
+  return start === end ? true : dayPattern(end).test(text);
+}
+const trafficUrl = (start, end) =>
+  `${TRAFFIC_URL}?filter=${encodeURIComponent(`changed_date:startDate,date_range:[${start}..${end}]`)}`;
+
+// ---------- 通用等待：页面渲染慢时先等控件出现，再动作 ----------
+async function waitUntil(page, expression, isOk, timeoutMs = 20000, intervalMs = 400) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      last = await page.eval(expression);
+      if (isOk(last)) return last;
+    } catch { last = null; }
+    await sleep(intervalMs);
+  }
+  return last;
+}
+
+// ---------- 任务 1/2：Traffic（单日 / 累计，各自标签页）----------
+// 等页面把区间切到目标日期；连续取不到状态就刷一次，避免标签页卡死拖死任务
+async function waitTrafficReady(page, start, end) {
+  let state = null;
+  let misses = 0;
+  const deadline = Date.now() + FAST.pageTimeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      state = await page.eval(TRAFFIC_STATE);
+      misses = 0;
+      if (state.ready && periodMatches(state.periodText, start, end)) return { ok: true, state };
+    } catch {
+      state = null;
+      misses++;
+      if (misses >= 3) { misses = 0; await page.reload().catch(() => {}); await sleep(2500); }
+    }
+    await sleep(FAST.pagePollMs);
+  }
+  return { ok: false, state };
+}
+
+async function runTraffic(task, start, end) {
+  const startAt = Date.now();
+  const page = await newPage(task);
+  const target = trafficUrl(start, end);
+  try {
+    return await retry(`Traffic ${task}`, async attempt => {
+      if (attempt > 1) {
+        // 重试时整页重新加载回目标区间，拿到干净页面（原地补点成功率低）
+        await page.navigate(target, { settleMs: 2500 });
+      }
+      if (!(await recoverIfBlocked(page, { tries: 2, waitMs: 5000 }))) throw new Error('页面被 eBay 风控拦截');
+
+      const ready = await waitTrafficReady(page, start, end);
+      if (!ready.ok) throw new Error(`页面区间未就绪：${JSON.stringify(ready.state)}`);
+
+      const t0 = Date.now();
+      const files = await withDownloadLock('all', () => grabTraffic(page, `Traffic ${task}`));
+
+      const mark = results.length;
+      const recorded = recordFiles(task, files, {
+        periodExpected: `${start} ~ ${end}`, pagePeriod: ready.state.periodText
+      });
+      const bad = recorded.filter(item => !item.valid);
+      if (bad.length) {
+        // 文件不对就丢掉重下，不能把脏数据混进结果
+        discard(inbox, files);
+        results.length = mark;
+        throw new Error(`校验不合格：${bad[0].problem}`);
+      }
+      timings[task] = {
+        ...(timings[task] || {}),
+        pageWaitMs: t0 - startAt, downloadWaitMs: Date.now() - t0, file: files[0]
+      };
+      console.log(`[Traffic] ${task} ${start}~${end}：${files[0]}，${recorded[0].rowCount} 行，用时 ${Date.now() - t0}ms`);
+      return recorded;
+    }, { tries: 4, delayMs: 10000, backoff: 3 });
+  } finally {
+    if (!keepWindows) await page.close().catch(() => {});
+  }
+}
+
+// 批量单日 Traffic：同一个标签页按日期逐个跑，串行避免文件串台
+async function runTrafficBatch(dates) {
+  const page = await newPage('trafficBatch');
+  const done = [];
+  for (const day of dates) {
+    const startAt = Date.now();
+    try {
+      await retry(`Traffic ${day}`, async attempt => {
+        // 整页导航 + 等区间匹配 + 1.2 秒渲染缓冲：批量模式首点失败主要就是页面还没切干净
+        await page.navigate(trafficUrl(day, day), { settleMs: 1200 });
+        if (!(await recoverIfBlocked(page, { tries: 2, waitMs: 5000 }))) throw new Error('页面被 eBay 风控拦截');
+        const ready = await waitTrafficReady(page, day, day);
+        if (!ready.ok) throw new Error(`页面区间未就绪：${JSON.stringify(ready.state)}`);
+        const t0 = Date.now();
+        const files = await withDownloadLock('all', () => grabTraffic(page, `Traffic ${day}`));
+        const mark = results.length;
+        const recorded = recordFiles('trafficDaily', files, { targetDate: day, pagePeriod: ready.state.periodText });
+        const bad = recorded.filter(item => !item.valid);
+        if (bad.length) {
+          discard(inbox, files);
+          results.length = mark;
+          throw new Error(`校验不合格：${bad[0].problem}`);
+        }
+        timings[`traffic_${day}`] = { ms: Date.now() - startAt, ok: true, downloadWaitMs: Date.now() - t0 };
+        console.log(`[Traffic] ${day}：${recorded[0].rowCount} 行，${((Date.now() - t0) / 1000).toFixed(1)}s`);
+        done.push(recorded[0]);
+        return recorded;
+      }, { tries: 4, delayMs: 10000, backoff: 3 });
+    } catch (error) {
+      errors.push({ task: `traffic_${day}`, message: error.message });
+      console.log(`[失败] Traffic ${day}: ${error.message}`);
+    }
+  }
+  return done;
+}
+
+// ---------- 任务 3/4：报表中心（PLG / 在售名单，各自标签页）----------
+const rcHasCard = prefix => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  return { ok: [...document.querySelectorAll('.se-field-card__body')].filter(v).some(n => t(n).startsWith(${JSON.stringify(prefix)})) };
+})()`;
+
+// 判断「某张卡片自己的弹层」是否就绪：可见 flyout 里要有带这个键的 radio。
+// 不能只看「有任意 pane 可见」——实测 2026-11-08：Source 面板没收起时，
+// Campaign strategy 卡片怎么点都被误判成已就绪，白等 30 秒。
+const rcPaneHas = keyFrag => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  ${RC_NORM}
+  const k = norm(${JSON.stringify(keyFrag)});
+  const panes = [...document.querySelectorAll('.flyout-pane')].filter(v);
+  const hit = panes.find(p => [...p.querySelectorAll('input[type=radio]')].some(n => norm(n.value).includes(k)));
+  return { ok: !!hit, panes: panes.length, text: hit ? (hit.innerText || '').replace(/\\s+/g, ' ').slice(0, 60) : '' };
+})()`;
+
+async function pickStep(page, step) {
+  const has = await waitUntil(page, rcHasCard(step.card), v => v?.ok, 20000);
+  if (!has?.ok) throw new Error(`${step.card} 卡片未出现`);
+  // flyout 异步渲染，卡片点击偶发被保留的旧面板吞掉（旧面板没关时点新卡片无效）。
+  // 所以按「本卡片的 pane 有没有就绪」来驱动：没就绪就再点一次卡片，总预算 30 秒。
+  // 键片段取 fragment 里冒号前的部分：\"CAMPAIGN_TIME_UNIT\":\"DAILY\" → \"CAMPAIGN_TIME_UNIT\":
+  const keyFrag = step.fragment.slice(0, step.fragment.lastIndexOf(':') + 1);
+  const deadline = Date.now() + 30000;
+  let lastClick = 0;
+  let picked = null;
+  let paneText = '';
+  while (Date.now() < deadline) {
+    picked = await page.eval(rcPickRadio(step.fragment)).catch(() => null);
+    if (picked?.ok) break;
+    const ready = await page.eval(rcPaneHas(keyFrag)).catch(() => null);
+    paneText = ready?.text || paneText;
+    if (!ready?.ok) {
+      if (Date.now() - lastClick > 2000) {
+        await page.eval(rcOpenCard(step.card)).catch(() => {});
+        lastClick = Date.now();
+        await sleep(900);
+      } else {
+        await sleep(400);
+      }
+    } else {
+      await sleep(500);
+    }
+  }
+  if (!picked?.ok) {
+    // 只报「可见」的选项：之前把隐藏面板里的 radio 也打出来，看着像「明明有却选不上」，误导排查
+    const diag = await page.eval(`(() => {
+      const v = n => n.getClientRects().length > 0;
+      const panes = [...document.querySelectorAll('.flyout-pane')].filter(v);
+      const vis = [...document.querySelectorAll('input[type=radio]')].filter(v).map(n => n.value);
+      return { panes: panes.length, vis };
+    })()`).catch(() => null);
+    throw new Error(`${step.card} 未找到选项 ${step.fragment}`
+      + `（30 秒，可见面板 ${diag?.panes ?? '?'} 个${paneText ? '，面板内容：' + paneText : ''}）`
+      + `，可见选项：${JSON.stringify(diag?.vis || []).slice(0, 600)}`);
+  }
+  await sleep(300);
+  // 选完确认这张卡片的 pane 收起了；没收起会吞掉下一张卡片的点击
+  for (let i = 0; i < 3; i++) {
+    const ready = await page.eval(rcPaneHas(keyFrag)).catch(() => null);
+    if (!ready?.ok) break;
+    await page.eval(rcDoneIn(keyFrag)).catch(() => {});
+    await sleep(600);
+  }
+  await sleep(400);
+}
+
+// 只跑部分活动：先取消「全选」，再逐个勾上目标活动（不传 ids 就保持全选）
+async function pickCampaigns(page, ids, tag) {
+  if (!ids.length) return;
+  const has = await waitUntil(page, rcHasCard('Campaigns'), v => v?.ok, 20000);
+  if (!has?.ok) throw new Error('Campaigns 卡片未出现');
+  // 与 pickStep 同款自愈：点击偶发被 React 重渲染吞掉（pane 没弹出），重新点卡片直到面板就绪
+  const deadline = Date.now() + 30000;
+  let reopenAt = 0;
+  let before = null;
+  while (Date.now() < deadline) {
+    before = await page.eval(RC_CAMPAIGNS_STATE).catch(() => null);
+    if (before?.ok) break;
+    if (Date.now() - reopenAt > 2000) {
+      await page.eval(rcOpenCard('Campaigns')).catch(() => {});
+      reopenAt = Date.now();
+    }
+    await sleep(800);
+  }
+  if (!before?.ok) throw new Error('Campaigns 面板 30 秒内没弹出来');
+  await sleep(600);
+  await page.eval(RC_CAMPAIGNS_CLEAR);
+  await sleep(700);
+  const available = (before.boxes || []).map(b => b.id);
+  const missing = ids.filter(id => !available.includes(id));
+  if (missing.length) throw new Error(`活动不在列表里：${missing.join(',')}（可选 ${available.join(',')}）`);
+  await page.eval(rcCampaignsCheck(ids));
+  await sleep(700);
+  const after = await page.eval(RC_CAMPAIGNS_STATE);
+  const on = (after.boxes || []).filter(b => b.on).map(b => b.id);
+  await page.eval(rcDoneIn(null, true));
+  await sleep(600);
+  if (on.length !== ids.length || ids.some(id => !on.includes(id))) {
+    throw new Error(`活动勾选不完整，实际选中 ${on.join(',') || '无'}，期望 ${ids.join(',')}`);
+  }
+  console.log(`[报表中心] ${tag} 只跑 ${on.length} 个活动：${on.join(',')}`);
+}
+
+// 自定义区间：选 CUSTOM 后弹层保持打开，直接在日历里点起止日（点完再收起）
+async function pickCustomRange(page, startIso, endIso) {
+  // 与 pickStep 同款自愈：pane 没弹出就重新点 Date range 卡片，总预算 30 秒
+  const deadline = Date.now() + 30000;
+  let reopenAt = 0;
+  let picked = null;
+  while (Date.now() < deadline) {
+    picked = await page.eval(RC_PICK_CUSTOM).catch(() => null);
+    if (picked?.ok) break;
+    const pane = await page.eval(rcPaneHas('"DATE_RANGE":')).catch(() => null);
+    const gap = Date.now() - reopenAt;
+    // 面板没开就重开卡片；面板开着却只有预设、没有自定义，隔 10 秒再点一次（可能是上一张卡的旧面板）
+    if ((!pane?.ok && gap > 2000) || (pane?.ok && gap > 10000)) {
+      await page.eval(RC_OPEN_DATE_CARD).catch(() => {});
+      reopenAt = Date.now();
+      await sleep(900);
+    } else {
+      await sleep(500);
+    }
+  }
+  if (!picked?.ok) {
+    const vis = await page.eval(`(() => {
+      const v = n => n.getClientRects().length > 0;
+      return [...document.querySelectorAll('input[type=radio]')].filter(v).map(n => String(n.value).slice(-40));
+    })()`).catch(() => []);
+    throw new Error(`自定义范围选项没找到${picked?.why ? '：' + picked.why : ''}`
+      + `（30 秒），可见选项：${JSON.stringify(vis).slice(0, 400)}`);
+  }
+  await sleep(1500);
+  const s = await page.eval(rcPickCalendarDate('start', startIso));
+  if (!s.ok) throw new Error(`开始日期没选上：${s.why}`);
+  const e = await page.eval(rcPickCalendarDate('end', endIso));
+  if (!e.ok) throw new Error(`结束日期没选上：${e.why}`);
+  const back = await page.eval(RC_READ_RANGE);
+  const slash = d => d.replace(/-/g, '/');
+  if (back.start !== slash(startIso) || back.end !== slash(endIso)) {
+    throw new Error(`自定义区间回读不符：${back.start} ~ ${back.end}，期望 ${startIso} ~ ${endIso}`);
+  }
+  await page.eval(rcDoneIn('"DATE_RANGE":'));
+  await sleep(700);
+  console.log(`[报表中心] 自定义区间 ${back.start} ~ ${back.end}`);
+}
+
+// 优先促刊是一个 kind 带四种类型，行名与标签要跟着本次选的类型走，
+// 不能用固定的关键词那条定义（行名不同会导致等不到已完成的行）。
+function reqDef(kind, priorityDef) {
+  if (kind === 'orders') {
+    // 九种订单共用一个 kind，标签要跟本次选的类型走（行名统一是「Orders xxx」）
+    return {
+      label: orderTypeDef.label,
+      rowMatch: RC_REQUESTS.orders.rowMatch,
+      steps: RC_REQUESTS.orders.steps,
+      reportId: orderTypeDef.reportId
+    };
+  }
+  if (kind !== 'priority') return RC_REQUESTS[kind];
+  // 多类型时每个任务带自己的定义：行名、Type、是否有 Campaigns 卡片都不同
+  const pd = priorityDef || priorityTypeDefs[0];
+  const report = getReport(pd.reportId);
+  const steps = pd.hasCampaigns === false
+    ? RC_REQUESTS.priority.steps.filter(s => s.card !== 'Campaigns')  // 「活动」级别没有这张卡
+    : RC_REQUESTS.priority.steps;
+  return {
+    label: pd.label,
+    rowMatch: new RegExp(report.rowMatch || 'Advertising', 'i'),
+    looseMatch: /advertising/i,
+    steps,
+    reportId: report.id,
+    type: pd.type,
+    hasCampaigns: pd.hasCampaigns
+  };
+}
+
+// 各类报表的选项覆盖规则；CUSTOM 区间统一走日历，其余按 radio value 选
+function stepsFor(kind, priorityDef) {
+  const cfg = reqDef(kind, priorityDef);
+  return cfg.steps.map(step => {
+    if (kind === 'plg') {
+      if (step.card === 'Time unit') return { ...step, fragment: `"CAMPAIGN_TIME_UNIT":"${plgUnit}"` };
+      if (step.card === 'Date range' && plgRange && plgRange !== 'CUSTOM') {
+        return { ...step, fragment: `"DATE_RANGE":"${plgRange}"` };
+      }
+    }
+    if (kind === 'active' && step.card === 'Type') {
+      return { ...step, fragment: `"TYPE":"${ACTIVE_TYPES[activeType].type}"` };
+    }
+    if (kind === 'orders') {
+      if (step.card === 'Type') return { ...step, fragment: `"TYPE":"${orderTypeDef.type}"` };
+      if (step.card === 'Date range' && orderRange !== 'CUSTOM') {
+        return { ...step, fragment: `"DATE_RANGE":"${orderRange}"` };
+      }
+    }
+    if (kind === 'priority') {
+      if (step.card === 'Type') return { ...step, fragment: `"TYPE":"${cfg.type}"` };
+      if (step.card === 'Time unit') return { ...step, fragment: `"CAMPAIGN_TIME_UNIT":"${priorityUnit}"` };
+      if (step.card === 'Date range' && priorityRange && priorityRange !== 'CUSTOM') {
+        return { ...step, fragment: `"DATE_RANGE":"${priorityRange}"` };
+      }
+    }
+    return step;
+  });
+}
+
+async function configureReportCenter(page, kind, priorityDef) {
+  const cfg = RC_REQUESTS[kind];
+  await page.eval(RC_CLOSE).catch(() => {});
+  let hasOpen = await waitUntil(page, RC_HAS_OPEN, v => v?.ok, 20000);
+  if (!hasOpen?.ok) {
+    // 页面可能停在别的状态，刷一次再等
+    await page.reload();
+    await sleep(3000);
+    hasOpen = await waitUntil(page, RC_HAS_OPEN, v => v?.ok, 20000);
+  }
+  if (!hasOpen?.ok) throw new Error('未找到 Download report 按钮');
+  const opened = await page.eval(RC_OPEN);
+  if (!opened.ok) throw new Error('未点击到 Download report 按钮');
+  await sleep(1500);
+
+  for (const step of stepsFor(kind, priorityDef)) {
+    if (step.card === 'Campaigns') {
+      // 活动级（优先促刊 CAMPAIGN）没有这张卡，没有 ids 时直接跳过
+      if (kind === 'plg') await pickCampaigns(page, plgCampaignIds, 'PLG');
+      else if (kind === 'priority') await pickCampaigns(page, priorityCampaignIds, '优先促刊');
+      continue;
+    }
+    if (step.card === 'Date range') {
+      if (kind === 'plg' && plgRange === 'CUSTOM') { await pickCustomRange(page, plgCustomStart, plgCustomEnd); continue; }
+      if (kind === 'orders' && orderRange === 'CUSTOM') { await pickCustomRange(page, orderCustomStart, orderCustomEnd); continue; }
+      if (kind === 'priority' && priorityRange === 'CUSTOM') { await pickCustomRange(page, priorityCustomStart, priorityCustomEnd); continue; }
+    }
+    await pickStep(page, step);
+  }
+  const submitted = await page.eval(RC_SUBMIT);
+  if (!submitted.ok) throw new Error(`提交失败：${submitted.reason || '未知'}`);
+  await sleep(1000);
+  await page.eval(RC_CLOSE).catch(() => {});
+}
+
+// 报表中心任务完成后取文件。
+// 各类型的真实文件名不一样（前缀、日期都不同），靠猜必踩坑，
+// 所以直接点这一行的 Download，从页面自己发出的请求里抄真实地址，再按原样取回。
+const rcHarvestExpr = ref => `(async () => {
+  const v = n => n.getClientRects().length > 0;
+  const urls = [];
+  const isFile = u => /getfiledetails/i.test(String(u || ''));
+  // 记录页面发出的取文件请求
+  const oxOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (m, u, ...rest) {
+    try { if (isFile(u)) urls.push(String(u)); } catch {}
+    return oxOpen.call(this, m, u, ...rest);
+  };
+  const ofFetch = window.fetch;
+  window.fetch = function (...args) {
+    try {
+      const u = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+      if (isFile(u)) urls.push(String(u));
+    } catch {}
+    return ofFetch.apply(this, args);
+  };
+  // 拦住页面自己的保存动作，避免同一份文件落两次
+  const oaClick = HTMLAnchorElement.prototype.click;
+  let blocked = 0;
+  HTMLAnchorElement.prototype.click = function () {
+    if (this.download || /^blob:/i.test(this.href || '')) { blocked++; return; }
+    return oaClick.call(this);
+  };
+  const restore = () => {
+    XMLHttpRequest.prototype.open = oxOpen;
+    window.fetch = ofFetch;
+    HTMLAnchorElement.prototype.click = oaClick;
+  };
+  try {
+    const row = [...document.querySelectorAll('tr')].filter(v)
+      .find(r => (r.innerText || '').includes(${JSON.stringify(ref)}));
+    if (!row) return { ok: false, why: '找不到该 requestId 的行' };
+    const btn = [...row.querySelectorAll('button')].filter(v)
+      .find(b => /^(Download|下载)$/i.test((b.innerText || '').trim()));
+    if (!btn) return { ok: false, why: '该行没有 Download 按钮' };
+    if (btn.disabled) return { ok: false, why: 'Download 按钮处于禁用态' };
+    btn.click();
+    const deadline = Date.now() + 12000;
+    while (!urls.length && Date.now() < deadline) await new Promise(r => setTimeout(r, 150));
+    if (!urls.length) return { ok: false, why: '点了 Download 也没发出取文件请求' };
+    const url = urls[urls.length - 1];
+    const res = await fetch(url, { credentials: 'include' });
+    const text = await res.text();
+    const m = url.match(/[?&]fileName=([^&]+)/);
+    const name = m ? decodeURIComponent(m[1]) : '';
+    // 0 条记录时 eBay 会返回一份 49 字节的合法空报表：表头是一整行逗号 + 一行「0,」。
+    // 它没有列名，但确实不是错误页，不能按「太小」误杀；后续 inspectCsv 会识别成 empty 并记警告。
+    // 注意：整段是模板字符串，正则里的反斜杠会被外层吃掉，这里一律不用带转义的正则
+    const firstLine = text.split(String.fromCharCode(10))[0] || '';
+    const onlyCommas = firstLine.split('').every(c => c === ',' || c === '"' || c.trim() === '');
+    const badWords = /html|doctype|access denied|error|exception|downloadFileError/i.test(text.slice(0, 300));
+    const looksEmpty = text.length < 500 && firstLine.includes(',') && onlyCommas && !badWords;
+    if (!res.ok || !text || (!looksEmpty && text.length < 100)
+        || /downloadFileError/i.test(text.slice(0, 200))) {
+      return { ok: false, why: '取回内容不合格（' + res.status + ' / ' + (text ? text.length : 0) + ' 字节）', url };
+    }
+    if (looksEmpty) console.log('[报表中心] 这份是 0 条记录的空报表，按合法结果处理');
+    return { ok: true, url, name, size: text.length, blocked, empty: looksEmpty, text };
+  } finally {
+    restore();
+  }
+})()`;
+
+async function downloadReportRow(page, task, ref, label, kind = task) {
+  const got = await retry(`取文件 ${label} ref=${ref}`, async () => {
+    const res = await page.eval(rcHarvestExpr(ref));
+    if (!res.ok) throw new Error(res.why || '取文件失败');
+    return res;
+  }, { tries: 3, delayMs: 2500 });
+  const name = got.name || `${kind}-${ref}.csv`;
+  const existing = join(inbox, name);
+  writeFileSync(existing, got.text, 'utf8');
+  console.log(`[报表中心] ${label} 取到 ${name}（${(got.size / 1024).toFixed(0)} KB）`);
+  return recordFiles(task, [name], { refId: ref, requestLabel: label });
+}
+
+// 已完成请求列表里，按当前报表类型找到对应那一行（各类型的行名不同）
+function rowMatchFor(kind, priorityDef) {
+  if (kind === 'active') return ACTIVE_TYPES[activeType].rowMatch;
+  return reqDef(kind, priorityDef).rowMatch;
+}
+
+async function runReportCenter(kind, priorityDef) {
+  const page = await newPage(`rc_${kind}`);
+  // 名单类三种类型的行名不同，日志里要写清楚是哪一种
+  const label = reqDef(kind, priorityDef).label;
+  try {
+    return await retry(`报表中心 ${label}`, async attempt => {
+      if (attempt > 1) {
+        // 只在失败后重载，正常路径不刷新，避免打断下载
+        await page.eval(`(() => { location.href = ${JSON.stringify(REPORTS_URL)}; return true; })()`).catch(() => {});
+        await sleep(3500);
+      }
+      await recoverIfBlocked(page, { tries: 2, waitMs: 5000 });
+      const t0 = Date.now();
+      const knownRefs = new Set(await page.eval(RC_REFS));
+
+      if (latest) {
+        const rows = await page.eval(RC_ROWS);
+        const row = rows.find(r => r.status === 'Completed' && rowMatchFor(kind, priorityDef).test(r.text));
+        if (!row) throw new Error('最新已完成请求未找到');
+        const out = await downloadReportRow(page, 'any', row.ref, `最新${label}`, kind);
+        console.log(`[报表中心] ${label} 最新 ref=${row.ref}：${out[0].name}，${out[0].rowCount} 行`);
+        return out;
+      }
+
+      await configureReportCenter(page, kind, priorityDef);
+      const submittedAt = Date.now();
+      console.log(`[报表中心] ${label} 已提交，窗口等待生成…`);
+
+      let row = null;
+      const def = reqDef(kind, priorityDef);
+      const deadline = submittedAt + RC_POLL.timeoutMs;
+      const lenientAt = submittedAt + 45000;
+      let round = 0;
+      let lastRefresh = Date.now();
+      let failedRow = null;
+      // 报表中心列表不会自己刷新（2026-11-08 实测），所以按 refreshEveryMs 软刷新；
+      // 同时把「新行 = Failed」当成硬失败立刻报错，不再空等整段超时。
+      while (Date.now() < deadline && !row) {
+        round++;
+        const rows = await page.eval(RC_ROWS).catch(() => []);
+        const fresh = rows.filter(r => !knownRefs.has(r.ref));
+        failedRow = fresh.find(r => r.status === 'Failed' && def.rowMatch.test(r.text)) || null;
+        if (failedRow) break;
+        row = fresh.filter(r => r.status === 'Completed').find(r => def.rowMatch.test(r.text)) || null;
+        // 兜底：行名与预期不符时，若这一轮只新出现一条广告类请求，且唯一，就认它
+        if (!row && def.looseMatch && Date.now() > lenientAt) {
+          const loose = fresh.filter(r => r.status === 'Completed' && def.looseMatch.test(r.text));
+          if (loose.length === 1) {
+            row = loose[0];
+            warnings.push(`${label}：行名与预期「${def.rowMatch.source}」不一致，按唯一新请求落盘（${row.text.slice(0, 60)}）`);
+          }
+        }
+        if (!row && Date.now() - lastRefresh > RC_POLL.refreshEveryMs) {
+          await page.eval(`(() => { location.href = ${JSON.stringify(REPORTS_URL)}; return true; })()`).catch(() => {});
+          lastRefresh = Date.now();
+          await sleep(RC_POLL.reloadSettleMs + 1500);
+          continue;
+        }
+        if (!row) await sleep(RC_POLL.intervalMs);
+      }
+      if (failedRow) {
+        throw new Error(`eBay 侧生成失败（状态 Failed，ref=${failedRow.ref}）：换日期范围或过一会儿再试`);
+      }
+      if (!row) throw new Error(`等待生成超时（${Math.round(RC_POLL.timeoutMs / 1000)} 秒），未发现新完成的请求`);
+      timings[`${kind}Generate`] = { ms: Date.now() - submittedAt, ok: true, round };
+
+      const out = await downloadReportRow(page, kind, row.ref, label, kind);
+      const bad = out.filter(item => !item.valid);
+      if (bad.length) throw new Error(`校验不合格：${bad[0].problem}`);
+      console.log(`[报表中心] ${label} ref=${row.ref}：${out[0].name}，${out[0].rowCount} 行，提交后 ${Math.round((Date.now() - submittedAt) / 1000)} 秒`);
+      return out;
+    }, { tries: 3, delayMs: 4000 });
+  } finally {
+    if (!keepWindows) await page.close().catch(() => {});
+  }
+}
+
+// ---------- 任务 5：PLP（三个 campaign，各自标签页）----------
+// 三个 campaign 同时生成容易撞车，提交动作串行、间隔 2.5 秒
+let plpSubmitChain = Promise.resolve();
+const queuePlpSubmit = fn => {
+  const result = plpSubmitChain.then(fn, fn);
+  plpSubmitChain = result.then(() => {}, () => {});
+  return result;
+};
+
+async function configureAndGenerate(page, id, startIso, endIso) {
+  const usStart = toUsPeriodStart(startIso);
+  const usEnd = toUsPeriodStart(endIso);
+  const shaped = await waitUntil(page, PLP_SHAPE, v => v?.dialogOpen && (v.selects?.length || 0) >= 2, 15000);
+  if (!shaped?.dialogOpen) throw new Error('Generate report 弹窗未出现');
+  const configured = await page.eval(plpConfigureExpr(usStart, usEnd, plpTypes));
+  if (!configured.ok) throw new Error(`配置弹窗失败：${configured.error}`);
+  await sleep(700);
+  const shape = await page.eval(PLP_SHAPE);
+  const expectChecked = Math.min(plpTypes.length, shape.totalChecks || plpTypes.length);
+  const good = shape.dialogOpen && shape.selects?.includes('CUSTOM') && shape.selects?.includes('ALL')
+    && shape.dates?.length === 2
+    && shape.dates[0] === usStart && shape.dates[1] === usEnd
+    && shape.checked === expectChecked && !shape.disabled;
+  if (!good) throw new Error(`弹窗配置未达预期：${JSON.stringify({ ...shape, 期望日期: [usStart, usEnd], 期望勾选: expectChecked, 实际类型: configured.kinds })}`);
+  const clicked = await page.eval(PLP_GENERATE);
+  if (!clicked.ok) throw new Error('Generate 按钮不可点');
+  await sleep(1200);
+  const status = await page.eval(PLP_STATUS).catch(() => ({ downloadNow: false }));
+  if (status.downloadNow) warnings.push(`campaign ${id} 提交后仍显示 Download now，可能残留上一次生成结果`);
+  return Date.now();
+}
+
+async function submitPlp(page, id, startIso, endIso) {
+  await page.eval(PLP_CLOSE).catch(() => {});
+  const hasOpen = await waitUntil(page, PLP_HAS_OPEN, v => v?.ok, 25000);
+  if (!hasOpen?.ok) throw new Error('未找到 Generate report 按钮');
+  const opened = await page.eval(PLP_OPEN);
+  if (!opened.ok) throw new Error('未点击到 Generate report 按钮');
+  await sleep(600);
+  const at = await configureAndGenerate(page, id, startIso, endIso);
+  const usStart = toUsPeriodStart(startIso);
+  const usEnd = toUsPeriodStart(endIso);
+  const periodText = usStart === usEnd ? `${usStart} 单日` : `${usStart} ~ ${usEnd}`;
+  console.log(`[PLP] ${id} 已提交（${periodText} / All / ${plpTypes.join('+')}）`);
+  return at;
+}
+
+async function runPlpCampaign(task) {
+  const { id, start, end } = task;
+  const tag = task.label || id;
+  // PLP 偶发「We couldn't process your download」，整条任务自动再走一遍
+  return retry(`PLP ${tag}`, async attempt => {
+    if (attempt > 1) {
+      const page = await newPage(`plp_${id}`);
+      await page.eval(`(() => { location.href = ${JSON.stringify(CAMPAIGN_URL(id))}; return true; })()`).catch(() => {});
+      await sleep(5000);
+    }
+    return runPlpCampaignOnce(task);
+  }, { tries: 2, delayMs: 6000 });
+}
+
+async function runPlpCampaignOnce(task) {
+  const { id, start, end } = task;
+  const tag = task.label || id;
+  const page = await newPage(`plp_${id}`);
+  try {
+    let submittedAt = await queuePlpSubmit(async () => {
+      const at = await submitPlp(page, id, start, end);
+      await sleep(2500);
+      return at;
+    });
+    const firstCheck = submittedAt + PLP_POLL.firstWaitMs;
+    if (firstCheck > Date.now()) {
+      console.log(`[PLP] ${tag} 已提交，静等 ${Math.round(PLP_POLL.firstWaitMs / 1000)} 秒后首查（之后每 ${Math.round(PLP_POLL.intervalMs / 1000)} 秒一次）`);
+      await sleep(firstCheck - Date.now());
+    }
+
+    let deadline = firstCheck + PLP_POLL.timeoutMs;
+    let round = 0;
+    let retries = 0;
+    let lastReloadAt = 0;
+    const peek = async () => page.eval(PLP_STATUS).catch(() => null);
+    const isReady = s => Boolean(s?.downloadNow || s?.tryAgain);
+    while (Date.now() < deadline) {
+      round++;
+      // 先看当前页面：已经就绪就直接用，不再多刷一次
+      let status = await peek();
+      if (!isReady(status)) {
+        // 刷新间隔上限：每 intervalMs 最多刷新一次（刷新是唯一会打扰生成队列的动作）
+        if (!lastReloadAt || Date.now() - lastReloadAt >= PLP_POLL.intervalMs) {
+          lastReloadAt = Date.now();
+          await page.reload();
+        }
+        // 刷新后最多等 settleMs：每 settlePollMs 读一次 DOM，按钮一渲染出来就立刻抓
+        const settleUntil = Date.now() + PLP_POLL.settleMs;
+        while (!isReady(status) && Date.now() < settleUntil) {
+          await sleep(PLP_POLL.settlePollMs);
+          status = await peek();
+        }
+        // 距下次刷新还有空档：只读 DOM 轻查（不刷新、无网络请求），页面自己更新也能立刻抓住
+        const watchUntil = lastReloadAt + PLP_POLL.intervalMs;
+        while (!isReady(status) && Date.now() < watchUntil && Date.now() < deadline) {
+          await sleep(PLP_POLL.watchMs);
+          status = await peek();
+        }
+      }
+      if (!status?.downloadNow && status?.tryAgain) {
+        if (retries >= 3) throw new Error('多次 Try again 仍未生成成功');
+        retries++;
+        const clicked = await page.eval(PLP_TRY_AGAIN).catch(() => ({ ok: false }));
+        console.log(`[PLP] ${id} 提示「We couldn't process your download」，${clicked.ok ? '已点 Try again 并重新填写' : '未点到 Try again'}（第 ${retries} 次）`);
+        if (clicked.ok) {
+          await sleep(1200);
+          try {
+            await configureAndGenerate(page, id, start, end);
+            submittedAt = Date.now();
+            deadline = submittedAt + PLP_POLL.retryWaitMs + PLP_POLL.timeoutMs;
+          } catch (error) {
+            console.log(`[PLP] ${id} 重试配置失败：${error.message}`);
+          }
+        }
+        // 重新提交后同样静等 60 秒，避免立刻刷新又读到上一轮的失败状态反复点 Try again
+        console.log(`[PLP] ${id} 重新提交完成，静等 ${Math.round(PLP_POLL.retryWaitMs / 1000)} 秒后再查`);
+        await sleep(PLP_POLL.retryWaitMs);
+        lastReloadAt = 0; // 重试后强制重新读一次页面状态
+        continue;
+      }
+      if (!status?.downloadNow) {
+        // 这一轮已经按 30 秒节奏刷过、也轻查过，直接进入下一轮（节奏由 lastReloadAt 控制）
+        console.log(`[PLP] ${id} 第 ${round} 轮未就绪（提交后 ${Math.round((Date.now() - submittedAt) / 1000)} 秒）`);
+        continue;
+      }
+      const t0 = Date.now();
+      const grabbed = await withDownloadLock('all', () => clickDownload(page, {
+        clickExpr: PLP_DOWNLOAD_NOW, match: NAME.plp, inbox,
+        label: `PLP ${id}`, tries: 2, timeoutMs: PLP_POLL.downloadTimeoutMs, gapMs: 5000, expected: 3
+      }));
+      const fresh = grabbed.files;
+      if (!fresh.length) { warnings.push(`campaign ${id} Download now 后未等到文件`); await sleep(PLP_POLL.intervalMs); continue; }
+      const recorded = recordFiles('plp', fresh, { campaignId: id });
+      const kinds = new Set(recorded.map(r => r.kind));
+      if (!plpTypes.every(k => kinds.has(k))) {
+        warnings.push(`campaign ${tag} 只拿到 ${recorded.length} 份：${[...kinds].join(',')}（期望 ${plpTypes.join(',')}）`);
+      }
+      timings[`plpReady_${tag}`] = { ms: Date.now() - submittedAt, ok: true, round };
+      timings[`plpDownload_${tag}`] = { ms: Date.now() - t0, ok: true, files: fresh.length };
+      console.log(`[PLP] ${id} 就绪：提交后 ${Math.round((Date.now() - submittedAt) / 1000)} 秒，第 ${round} 轮，${fresh.length} 份，下载 ${Date.now() - t0}ms`);
+      return recorded;
+    }
+    throw new Error(`等待 Download now 超时（${Math.round(PLP_POLL.timeoutMs / 1000)} 秒）`);
+  } finally {
+    if (!keepWindows) await page.close().catch(() => {});
+  }
+}
+
+// ---------- 主流程 ----------
+console.log(`=== 运行 ${stamp} | 目标日 ${date} | 累计区间 ${rangeStart} ~ ${rangeEnd} ===`);
+console.log(`任务：${[...only].join(',')}${latest ? '（报表中心用最新已完成请求）' : ''}`);
+const bridge = await ensureBridge().catch(error => ({ error: error.message }));
+if (bridge.error) throw new Error(bridge.error);
+if (bridge.started) console.log('[桥] 已自动拉起常驻连接（守护进程会一直保持它在线）');
+// 再确认一次桥到浏览器的连接真的可用（桥在但浏览器被关是最常见的失败源）
+const pre = await probe();
+if (!pre.ok) throw new Error(`浏览器连接不可用：${pre.reason}｜在控制台点右上角「去开开关」把开关拨开一次即可`);
+console.log('[预检] 浏览器连接正常');
+await setDownloadDir(inbox);
+startWatchdog();
+
+// 页面按需打开、用完关掉；任务数可以远大于 MAX_TABS，多出来的在队列里等槽位
+const plan = [];
+const batchMode = batchDates.length > 0 && (only.has('traffic') || only.has('trafficDaily'));
+if (batchMode) plan.push({ key: 'trafficBatch', url: trafficUrl(batchDates[0], batchDates[0]) });
+else if (runDaily) plan.push({ key: 'trafficDaily', url: trafficUrl(date, date) });
+if (runRange) plan.push({ key: 'trafficRange', url: trafficUrl(rangeStart, rangeEnd) });
+if (runPlg) plan.push({ key: 'rc_plg', url: REPORTS_URL });
+if (runActive) plan.push({ key: 'rc_active', url: REPORTS_URL });
+if (runOrders) plan.push({ key: 'rc_orders', url: REPORTS_URL });
+if (runPriority) plan.push({ key: 'rc_priority', url: REPORTS_URL });
+if (runPlp) for (const t of plpTasks) plan.push({ key: `plp_${t.id}`, url: CAMPAIGN_URL(t.id) });
+
+for (const { key, url } of plan) planUrl.set(key, url);
+await trimOldTabs().catch(e => console.log(`[标签页] 历史页收敛失败（不阻断下载）：${e.message}`));
+console.log(`页面计划：${plan.map(p => p.key).join(' / ')}（同屏最多 ${MAX_TABS} 个标签页，按需打开）`);
+// 登录态在每个标签页首次打开时校验（见 newPage），不预先全开
+
+// 报表中心是账号级请求队列：4 类同时提交会互相看到对方新完成的请求，
+// 而 PLG 的行名 Advertising 又是优先促刊 Advertising Listing/Keyword/... 的前缀，
+// 并发时 fresh.find 极易把别人的文件认领下来（静默下错数据）。统一串行提交，
+// knownRefs 快照天然隔离；Traffic 与 PLP 仍并行，不牺牲整体吞吐。
+let rcChain = Promise.resolve();
+let rcQueued = 0;
+let rcDone = 0;
+function queueReportCenter(kind, priorityDef) {
+  rcQueued++;
+  const result = rcChain.then(
+    () => runReportCenter(kind, priorityDef),
+    () => runReportCenter(kind, priorityDef)
+  ).finally(() => {
+    rcDone++;
+    console.log(`[队列] 报表中心 ${rcDone}/${rcQueued} 完成${rcDone < rcQueued ? `，还有 ${rcQueued - rcDone} 个排队` : ''}`);
+  });
+  rcChain = result.then(() => {}, () => {});
+  return result;
+}
+
+const jobs = [];
+if (batchMode) jobs.push(['trafficBatch', () => runTrafficBatch(batchDates)]);
+else if (runDaily) jobs.push(['trafficDaily', () => runTraffic('trafficDaily', date, date)]);
+if (runRange) jobs.push(['trafficRange', () => runTraffic('trafficRange', rangeStart, rangeEnd)]);
+if (runPlg) jobs.push(['reportCenter_plg', () => queueReportCenter('plg')]);
+if (runActive) jobs.push(['reportCenter_active', () => queueReportCenter('active')]);
+if (runOrders) jobs.push(['reportCenter_orders', () => queueReportCenter('orders')]);
+// 优先促销刊登：每种报表类型一个任务，全部进串行队列，任务数不受标签页上限约束
+if (runPriority) {
+  for (const pd of priorityTypeDefs) {
+    jobs.push([`reportCenter_priority_${pd.key}`, () => queueReportCenter('priority', pd)]);
+  }
+}
+// PLP 三个 campaign 默认并发提交（2.5 秒间隔）：实测并发整轮 186 秒，串行要 318 秒，
+// 且 eBay 生成速度本身随请求次数变慢，串行并不能提升成功率；真正兜底的是 Try again + 任务级重试。
+// 需要排查时可加 --plp-serial 强制逐个跑。
+if (runPlp) {
+  if (flag('plp-serial')) {
+    jobs.push(['plp_serial', async () => {
+      const all = [];
+      for (const t of plpTasks) {
+        const out = await runTask(`plp_${t.key}`, () => runPlpCampaign(t));
+        if (out) all.push(...out);
+      }
+      return all;
+    }]);
+  } else if (plpRanges.length > 1) {
+    // 多天补齐：按天分组——同一天的 3 个 campaign 并行，跨天串行。
+    // 实测 2026-11-08：6 个标签同时等 Download now 会互相抢文件（一个任务点击后
+    // 文件被别的任务认领，另一个任务等 60 秒拿不到），所以天与天之间必须排队。
+    for (const r of plpRanges) {
+      const group = plpTasks.filter(t => t.start === r.start);
+      jobs.push([`plp_day_${r.start}`, async () => {
+        const outs = await Promise.all(group.map(t => runTask(t.key, () => runPlpCampaign(t))));
+        return outs.flat().filter(Boolean);
+      }]);
+    }
+  } else {
+    for (const t of plpTasks) jobs.push([t.key, () => runPlpCampaign(t)]);
+  }
+}
+
+console.log(`任务队列：共 ${jobs.length} 个下载任务，单次最多并行 ${MAX_TABS} 个标签页，其余排队（报表中心内部再串行提交，不会认错文件）`);
+try {
+  await Promise.all(jobs.map(([name, job]) => runTask(name, job)));
+} finally {
+  stopWatchdog();
+  drainTabQueue('本轮结束');
+  if (!keepWindows) {
+    // 本轮开的页面全部关掉，最后保证浏览器里至少还有一个标签页（空白页即可）。
+    // 全关会收回远程调试授权；但也不能每轮都留一个 eBay 页，否则跑多了又攒一堆。
+    await Promise.all(openPages.filter(p => !p.closed).map(page => page.close().catch(() => {})));
+    await ensureOneTab();
+    await sleep(600);
+  } else {
+    await ensureOneTab().catch(() => {});
+  }
+  await setDownloadDir(DEFAULT_DOWNLOAD_DIR).catch(() => {});
+}
+
+const totalMs = Date.now() - startedAt;
+const summary = {
+  runId: stamp, runDir, date, rangeStart, rangeEnd, latest, only: [...only],
+  plpStart, plpEnd, plpTypes, plgUnit, plgRange: plgRange || null, campaigns,
+  plgCustomStart: plgCustomStart || null, plgCustomEnd: plgCustomEnd || null,
+  plgCampaigns: plgCampaignIds.length ? plgCampaignIds : 'all',
+  activeType,
+  orderType: orderTypeDef.key, orderRange, orderCustomStart: orderCustomStart || null, orderCustomEnd: orderCustomEnd || null,
+  priorityTypes: priorityTypeKeys, priorityUnit, priorityRange: priorityRange || null,
+  priorityCustomStart: priorityCustomStart || null, priorityCustomEnd: priorityCustomEnd || null,
+  priorityCampaigns: priorityCampaignIds.length ? priorityCampaignIds : 'all',
+  startedAt: new Date(startedAt).toISOString(), totalMs,
+  timings, warnings, errors,
+  files: results,
+  counts: {
+    total: results.length,
+    valid: results.filter(r => r.valid).length,
+    invalid: results.filter(r => !r.valid).length,
+    byKind: results.reduce((acc, r) => { acc[r.kind] = (acc[r.kind] || 0) + 1; return acc; }, {})
+  }
+};
+if (shouldApply) {
+  const applied = applyFiles(results);
+  summary.apply = applied;
+  console.log(`[归档] 写入 90-待处理 ${applied.applied.length} 份，跳过重复 ${applied.skipped.length} 份`);
+}
+if (shouldPublish) {
+  const published = publishDashboard();
+  summary.publish = published;
+  console.log(`[发布] ${published.ok ? '成功' : '失败'}：${(published.stderr || published.stdout || '').slice(-500)}`);
+}
+summary.dataDirState = dataDirState();
+
+// 收尾清理：已成功按类型归档的文件，把 _inbox 里的同名副本删掉，
+// 打开结果目录只剩 7 个分类文件夹，不用在一堆重复文件里找。
+// Chrome 偶尔在本进程删完之后才真正写完文件，所以重试几轮，别只删一次。
+const classified = new Set(results.filter(item => item.path && !item.problem).map(item => item.name));
+let cleaned = 0;
+for (let attempt = 0; attempt < 3 && classified.size; attempt++) {
+  const left = readdirSync(inbox).filter(name => classified.has(name));
+  if (!left.length) break;
+  for (const name of left) {
+    try { unlinkSync(join(inbox, name)); cleaned++; } catch { /* 下一轮再试 */ }
+  }
+  if (attempt < 2) await sleep(800);
+}
+summary.inboxCleaned = cleaned;
+writeFileSync(join(runDir, '结果.json'), JSON.stringify(summary, null, 2), 'utf8');
+
+
+if (fatalReason()) console.log(`\n[熔断] ${fatalReason()}`);
+console.log('\n=== 耗时（毫秒 / 秒） ===');
+for (const [key, value] of Object.entries(timings)) {
+  if (!value || typeof value.ms !== 'number') continue;
+  const detail = typeof value.downloadWaitMs === 'number' ? `  落盘等待 ${value.downloadWaitMs}ms` : '';
+  console.log(`${key.padEnd(30)} ${String(value.ms).padStart(7)}ms  ${(value.ms / 1000).toFixed(1)}s  ${value.ok ? 'OK' : 'FAIL'}${detail}`);
+}
+console.log(`\n总计 ${(totalMs / 1000).toFixed(1)} 秒 | 文件 ${summary.counts.total} 份（有效 ${summary.counts.valid}）| 警告 ${warnings.length} | 错误 ${errors.length}`);
+console.log(`结果目录：${runDir}`);
+if (warnings.length) console.log('警告：' + JSON.stringify(warnings));
+if (errors.length) console.log('错误：' + JSON.stringify(errors));

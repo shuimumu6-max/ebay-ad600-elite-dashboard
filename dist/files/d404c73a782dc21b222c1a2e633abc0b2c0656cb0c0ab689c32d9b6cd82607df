@@ -1,0 +1,110 @@
+// 稳定性层：失败自愈 + 重试 + 下载落盘确认。
+// 原则：能自动重试的绝不报错退出；每份报表都按内部日期/字段复核，不合格就重下。
+import { readdirSync, statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { sleep, waitForNewFiles, events, checkFatal } from './cdp.mjs';
+
+// eBay 风控拦截页：标题是 Pardon Our Interruption，或跳到 splashui/challenge
+const BLOCKED = `(() => {
+  const t = (document.title || '') + ' ' + location.href;
+  return /splashui\\/challenge|Pardon Our Interruption/i.test(t);
+})()`;
+
+export async function isBlocked(page) {
+  try { return await page.eval(BLOCKED); } catch { return false; }
+}
+
+// 拦截页/白屏时刷新等它恢复；返回最终是否可用
+export async function recoverIfBlocked(page, { tries = 3, waitMs = 6000 } = {}) {
+  for (let i = 1; i <= tries; i++) {
+    if (!(await isBlocked(page))) return true;
+    console.log(`[自愈] 遇到 eBay 拦截页，第 ${i}/${tries} 次刷新等待`);
+    await page.eval('(() => { location.reload(); return true; })()').catch(() => {});
+    await sleep(waitMs);
+  }
+  return !(await isBlocked(page));
+}
+
+// 未登录/掉登录时直接给出明确提示，避免后续每一步都莫名超时
+const SIGNED_OUT = `(() => /signin\\.ebay|signin\\.?qa|\\/ws\\/eBayISAPI/i.test(location.href))()`;
+
+export async function assertLoggedIn(page) {
+  try {
+    if (await page.eval(SIGNED_OUT)) throw new Error('Chrome 里的 eBay 登录态已失效，请先在浏览器登录后重跑');
+  } catch (error) {
+    if (/登录态已失效/.test(error.message)) throw error;
+  }
+}
+
+// 通用重试：失败按退避重来，全部失败才抛出（附带每次原因）
+export async function retry(label, fn, { tries = 3, delayMs = 3000, backoff = 1.7 } = {}) {
+  const fails = [];
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    checkFatal(); // Chrome 连接已断：立刻短路，不再白白重试
+    try {
+      const out = await fn(attempt);
+      if (attempt > 1) console.log(`[重试] ${label} 第 ${attempt} 次成功`);
+      return out;
+    } catch (error) {
+      fails.push(error.message);
+      console.log(`[重试] ${label} 第 ${attempt}/${tries} 次失败：${error.message}`);
+      if (attempt < tries) await sleep(Math.round(delayMs * Math.pow(backoff, attempt - 1)));
+      checkFatal();
+    }
+  }
+  throw new Error(`${label} 连续 ${tries} 次失败：${fails.join(' | ')}`);
+}
+
+// 点击下载并确认文件真的落盘。
+// 不依赖浏览器下载事件，只看目录：点一次 → 等文件 → 没有就补点（eBay 偶发 406 不返回文件）
+export async function clickDownload(page, {
+  clickExpr, match, inbox, label, tries = 3, timeoutMs = 22000, gapMs = 4000, expected = 1
+} = {}) {
+  const picked = [];
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const before = new Set(readdirSync(inbox));
+    const clicked = await page.eval(clickExpr).catch(error => ({ ok: false, error: error.message }));
+    if (!clicked || !clicked.ok) {
+      console.log(`[点击] ${label} 第 ${attempt} 次没找到按钮（${clicked?.error || '元素不可见'}）`);
+      await sleep(gapMs);
+      continue;
+    }
+    const fresh = await waitForNewFiles(inbox, before, {
+      expected, timeoutMs, pollMs: 250, match
+    });
+    if (fresh.length) {
+      // 同批多文件时给剩余文件 1.2 秒补齐
+      if (expected > 1) {
+        await sleep(1200);
+        const more = readdirSync(inbox).filter(name => !before.has(name) && !/\.crdownload$/i.test(name) && (!match || match.test(name)));
+        return { files: [...new Set([...fresh, ...more])], attempt };
+      }
+      return { files: fresh, attempt };
+    }
+    picked.push(attempt);
+    console.log(`[点击] ${label} 第 ${attempt}/${tries} 次点击后 ${Math.round(timeoutMs / 1000)} 秒内没有文件，补点`);
+    await sleep(gapMs);
+  }
+  return { files: [], attempt: tries };
+}
+
+// 文件是否已完整落盘（排除 0 字节 / 下载中）
+export function fileReady(path) {
+  try {
+    const size = statSync(path).size;
+    if (size > 0) return size;
+  } catch { /* 不存在 */ }
+  return 0;
+}
+
+// 丢掉不合格文件，避免下一次重试命中旧文件
+export function discard(dir, names) {
+  for (const name of names) {
+    try { unlinkSync(join(dir, name)); } catch { /* 忽略 */ }
+  }
+}
+
+// 最近一次下载事件（用于日志判断是否被浏览器拦截）
+export async function lastDownload() {
+  try { return (await events()).at(-1) || null; } catch { return null; }
+}

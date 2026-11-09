@@ -1,0 +1,73 @@
+// 对「已经下载完」的运行目录补做归档 + 更新看板（不需要重新下载）
+// 用法：
+//   node archive-publish.mjs                 # 默认最近一次运行
+//   node archive-publish.mjs --run <运行目录>  # 指定运行目录（含 结果.json）
+//   node archive-publish.mjs --run <目录> --no-publish   # 只归档，不推看板
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { applyFiles, publishDashboard, dataDirState } from './publish.mjs';
+import { RUNS_DIR } from './config.mjs';
+
+const argv = process.argv.slice(2);
+const value = (name, fallback = '') => {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
+};
+const flag = name => argv.includes(`--${name}`);
+
+function latestRunDir() {
+  if (!existsSync(RUNS_DIR)) return '';
+  const dirs = readdirSync(RUNS_DIR, { withFileTypes: true })
+    .filter(d => d.isDirectory() && existsSync(join(RUNS_DIR, d.name, '结果.json')))
+    .map(d => d.name)
+    .sort()
+    .reverse();
+  return dirs.length ? join(RUNS_DIR, dirs[0]) : '';
+}
+
+const runDir = (value('run') || latestRunDir()).replace(/[\\/]+$/, '');
+if (!runDir || !existsSync(runDir)) {
+  console.error(`[归档] 没找到运行目录：${runDir || '(空)'}`);
+  process.exit(1);
+}
+const summaryPath = join(runDir, '结果.json');
+if (!existsSync(summaryPath)) {
+  console.error(`[归档] 目录里没有 结果.json，无法判断哪些文件可用：${runDir}`);
+  process.exit(1);
+}
+
+console.log(`[归档] 运行目录：${runDir}`);
+const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
+const files = (summary.files || []).filter(item => item && item.path && item.valid !== false && !item.problem);
+const ready = files.filter(item => existsSync(item.path));
+const missing = files.length - ready.length;
+console.log(`[归档] 结果清单 ${files.length} 份可用文件${missing ? `，其中 ${missing} 份原文件已被移走/删除` : ''}`);
+
+if (!ready.length) {
+  console.error('[归档] 没有可归档的文件（原文件不在了，只能重新下载）');
+  process.exit(1);
+}
+
+const applied = applyFiles(ready);
+console.log(`[归档] 写入 90-待处理 ${applied.applied.length} 份，跳过重复 ${applied.skipped.length} 份`);
+for (const item of applied.skipped) console.log(`       跳过：${item.name}（${item.reason}）`);
+for (const item of applied.applied) console.log(`       归档：${item.name}`);
+
+// 回写结果.json，控制台的运行清单就能显示「已归档」，不会重复提示
+try {
+  summary.apply = applied;
+  summary.archivedAt = new Date().toISOString();
+  writeFileSync(summaryPath, JSON.stringify(summary, null, 2), 'utf8');
+} catch { /* 写不进去不影响归档本身 */ }
+
+if (flag('no-publish')) {
+  console.log(`[发布] 已按 --no-publish 跳过，正式目录：${JSON.stringify(dataDirState())}`);
+  process.exit(0);
+}
+
+console.log('[发布] 重新生成看板数据并推送 GitHub Pages…');
+const result = publishDashboard();
+if (result.stdout) console.log(result.stdout);
+if (result.stderr) console.error(result.stderr);
+console.log(result.ok ? '[发布] 完成' : `[发布] 失败（退出码 ${result.code}）`);
+process.exitCode = result.ok ? 0 : 1;

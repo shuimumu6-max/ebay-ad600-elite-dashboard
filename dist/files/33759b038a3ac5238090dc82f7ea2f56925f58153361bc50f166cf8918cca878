@@ -1,0 +1,112 @@
+// 「一键补齐」排队计划的离线自检：不连浏览器、不下载，只验证拆天/顺序/间隔/归档步骤
+// 用法：node app/check-gap-plan.mjs
+import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, GAP_DEFAULT_SEC } from '../ui/gap-plan.mjs';
+
+const OUT = 'C:/Users/XPTTOP20/Desktop/测试下载';
+const IDS = ['165542388019', '165349120019', '165210337019'];
+let fail = 0;
+const ok = (name, cond, extra = '') => {
+  if (cond) console.log(`  PASS  ${name}`);
+  else { fail++; console.log(`  FAIL  ${name}${extra ? '  ← ' + extra : ''}`); }
+};
+
+console.log('— 间隔取值 —');
+ok('默认 90 秒', clampGapSec(undefined) === GAP_DEFAULT_SEC && GAP_DEFAULT_SEC === 90);
+ok('低于 60 抬到 60', clampGapSec(5) === 60);
+ok('高于 120 压到 120', clampGapSec(999) === 120);
+ok('非法值回落 90', clampGapSec('abc') === 90);
+
+console.log('— 只有流量缺口（3 天）—');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-05', '2026-11-06', '2026-11-07'],
+    plgDays: [], plpDays: [], plgPreset: '', outDir: OUT, campaigns: IDS, gapSec: 90
+  });
+  ok('一天一步，共 3 步', steps.length === 3, `实际 ${steps.length}`);
+  ok('按日期升序', steps.map(s => s.day).join(',') === '2026-11-05,2026-11-06,2026-11-07');
+  ok('每步只带自己的那一天', steps.every(s => {
+    const i = s.args.indexOf('--dates');
+    return i >= 0 && s.args[i + 1] === s.day;
+  }));
+  ok('每步之间 90 秒', steps.every(s => s.gapMs === 90000));
+  ok('不误带 PLP/PLG', steps.every(s => s.args.includes('--only') && !s.args.includes('plp') && !s.args.includes('--plg-range')));
+}
+
+console.log('— 流量 + PLP 同日合并（2 天）—');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-06', '2026-11-07'],
+    plgDays: [], plpDays: ['2026-11-07', '2026-11-06'], plgPreset: '', outDir: OUT, campaigns: IDS, gapSec: 60
+  });
+  ok('同一天合并成一步，共 2 步', steps.length === 2, `实际 ${steps.length}`);
+  ok('每天同时下流量和 PLP', steps.every(s => {
+    const i = s.args.indexOf('--only');
+    return s.args[i + 1] === 'trafficDaily,plp';
+  }));
+  ok('PLP 一天一份（--plp-days 与当天一致）', steps.every(s => {
+    const i = s.args.indexOf('--plp-days');
+    return i >= 0 && s.args[i + 1] === s.day;
+  }));
+  ok('三类报表都选上', steps.every(s => {
+    const i = s.args.indexOf('--plp-types');
+    return i >= 0 && s.args[i + 1] === 'listing,keyword,search';
+  }));
+  ok('间隔 60 秒', steps.every(s => s.gapMs === 60000));
+}
+
+console.log('— 只缺 PLP 的某天（不与流量重叠）—');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-05'], plgDays: [], plpDays: ['2026-11-07'], plgPreset: '', outDir: OUT, campaigns: IDS, gapSec: 90
+  });
+  ok('两天拆成两步', steps.length === 2, `实际 ${steps.length}`);
+  const plpStep = steps.find(s => s.day === '2026-11-07');
+  ok('纯 PLP 那天只跑 plp', plpStep && plpStep.args[plpStep.args.indexOf('--only') + 1] === 'plp');
+  ok('纯 PLP 那天不带 --dates', plpStep && !plpStep.args.includes('--dates'));
+}
+
+console.log('— PLG 走预设，只跑一次 —');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-07'], plgDays: ['2026-11-06', '2026-11-07'], plpDays: ['2026-11-07'],
+    plgPreset: 'CURRENTWEEK', outDir: OUT, campaigns: IDS, gapSec: 90
+  });
+  ok('1 天合并步 + 1 步 PLG = 2 步', steps.length === 2, `实际 ${steps.length}`);
+  const plg = steps[1];
+  ok('PLG 是最后一步且只跑一次', plg.kinds.join() === 'plg' && plg.args[plg.args.indexOf('--plg-range') + 1] === 'CURRENTWEEK');
+  ok('PLG 用 DAILY 粒度', plg.args[plg.args.indexOf('--plg-unit') + 1] === 'DAILY');
+}
+
+console.log('— 没有缺口 —');
+{
+  const { steps } = planGapFill({ trafficDays: [], plgDays: [], plpDays: [], plgPreset: '', outDir: OUT, campaigns: IDS });
+  ok('不产生任何步骤', steps.length === 0);
+}
+
+console.log('— 跑完补归档 + 推看板 —');
+{
+  const dirs = ['C:/x/测试下载/2026-11-08_10-00-00', 'C:/x/测试下载/2026-11-08_10-05-00'];
+  const tail = tailSteps(dirs);
+  ok('每个运行目录一步归档 + 最后推看板', tail.length === 3, `实际 ${tail.length}`);
+  ok('归档不推看板（--no-publish）', tail.slice(0, 2).every(s => s.args.includes('--no-publish')));
+  ok('归档步骤零等待', tail.every(s => s.gapMs === 0));
+  ok('最后一件事是 publish-only', tail[2].args[0] === 'publish-only.mjs' && tail[2].mode === 'publish');
+  ok('下载失败（无目录）时也推一次看板', tailSteps([]).length === 1);
+}
+
+console.log('— 步间等待：下载之间等、归档不等 —');
+{
+  const day1 = { day: '2026-11-06', gapMs: 90000 };
+  const day2 = { day: '2026-11-07', gapMs: 90000 };
+  const arch = { day: '归档 1/2', gapMs: 0 };
+  const pub = { day: '更新看板', gapMs: 0 };
+  ok('天下载 → 天下载：等 90 秒', waitBeforeStep(day1, day2, 90000) === 90000);
+  ok('天下载 → 归档：不等', waitBeforeStep(day2, arch, 90000) === 0);
+  ok('归档 → 归档：不等', waitBeforeStep(arch, arch, 90000) === 0);
+  ok('归档 → 推看板：不等', waitBeforeStep(arch, pub, 90000) === 0);
+  ok('没有下一步：不等', waitBeforeStep(pub, undefined, 90000) === 0);
+  ok('当前步没写间隔时用兜底值', waitBeforeStep({ day: 'x' }, day2, 60000) === 60000);
+}
+
+console.log(fail ? `\n${fail} 项不通过` : '\n全部通过：拆天、顺序、间隔、归档步骤都符合预期');
+process.exit(fail ? 1 : 0);

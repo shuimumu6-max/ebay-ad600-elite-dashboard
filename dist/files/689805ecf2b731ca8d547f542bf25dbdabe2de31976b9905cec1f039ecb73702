@@ -1,0 +1,122 @@
+// 统一的环境保障：不管用户从控制台、一键下载还是命令行进来，都走同一套逻辑。
+// 目标：桥只起一次、永久常驻；只有「浏览器重启后」才需要用户点一次允许。
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const DAEMON = join(here, 'bridge-daemon.mjs');
+const HEALTH = 'http://127.0.0.1:9233/health';
+const INSPECT_URL = 'chrome://inspect/#remote-debugging';
+
+export const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const CHROME_CANDIDATES = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe') : null
+].filter(Boolean);
+
+export function findChrome() {
+  return CHROME_CANDIDATES.find(path => existsSync(path)) || null;
+}
+
+export async function bridgeHealth() {
+  try {
+    const res = await fetch(HEALTH, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+// 守护进程自己会判断是否已有实例，所以这里可以放心重复调用
+export function startBridgeDaemon() {
+  try {
+    const child = spawn(process.execPath, [DAEMON], {
+      cwd: here, detached: true, stdio: 'ignore', windowsHide: true
+    });
+    child.unref();
+    return true;
+  } catch { return false; }
+}
+
+// 在用户日常用的 Chrome 里打开那个调试开关页面（只会新开一个标签页）
+export function openInspectPage() {
+  const exe = findChrome();
+  if (!exe) return false;
+  try {
+    const child = spawn('cmd.exe', ['/c', 'start', '', exe, INSPECT_URL], {
+      detached: true, stdio: 'ignore', windowsHide: true
+    });
+    child.unref();
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * 确保桥可用。
+ * @param {object} options
+ * @param {(text: string) => void} options.onLog 进度输出
+ * @param {boolean} options.openInspect 需要授权时是否自动打开开关页面
+ * @param {number} options.waitAuthMs 等待用户点允许的时长（0 表示不等，立即返回 needsAuth）
+ */
+export async function ensureEnv({ onLog = () => {}, openInspect = true, waitAuthMs = 0 } = {}) {
+  let state = await bridgeHealth();
+
+  if (state?.connected) {
+    return { ok: true, state, startedDaemon: false, needsAuth: false };
+  }
+
+  const startedDaemon = state ? false : true;
+  if (!state) {
+    onLog('启动常驻桥…');
+    startBridgeDaemon();
+    for (let i = 0; i < 30; i++) {
+      await sleep(500);
+      state = await bridgeHealth();
+      if (state) break;
+    }
+  }
+  if (!state) {
+    return { ok: false, reason: '桥没能启动（可能被安全软件拦截）', needsAuth: false, startedDaemon };
+  }
+  if (state.connected) {
+    return { ok: true, state, startedDaemon, needsAuth: false };
+  }
+
+  // 桥活着但连不上浏览器：说明调试端口没开（浏览器重启过，或开关被关掉）
+  let opened = false;
+  if (openInspect) {
+    opened = openInspectPage();
+    onLog(opened
+      ? '浏览器调试开关没开：已在 Chrome 里打开开关页面，请把「Allow remote debugging」拨到开（只需这一次）'
+      : `浏览器调试开关没开：请手动打开 ${INSPECT_URL} 并拨开开关`);
+  }
+
+  if (waitAuthMs <= 0) {
+    return { ok: false, needsAuth: true, openedInspect: opened, state, startedDaemon };
+  }
+
+  const deadline = Date.now() + waitAuthMs;
+  let lastNote = Date.now();
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    const now = await bridgeHealth();
+    if (now?.connected) {
+      return { ok: true, state: now, startedDaemon, needsAuth: true, openedInspect: opened };
+    }
+    if (Date.now() - lastNote > 20000) {
+      lastNote = Date.now();
+      onLog(`仍在等待开关打开…（剩余 ${Math.ceil((deadline - Date.now()) / 1000)} 秒）`);
+    }
+  }
+  return {
+    ok: false,
+    reason: '等待超时：开关没有打开',
+    needsAuth: true,
+    openedInspect: opened,
+    state: await bridgeHealth(),
+    startedDaemon
+  };
+}

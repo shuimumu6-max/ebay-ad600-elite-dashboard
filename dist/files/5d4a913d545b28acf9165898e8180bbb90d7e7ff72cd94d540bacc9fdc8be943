@@ -1,0 +1,140 @@
+// 选项完整性自检：后台 download.mjs 的每一个参数，控制台都必须能选到。
+// 用法：node app/check-options.mjs
+// 以后往 download.mjs 加 --xxx 参数，先跑这里；缺 UI 控件或候选值不全会直接失败。
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import {
+  RC_RANGES, ORDER_RANGES, ACTIVE_TYPES, ORDER_TYPES, PRIORITY_TYPES,
+  PLG_CAMPAIGNS, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS
+} from './config.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const cli = readFileSync(join(ROOT, 'app/download.mjs'), 'utf8');
+const html = readFileSync(join(ROOT, 'ui/index.html'), 'utf8');
+
+// CLI 参数 → 控制台控件 id；@derived 表示由卡片/分段控件组合派生，@doc 表示纯说明性参数
+// PLP campaign 页通道已从控制台下线（PLP 统一走「优先促销刊登」），底层 CLI 保留供手动回退。
+const CLI_ONLY_PLP = '@doc:PLP campaign 页通道已从控制台下线，仅 CLI 手动回退入口';
+const UI_MAP = {
+  'date': 'trafficDate',
+  'range-start': 'rangeStart',
+  'range-end': 'rangeEnd',
+  'dates': 'batchDates',
+  'only': '@derived:流量模式 + 5 张卡片的开关',
+  'active-type': '@seg:segActive',
+  'order-type': '@chips:orderTypes',
+  'order-range': 'orderRange',
+  'order-custom-start': 'orderCustomStart',
+  'order-custom-end': 'orderCustomEnd',
+  'priority-types': '@chips:priorityTypes',
+  'priority-type': '@doc:兼容别名（单值）；控制台用 --priority-types 多选',
+  'priority-unit': '@seg:segPriorityUnit',
+  'priority-range': 'priorityRange',
+  'priority-custom-start': 'priorityCustomStart',
+  'priority-custom-end': 'priorityCustomEnd',
+  'priority-campaigns': 'priorityCampaigns',
+  'plg-unit': '@seg:segUnit',
+  'plg-range': 'plgRange',
+  'plg-custom-start': 'plgCustomStart',
+  'plg-custom-end': 'plgCustomEnd',
+  'plg-campaigns': '@chips:plgCampaigns',
+  'plp-start': CLI_ONLY_PLP,
+  'plp-end': CLI_ONLY_PLP,
+  'plp-types': CLI_ONLY_PLP,
+  'plp-days': '@derived:看板体检的缺口日（每天一份，起止=同一天）',
+  'campaigns': CLI_ONLY_PLP,
+  'plp-serial': CLI_ONLY_PLP,
+  'max-tabs': 'maxTabs',
+  'out': 'outDir',
+  'keep': 'keepTabs',
+  'latest': '@doc:CLI-only 手动回退参数，界面已下线',
+  'apply': '@seg:segSync',
+  'publish': '@seg:segSync',
+  'help': '@doc:仅打印命令行帮助，不是下载选项'
+};
+
+const params = [...new Set([
+  ...[...cli.matchAll(/value\('([a-z0-9-]+)'/g)].map(m => m[1]),
+  ...[...cli.matchAll(/flag\('([a-z0-9-]+)'/g)].map(m => m[1])
+])].sort();
+
+const problems = [];
+const missingMap = params.filter(p => !UI_MAP[p]);
+if (missingMap.length) problems.push(`CLI 参数没登记 UI 映射：${missingMap.join(', ')}`);
+const staleMap = Object.keys(UI_MAP).filter(p => !params.includes(p));
+if (staleMap.length) problems.push(`UI 映射指向已不存在的 CLI 参数：${staleMap.join(', ')}`);
+
+for (const [param, ref] of Object.entries(UI_MAP)) {
+  if (ref.startsWith('@derived') || ref.startsWith('@doc')) continue;
+  const id = ref.includes(':') ? ref.split(':')[1] : ref;
+  if (!new RegExp(`id="${id}"`).test(html)) problems.push(`--${param} 指向的控件 #${id} 不存在`);
+}
+
+const segVals = id => {
+  const m = new RegExp(`<div class="seg" id="${id}"[\\s\\S]*?</div>\\s*</div>`).exec(html);
+  return m ? [...m[0].matchAll(/data-v="([^"]+)"/g)].map(x => x[1]) : [];
+};
+const selectVals = id => {
+  const m = new RegExp(`<select id="${id}">([\\s\\S]*?)</select>`).exec(html);
+  return m ? [...m[1].matchAll(/<option value="([^"]*)"/g)].map(x => x[1]).filter(Boolean) : [];
+};
+const check = (label, expected, actual, allowEmptyDefault = false) => {
+  const want = [...expected].sort();
+  const got = [...new Set(actual)].sort();
+  const missing = want.filter(x => !got.includes(x));
+  if (missing.length) problems.push(`${label} 缺候选值：${missing.join(', ')}`);
+  return `${label} ${want.length}/${got.length}${allowEmptyDefault ? '（另含默认项）' : ''}`;
+};
+
+// 报表中心的两张卡只提供预设区间：自定义区间在控制台已下线（日常用「本周」）。
+// 底层 --plg-custom-start/end、--priority-custom-start/end 保留供 CLI 手动回退，所以这里按预设集合核对。
+const RC_PRESET = RC_RANGES.filter(r => r.value !== 'CUSTOM').map(r => r.value);
+const lines = [];
+lines.push(check('PLG 日期范围', RC_PRESET, selectVals('plgRange'), true));
+lines.push(check('优先促刊日期范围', RC_PRESET, selectVals('priorityRange'), true));
+lines.push(check('订单日期范围', ORDER_RANGES.map(r => r.value), selectVals('orderRange')));
+lines.push(check('名单类型', Object.keys(ACTIVE_TYPES), segVals('segActive')));
+lines.push(check('流量模式', ['daily', 'range', 'both', 'batch'], segVals('segTraffic')));
+lines.push(check('PLG 时间粒度', ['DAILY', 'SUMMARY'], segVals('segUnit')));
+lines.push(check('优先促刊时间粒度', ['DAILY', 'SUMMARY'], segVals('segPriorityUnit')));
+lines.push(check('同步方式', ['local', 'apply', 'publish'], segVals('segSync')));
+lines.push(check('并行标签页 1–10', Array.from({ length: 10 }, (_, i) => String(i + 1)), selectVals('maxTabs')));
+
+// 动态渲染的四组：HTML 里只是空容器，完整列表来自「服务端常量 → /api/state → 前端渲染」
+const server = readFileSync(join(ROOT, 'ui/server.mjs'), 'utf8');
+const dynamic = [
+  { label: 'PLG 活动', count: PLG_CAMPAIGNS.length,
+    ui: /renderPlgCampaigns\(s\.defaults\.plgCampaignList\)/, api: /plgCampaignList:\s*PLG_CAMPAIGNS/ },
+  { label: '订单类型（单选）', count: ORDER_TYPES.length,
+    ui: /renderSingleChips\('#orderTypes', s\.defaults\.orderTypes/, api: /orderTypes:\s*ORDER_TYPES\.map/ },
+  { label: '优先促刊类型（多选）', count: PRIORITY_TYPES.length,
+    ui: /renderMultiChips\('#priorityTypes', s\.defaults\.priorityTypes/, api: /priorityTypes:\s*PRIORITY_TYPES\.map/ },
+  { label: '优先促刊活动（名称下拉）', count: PRIORITY_CAMPAIGNS.length,
+    ui: /renderPriorityCampaigns\(s\.defaults\.priorityCampaignList,\s*s\.defaults\.priorityDefaultCampaigns\)/,
+    api: /priorityCampaignList:\s*PRIORITY_CAMPAIGNS/ }
+];
+for (const d of dynamic) {
+  if (!d.ui.test(html)) problems.push(`${d.label} 没有前端渲染入口`);
+  if (!d.api.test(server)) problems.push(`${d.label} 的服务端列表不是取自完整常量`);
+  lines.push(`${d.label} ${d.count}/${d.count}（动态渲染，来自注册表/实采快照）`);
+}
+
+// 默认活动集合必须是 31 个活动里的真子集；界面显示名称，不能只有 ID
+const orphanDefaults = PRIORITY_DEFAULT_IDS.filter(id => !PRIORITY_CAMPAIGNS.some(c => c.id === id));
+if (orphanDefaults.length) problems.push(`默认活动不在活动列表里：${orphanDefaults.join(', ')}`);
+const unnamed = PRIORITY_CAMPAIGNS.filter(c => !c.name || c.name === c.id);
+if (unnamed.length) problems.push(`${unnamed.length} 个活动缺名称（界面会退化成显示 ID）`);
+lines.push(`活动默认集合 ${PRIORITY_DEFAULT_IDS.length} 个 · 全部有名称 ${PRIORITY_CAMPAIGNS.length - unnamed.length}/${PRIORITY_CAMPAIGNS.length}`);
+
+console.log(`CLI 参数 ${params.length} 个 | 已登记 UI 映射 ${Object.keys(UI_MAP).length} 个（其中 ${Object.values(UI_MAP).filter(v => v.startsWith('@doc')).length} 个为说明性/CLI 保留）`);
+console.log('— 候选值核对 —');
+lines.forEach(l => console.log('  ' + l));
+console.log(`— 动态渲染：订单 ${ORDER_TYPES.length} 种 / 优先促刊 ${PRIORITY_TYPES.length} 种 / 活动 ${PRIORITY_CAMPAIGNS.length} 个 —`);
+if (problems.length) {
+  console.log('\n选项不完整：');
+  problems.forEach(p => console.log('  ✗ ' + p));
+  process.exitCode = 1;
+} else {
+  console.log('\n全部一致：后台每个下载选项在控制台都能选，候选值无遗漏。');
+}

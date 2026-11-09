@@ -1,0 +1,66 @@
+// 桥守护：保证「本地常驻桥」永远有一个在跑。
+// 用 Node 写而不是 VBS，是因为要区分端口占用 / 正常重启，避免守护和桥互相踢。
+// 由 start-bridge.vbs 以无窗口方式拉起，并放进开机启动项。
+import { spawn } from 'node:child_process';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const logFile = join(here, 'bridge-daemon.log');
+const BRIDGE = join(here, 'cdp-bridge.mjs');
+const HEALTH = 'http://127.0.0.1:9233/health';
+
+const log = text => {
+  const line = `${new Date().toISOString()} [守护] ${text}`;
+  console.log(line);
+  try {
+    if (existsSync(logFile) && statSync(logFile).size > 512 * 1024) return;
+    appendFileSync(logFile, line + '\n');
+  } catch { /* 忽略 */ }
+};
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function healthy() {
+  try {
+    const res = await fetch(HEALTH, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+// 已经有一个健康的桥在跑，本守护直接退出，不要出现两个守护抢同一个端口
+const existing = await healthy();
+if (existing) {
+  log(`已有桥在运行（pid ${existing.pid ?? '未知'}），本守护退出。`);
+  process.exit(0);
+}
+
+log('守护启动，负责让桥一直在线。');
+
+let quickFails = 0;
+for (;;) {
+  const startedAt = Date.now();
+  log('启动桥进程…');
+  const child = spawn(process.execPath, [BRIDGE], { cwd: here, stdio: 'ignore', windowsHide: true });
+  child.on('error', error => log('桥启动失败：' + error.message));
+
+  const code = await new Promise(resolve => child.on('exit', resolve));
+  const livedMs = Date.now() - startedAt;
+
+  if (livedMs < 5000) quickFails += 1; else quickFails = 0;
+
+  if (code === 0) {
+    // 端口被别的实例占用等情况，等久一点再来
+    log(`桥退出（code 0，存活 ${Math.round(livedMs / 1000)}s），60 秒后重新检查。`);
+    await sleep(60000);
+  } else if (quickFails >= 5) {
+    log(`桥连续 ${quickFails} 次快速退出，等待 120 秒后重试（避免空转）。`);
+    await sleep(120000);
+    quickFails = 0;
+  } else {
+    log(`桥异常退出（code ${code}，存活 ${Math.round(livedMs / 1000)}s），3 秒后重启。`);
+    await sleep(3000);
+  }
+}

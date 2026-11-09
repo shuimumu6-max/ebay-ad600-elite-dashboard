@@ -1,0 +1,180 @@
+// CSV 内容校验：一律以文件内部日期/表头为准，不信任下载文件名。
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+
+export function parseLine(line) {
+  const out = []; let cur = ''; let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (c === ',' && !inQ) { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur); return out;
+}
+
+export function parseDate(value) {
+  const text = String(value || '').trim().replace(/^"|"$/g, '');
+  let m = /^([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})$/.exec(text);
+  if (m) {
+    const month = MONTHS[m[1].slice(0, 3).toLowerCase()];
+    if (month) return `${m[3]}-${String(month).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  }
+  m = /^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/.exec(text);
+  if (m) {
+    const month = MONTHS[m[2].toLowerCase()];
+    if (month) return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${String(month).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  }
+  m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+  if (m) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  return null;
+}
+
+export function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+const REQUIRED = {
+  traffic: ['Listing title', 'eBay item ID', 'Total impressions', 'Quantity sold', 'Total page views'],
+  listing: ['Start date', 'End date', 'Campaign name', 'Campaign ID', 'Item ID', 'Title'],
+  keyword: ['Start date', 'End date', 'Campaign name', 'Campaign ID', 'Seller Keyword', 'Keyword Match Type'],
+  search: ['Start date', 'End date', 'Campaign name', 'Campaign ID', 'Search Query', 'Seller Keyword'],
+  plg: ['Campaign name', 'Date', 'Item ID', 'Title', 'Impressions'],
+  // 三种名单（在售/非在售/预定）列不完全一致，只要求两个共同字段
+  active: ['Item number', 'Title'],
+  // 优先促销刊登：四种级别的表头差异已实测，按各自骨架校验
+  priorityKeyword: ['Campaign name', 'Ad Group Id', 'Date', 'Seller Keyword', 'Impressions', 'Clicks'],
+  priorityListing: ['Campaign name', 'Ad Group Id', 'Date', 'Item ID', 'Title', 'Impressions'],
+  priorityCampaign: ['Campaign name', 'Date', 'Daily budget', 'Impressions', 'Clicks'],
+  prioritySearch: ['Campaign name', 'Ad Group Id', 'Date', 'Search Query', 'Impressions'],
+  // 订单 / 优先促刊的表头没有公开文档，先不强制字段，靠任务类型兜底识别
+  orders: [],
+  priority: [],
+  // 0 条记录的报表：eBay 会返回「只有逗号的一行表头 + 0,」，没有任何列名，属于合法空结果
+  empty: []
+};
+
+const HINT_LABEL = { orders: '订单报表', priority: '优先促销刊登' };
+
+export function inspectCsv(path, hint = null) {
+  const text = readFileSync(path, { encoding: 'utf8' });
+  const lines = text.split(/\r?\n/);
+  const clean = line => line.replace(/^\uFEFF/, '').trim();
+  const isHtml = /^\s*(<!doctype|<html|<head)/i.test(text) || /access denied|error page/i.test(text.slice(0, 3000));
+  const periodMatch = /Report for ([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}) to ([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4})/.exec(text.slice(0, 4000));
+  const idx = regex => lines.findIndex(line => regex.test(clean(line)));
+
+  let kind = 'unknown', label = '未识别', headerIndex = -1;
+  if (periodMatch) {
+    headerIndex = idx(/^Listing title/i); kind = 'traffic'; label = 'Traffic 链接流量';
+  } else if (idx(/^Start date,End date/) >= 0) {
+    headerIndex = idx(/^Start date,End date/);
+    const h = lines[headerIndex];
+    kind = /Search Query/i.test(h) ? 'search' : /Seller Keyword/i.test(h) ? 'keyword' : 'listing';
+    label = kind === 'search' ? 'PLP 搜索词' : kind === 'keyword' ? 'PLP 关键词' : 'PLP 链接广告';
+  } else if (idx(/^"?(Campaign name)/) >= 0) {
+    headerIndex = idx(/^"?(Campaign name)/);
+    const h = lines[headerIndex];
+    // 广告报表分两族：PLG（链接级，无 Ad Group）与优先促销刊登（活动级/广告组级，带 Targeting strategy）
+    // 前者文件名 general-listing，后者 priority-*；表头差异就是 Ad Group / Daily budget
+    if (/Ad Group Id/i.test(h) && /Search Query/i.test(h)) { kind = 'prioritySearch'; label = '优先促刊 搜索查询'; }
+    else if (/Ad Group Id/i.test(h) && /Seller Keyword/i.test(h)) { kind = 'priorityKeyword'; label = '优先促刊 关键词'; }
+    else if (/Ad Group Id/i.test(h)) { kind = 'priorityListing'; label = '优先促刊 物品刊登'; }
+    else if (/Daily budget/i.test(h)) { kind = 'priorityCampaign'; label = '优先促刊 活动'; }
+    else { kind = 'plg'; label = 'PLG 链接广告'; }
+  } else if (idx(/^Item number/) >= 0) {
+    headerIndex = idx(/^Item number/); kind = 'active'; label = '在售商品名单';
+  }
+
+  // 空报表：某月某状态下确实没有记录时，eBay 返回的表头是一整行逗号，没有任何列名
+  // 只有很小的文件才可能是空报表：正常订单 CSV 里也有一整行 "" 空值，不能误判
+  if (kind === 'unknown' && !isHtml && text.length < 500) {
+    const blankHeader = lines.findIndex(line => line.trim() !== '' && /^[\s,"]*$/.test(line));
+    if (blankHeader >= 0) { kind = 'empty'; label = '空报表（0 条记录）'; headerIndex = blankHeader; }
+  }
+
+  // 订单 / 优先促刊没有稳定表头特征：按任务类型兜底，取第一条像表头的行
+  if (kind === 'unknown' && hint && HINT_LABEL[hint] && !isHtml) {
+    // 订单/广告文件头上有说明句和整行空值，要定位真正那一行表头，否则行数会算错
+    const marker = hint === 'orders' ? /Sales Record Number/i : /Campaign name/i;
+    let hi = lines.findIndex(line => marker.test(clean(line)));
+    if (hi < 0) hi = lines.findIndex(line => {
+      const l = clean(line);
+      return l && l.includes(',') && !/^\d{4}-\d{2}-\d{2}/.test(l);
+    });
+    if (hi >= 0) { kind = hint; label = HINT_LABEL[hint]; headerIndex = hi; }
+  }
+
+  const header = headerIndex >= 0 ? lines[headerIndex] : '';
+  const missingHeader = (REQUIRED[kind] || []).filter(field => !header.includes(field));
+  // eBay 有些报表会在表头下塞一整行空值，别把它当成数据行
+  const rows = headerIndex >= 0 && kind !== 'empty'
+    ? lines.slice(headerIndex + 1)
+        .filter(line => line.trim())
+        .map(parseLine)
+        .filter(cells => cells.some(c => String(c).trim() !== ''))
+    : [];
+  const cols = header ? parseLine(header).map(c => c.trim()) : [];
+
+  const dates = new Set();
+  let campaign = null;
+  if (periodMatch) {
+    dates.add(parseDate(periodMatch[1])); dates.add(parseDate(periodMatch[2]));
+  } else if (['listing', 'keyword', 'search'].includes(kind) || kind === 'plg' || kind.startsWith('priority')) {
+    const startIdx = cols.findIndex(c => c === 'Start date');
+    const endIdx = cols.findIndex(c => c === 'End date');
+    const dateIdx = cols.findIndex(c => c === 'Date');
+    const campaignIdx = cols.findIndex(c => c === 'Campaign name');
+    if (campaignIdx >= 0 && rows[0]?.[campaignIdx]) campaign = String(rows[0][campaignIdx]).trim();
+    rows.forEach(row => {
+      if (startIdx >= 0) { const d = parseDate(row[startIdx]); if (d) dates.add(d); }
+      if (endIdx >= 0) { const d = parseDate(row[endIdx]); if (d) dates.add(d); }
+      if (dateIdx >= 0) { const d = parseDate(row[dateIdx]); if (d) dates.add(d); }
+    });
+  }
+  const sorted = [...dates].filter(Boolean).sort();
+  const itemIds = new Set([...text.matchAll(/"?=?(\d{9,})"?/g)].map(m => m[1]));
+  const period = periodMatch
+    ? `${parseDate(periodMatch[1])} ~ ${parseDate(periodMatch[2])}`
+    : (kind === 'active' ? '快照（无统计区间）' : null);
+
+  return {
+    kind, label, isHtml, headerFound: headerIndex >= 0, header: header.slice(0, 260),
+    headerTemplate: header.replace(/^\uFEFF/, '').trim(),
+    missingHeader, rowCount: rows.length, itemCount: itemIds.size, campaign,
+    period, coverage: sorted.length ? `${sorted[0]} ~ ${sorted.at(-1)}` : (kind === 'active' ? '快照' : '未识别'),
+    dates: sorted, size: statSync(path).size,
+    // 结构合格就算有效：某些状态下 eBay 确实会返回 0 行（如没有预定刊登 / 没有未付款订单）
+    empty: rows.length === 0,
+    valid: !isHtml && headerIndex >= 0 && missingHeader.length === 0
+  };
+}
+
+// 按脚本任务口径复核日期；不合格的返回原因
+export function checkExpected(info, task, date, rangeStart, plpStart = date, opts = {}) {
+  if (!info.valid) return `结构不合格：${info.isHtml ? 'HTML/错误页' : ''} 缺字段 ${info.missingHeader.join(',') || '无'}，行数 ${info.rowCount}`;
+  const dates = info.dates || [];
+  if (task === 'trafficDaily' && info.period !== `${date} ~ ${date}`) return `区间不是单日 ${date}：${info.period}`;
+  if (task === 'trafficRange' && info.period !== `${rangeStart} ~ ${date}`) return `累计区间不符：${info.period}，期望 ${rangeStart} ~ ${date}`;
+  if (task === 'plp') {
+    if (!dates.length) return 'PLP 报表未识别到统计日期';
+    const out = dates.filter(d => d < plpStart || d > date);
+    if (out.length) return `PLP 日期超出 ${plpStart} ~ ${date}：${info.coverage}`;
+  }
+  if (task === 'plg') {
+    if (!dates.length) return 'PLG 报表未识别到统计日期';
+    // 只有自定义区间才有明确边界；本周/本月等范围由 eBay 决定，不按目标日强判
+    const { plgRange, plgCustomStart, plgCustomEnd } = opts;
+    if (plgRange === 'CUSTOM' && plgCustomStart && plgCustomEnd) {
+      const out = dates.filter(d => d < plgCustomStart || d > plgCustomEnd);
+      if (out.length) return `PLG 日期超出 ${plgCustomStart} ~ ${plgCustomEnd}：${info.coverage}`;
+    }
+  }
+  return null;
+}

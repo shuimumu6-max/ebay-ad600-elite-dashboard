@@ -1,0 +1,190 @@
+// 字段字典自检：把注册表里的字段与「报表中心页面实采」「本地真实 CSV 表头」逐项核对。
+// 用法：node check-fields.mjs
+//   默认先看正式数据目录（config.DATA_DIR），找不到再看测试下载目录（CHECK_DIR 可覆盖）。
+// 以后新下载了某类报表，直接再跑一次就能确认 csvMap 是否还对得上。
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { REPORTS, reportFields } from './reports.mjs';
+import { DATA_DIR } from './config.mjs';
+import { SHOP } from './shop-config.mjs';
+
+const EXTRA_ROOT = process.env.CHECK_DIR || SHOP.runsDir;
+// 直接跑 node download.mjs 时结果落在 app/下载结果，也要能核到
+const RUN_ROOT = fileURLToPath(new URL('./下载结果/', import.meta.url));
+const SEARCH_ROOTS = [DATA_DIR, EXTRA_ROOT, RUN_ROOT];
+
+// 页面实采结果（2026-11-07 只读采集）
+const RAW = JSON.parse(readFileSync(new URL('./fields-raw.json', import.meta.url), 'utf8'));
+const rawByKey = Object.fromEntries(RAW.map(r => [r.key, r]));
+
+// 报表 id → 页面实采 key
+const PAGEMAP = {
+  'orders.all': 'orders:全部订单',
+  'orders.unpaid': 'orders:尚未付款',
+  'orders.unshipped': 'orders:尚未发货',
+  'orders.overdue': 'orders:尚未发货 — 已逾期',
+  'orders.due24h': 'orders:尚未发货 — 在 24 小时内发货',
+  'orders.express': 'orders:尚未快递发货',
+  'orders.paidShipped': 'orders:已付款并发货',
+  'orders.paidNoFeedback': 'orders:已付款 — 尚未留下信用评价',
+  'orders.shippedNoFeedback': 'orders:已发货 — 尚未留下信用评价',
+  'listings.active': 'listings:全部在售物品',
+  'listings.unsold': 'listings:非在售物品刊登',
+  'listings.scheduled': 'listings:全部预定物品刊登',
+  'marketing.plg.listing': 'plg:物品刊登',
+  'marketing.priority.keyword': 'priority:关键词',
+  'marketing.priority.listing': 'priority:物品刊登',
+  'marketing.priority.campaign': 'priority:活动',
+  'marketing.priority.search': 'priority:搜索查询'
+};
+
+// 报表 id → 候选目录名 + 文件名特征（正式目录与运行目录的命名不一样）
+const TARGETS = {
+  'traffic.daily': { folder: ['01-Traffic单日', '01-Traffic日度'], file: /^Traffic/i },
+  'traffic.range': { folder: ['02-Traffic累计'], file: /^Traffic/i },
+  'orders.all': { folder: ['10-订单报表'], file: /orders/i },
+  'listings.active': { folder: ['07-在售商品名单'], file: /all-active-listings/i },
+  'listings.unsold': { folder: ['08-非在售名单'], file: /inactive/i },
+  'listings.scheduled': { folder: ['09-预定名单'], file: /scheduled/i },
+  'marketing.plg.listing': { folder: ['03-PLG链接广告', '03-PLG日度'], file: /general-listing/i },
+  'marketing.priority.listing': { folder: ['11-优先促刊'], file: /listing-report/i },
+  'marketing.priority.keyword': { folder: ['11-优先促刊'], file: /keyword-report/i },
+  'marketing.priority.campaign': { folder: ['11-优先促刊'], file: /campaign-report/i },
+  'marketing.priority.search': { folder: ['11-优先促刊'], file: /search-query-report/i }
+};
+
+// 订单 9 种的页面列完全相同，eBay 的文件名还会复用（如多种都叫 paid-and-shipped-report），
+// 所以统一在「10-订单报表」里挑一份有完整表头的文件核对即可。
+for (const id of ['orders.unpaid', 'orders.unshipped', 'orders.overdue', 'orders.due24h',
+  'orders.express', 'orders.paidShipped', 'orders.paidNoFeedback', 'orders.shippedNoFeedback']) {
+  TARGETS[id] = { folder: ['10-订单报表'], file: /\.csv$/i };
+}
+
+// 在 root 下递归找名为 folder 的目录（测试下载按运行时间分层）
+function findDirs(root, folder, depth = 3) {
+  const out = [];
+  const walk = (dir, left) => {
+    if (!existsSync(dir)) return;
+    let names = [];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const p = join(dir, name);
+      let st;
+      try { st = statSync(p); } catch { continue; }
+      if (!st.isDirectory()) continue;
+      if (name === folder) out.push(p);
+      else if (left > 0 && !/^(bin|app|ui|node_modules)$/.test(name)) walk(p, left - 1);
+    }
+  };
+  walk(root, depth);
+  return out;
+}
+
+function findCsv(folders, fileRe) {
+  const list = Array.isArray(folders) ? folders : [folders];
+  for (const root of SEARCH_ROOTS) {
+    for (const folder of list) {
+      for (const dir of findDirs(root, folder)) {
+        const hit = readdirSync(dir).filter(f => /\.csv$/i.test(f) && fileRe.test(f)).sort();
+        if (!hit.length) continue;
+        const usable = hit.map(f => join(dir, f))
+          .filter(p => { try { return headerOf(p).length > 3; } catch { return false; } })
+          .sort((a, b) => statSync(b).size - statSync(a).size);
+        return usable[0] || join(dir, hit[hit.length - 1]);
+      }
+    }
+  }
+  return null;
+}
+
+// 简易 CSV：支持引号内逗号与换行
+function csvRows(text) {
+  const out = [];
+  let field = '', row = [], quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else quoted = false;
+      } else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); out.push(row); row = []; field = ''; }
+    else if (c !== '\r') field += c;
+  }
+  if (field || row.length) { row.push(field); out.push(row); }
+  return out;
+}
+
+function headerOf(path) {
+  const text = readFileSync(path, 'utf8').replace(/^\uFEFF/, '');
+  const rows = csvRows(text);
+  const KEYS = /^(Item ID|Item number|Campaign name|Start date|Listing title|eBay item ID|Sales Record Number)$/i;
+  const hit = rows.find(r => r.length > 3 && r.some(c => KEYS.test(c.trim())));
+  return hit ? hit.map(s => s.trim()).filter(Boolean) : [];
+}
+
+let problems = 0;
+
+// 1) 与页面实采比对
+for (const r of REPORTS) {
+  const rawKey = PAGEMAP[r.id];
+  if (!rawKey) continue;
+  const raw = rawByKey[rawKey];
+  if (!raw) { console.log(`[跳过] ${r.id} 没有页面实采数据`); continue; }
+  const pageCols = raw.cols
+    .filter(x => !/^Summary of/i.test(x))
+    .filter(x => !/^Additional columns$/i.test(x));
+  const mine = reportFields(r).map(f => f.name);
+  const same = pageCols.length === mine.length && pageCols.every((x, i) => x === mine[i]);
+  if (!same) {
+    problems++;
+    console.log(`[页面不一致] ${r.id}`);
+    console.log('  页面:', JSON.stringify(pageCols));
+    console.log('  注册表:', JSON.stringify(mine));
+  }
+}
+
+// 2) 与真实 CSV 表头比对
+// 找不到文件 = 这一类根本没核对，绝不能算「全部一致」（换机/换店铺后最容易假绿）
+const uncovered = [];
+for (const r of REPORTS) {
+  if (!r.csvVerified) continue;
+  const t = TARGETS[r.id];
+  if (!t) { uncovered.push(`${r.id}：没有登记文件位置`); continue; }
+  const path = findCsv(t.folder, t.file);
+  if (!path) { uncovered.push(`${r.id}：找不到 ${t.folder}/${t.file} 的 CSV`); continue; }
+  const header = headerOf(path);
+  if (!header.length) { uncovered.push(`${r.id}：读不到表头`); continue; }
+  const fields = reportFields(r);
+  const covered = new Set();
+  for (const f of fields) for (const c of f.csv) covered.add(c);
+  const declared = new Set([...covered, ...r.extraCsv]);
+  const missing = header.filter(h => !declared.has(h));
+  const extra = [...declared].filter(d => !header.includes(d));
+  if (missing.length || extra.length) {
+    problems++;
+    console.log(`[CSV 不一致] ${r.id} (${header.length} 列) ← ${path.replace(/^.*[\\/]/, '')}`);
+    if (missing.length) console.log('  表头有、注册表没登记:', JSON.stringify(missing));
+    if (extra.length) console.log('  注册表登记、表头没有:', JSON.stringify(extra));
+  } else {
+    console.log(`[OK] ${r.id} 页面 ${fields.length} 列 ↔ CSV ${header.length} 列，全部对齐`);
+  }
+}
+
+// 3) 结构自检：不能有重复字段、不能有未定义 key
+for (const r of REPORTS) {
+  const fields = reportFields(r);
+  const names = fields.map(f => f.name);
+  const dup = names.filter((n, i) => names.indexOf(n) !== i);
+  if (dup.length) { problems++; console.log(`[重复字段] ${r.id}: ${dup.join(', ')}`); }
+}
+
+if (uncovered.length) {
+  console.log(`\n[未覆盖] ${uncovered.length} 类没有真实 CSV 可核对（换机 / 换店铺后请先跑一次全量下载）:`);
+  uncovered.forEach(x => console.log('   ' + x));
+}
+const failed = problems + uncovered.length;
+console.log(failed ? `\n共 ${problems} 处不一致 / ${uncovered.length} 类未覆盖` : '\n全部一致：19 类注册表 ↔ 真实 CSV 表头（其中 17 类另有页面实采三方核对）');
+process.exit(failed ? 1 : 0);

@@ -1,0 +1,191 @@
+// 常驻 CDP 桥客户端：复用已授权的唯一 Chrome 连接，所有脚本都不再弹远程调试授权窗。
+import { spawn } from 'node:child_process';
+import { readdirSync, statSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
+import { BRIDGE, BRIDGE_SCRIPT } from './config.mjs';
+import { resolveCdpEndpoint, wsProbe } from './cdp-endpoint.mjs';
+
+export const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+export async function cdp(method, params = {}, sessionId) {
+  const response = await fetch(`${BRIDGE}/cdp`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ method, params, ...(sessionId ? { sessionId } : {}) })
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || `CDP ${method} 失败`);
+  return body.result;
+}
+
+export async function health() {
+  const response = await fetch(`${BRIDGE}/health`, { signal: AbortSignal.timeout(3000) });
+  return response.json();
+}
+
+// 连接探活：区分「桥进程没起」「桥在但 Chrome 调试端口断了」两种情况，
+// 后者无法自愈，必须立刻熔断，否则剩余任务会在超时里空转几分钟。
+export async function probe({ timeoutMs = 2500 } = {}) {
+  let state;
+  try {
+    const response = await fetch(`${BRIDGE}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return { ok: false, kind: 'bridge', reason: `桥返回 HTTP ${response.status}` };
+    state = await response.json();
+  } catch (error) {
+    return { ok: false, kind: 'bridge', reason: `桥进程不可达（${error.name === 'TimeoutError' ? '超时' : error.message}）` };
+  }
+  if (state.connected) return { ok: true, state };
+  return { ok: false, kind: 'chrome', reason: state.hint || 'Chrome 调试端口已断开', state };
+}
+
+// ---- 熔断开关：Chrome 连接一旦确认断开，所有重试立即短路 ----
+let fatal = null;
+export function markFatal(reason) { if (!fatal) fatal = reason; }
+export function fatalReason() { return fatal; }
+export function checkFatal() {
+  if (fatal) throw new Error(`已熔断：${fatal}`);
+}
+
+// Chrome 的调试端点是否可用：Chrome 144+ 只能靠 DevToolsActivePort + WS 握手确认，
+// 用 HTTP 探测 /json/version 会一直返回 404，从而误判成「没开」。
+export async function chromeAlive({ timeoutMs = 8000 } = {}) {
+  const endpoint = resolveCdpEndpoint();
+  if (!endpoint.ok) return { ok: false, reason: endpoint.reason, tried: endpoint.tried };
+  const probe = await wsProbe(endpoint.url, timeoutMs);
+  if (!probe.ok) return { ok: false, reason: `调试端口 ${endpoint.port} 不可用（${probe.reason}）`, url: endpoint.url };
+  return { ok: true, browser: probe.product, port: endpoint.port, url: endpoint.url };
+}
+
+// 桥没起来就自己拉守护：守护保证桥长期在线，桥自己保证连接长期不断。
+// 顺序很关键：先问桥（毫秒级），已连上就直接用，绝不去碰 8 秒的 WS 握手探测。
+export async function ensureBridge({ timeoutMs = 45000 } = {}) {
+  try {
+    const now = await health();
+    if (now.connected) return { started: false, ...now };
+  } catch { /* 桥没起，继续 */ }
+
+  const child = spawn(process.execPath, [BRIDGE_SCRIPT], {
+    cwd: dirname(BRIDGE_SCRIPT), detached: true, stdio: 'ignore', windowsHide: true
+  });
+  child.unref();
+
+  const deadline = Date.now() + timeoutMs;
+  let live = null;
+  while (Date.now() < deadline) {
+    await sleep(500);
+    try {
+      const state = await health();
+      if (state.connected) return { started: true, ...state };
+      live = state;
+    } catch { /* 还在起 */ }
+  }
+  if (live?.needsAuth || live?.phase === 'reconnecting') {
+    throw new Error('浏览器调试开关是关的：打开浏览器里的 chrome://inspect/#remote-debugging，把开关拨开一次即可（不用重启任何东西）');
+  }
+  if (live) throw new Error(`桥已在线但还没连上浏览器（${live.hint || '等待连接'}）`);
+  throw new Error('连不上本地常驻桥：请重新双击「报表控制台.cmd」或「启动下载环境.cmd」');
+}
+
+// 所有标签页共用浏览器级下载目录。按「报表类型」分车道加锁：
+// 同类型（如两单 Traffic、三个 PLP campaign）串行，不同类型并行，用文件名前缀区分归属。
+const lanes = new Map();
+export function withDownloadLock(lane, fn) {
+  const previous = lanes.get(lane) || Promise.resolve();
+  const result = previous.then(fn, fn);
+  lanes.set(lane, result.then(() => {}, () => {}));
+  return result;
+}
+
+export async function events() {
+  const response = await fetch(`${BRIDGE}/events`, { signal: AbortSignal.timeout(3000) });
+  return (await response.json()).events || [];
+}
+
+export async function targets() {
+  const { targetInfos } = await cdp('Target.getTargets');
+  return targetInfos.filter(t => t.type === 'page');
+}
+
+export async function session(urlIncludes) {
+  const list = await targets();
+  const target = list.find(t => {
+    try {
+      return /^(www\.)?ebay\.com$/i.test(new URL(t.url).hostname) && t.url.includes(urlIncludes);
+    } catch { return false; }
+  });
+  if (!target) throw new Error(`未找到包含「${urlIncludes}」的 eBay 标签页；当前标签：${list.map(t => t.url).join(' | ')}`);
+  const { sessionId } = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+  return { sessionId, targetId: target.targetId, url: target.url };
+}
+
+// 找不到标签就新开一个，并等到 URL 落地（避免新标签还在 about:blank 就执行脚本）
+export async function ensureTab(urlIncludes, url, timeoutMs = 25000) {
+  try { return await session(urlIncludes); } catch { /* 继续新建 */ }
+  await cdp('Target.createTarget', { url });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(500);
+    try { return await session(urlIncludes); } catch { /* 未就绪 */ }
+  }
+  throw new Error(`新标签 ${url} 未在 ${timeoutMs / 1000} 秒内就绪`);
+}
+
+export async function evaluate(sessionId, expression) {
+  // userGesture: true 让页面以为有点击行为，否则 eBay 的下载按钮会静默不响应
+  const result = await cdp('Runtime.evaluate', {
+    expression, returnByValue: true, awaitPromise: true, userGesture: true
+  }, sessionId);
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text + ' ' + (result.exceptionDetails.exception?.description || ''));
+  }
+  return result.result.value;
+}
+
+// 导航 / 刷新时 evaluate 可能短暂失效，重试几次
+export async function evalRetry(sessionId, expression, tries = 4) {
+  let lastError;
+  for (let i = 0; i < tries; i++) {
+    try { return await evaluate(sessionId, expression); }
+    catch (error) { lastError = error; await sleep(500); }
+  }
+  throw lastError;
+}
+
+export async function setDownloadDir(directory) {
+  return cdp('Browser.setDownloadBehavior', {
+    behavior: 'allow', downloadPath: directory, eventsEnabled: true
+  });
+}
+
+export async function completedDownload(fileName) {
+  const list = await events();
+  return list.some(e =>
+    e.method === 'Browser.downloadProgress' &&
+    e.params?.state === 'completed' &&
+    e.params.receivedBytes === e.params.totalBytes &&
+    basename(String(e.params.filePath || '')) === fileName);
+}
+
+// 等待下载目录中出现新文件；expected 为期望文件数，达到后仍需稳定 1.2 秒才返回
+// match 用于只认本任务的文件名（同目录下可能有别的任务在同时下载）
+export async function waitForNewFiles(directory, before, { expected = 1, timeoutMs = 45000, pollMs = 250, match = null } = {}) {
+  const pick = () => readdirSync(directory)
+    .filter(name => !before.has(name) && !/\.crdownload$/i.test(name) && (!match || match.test(name)));
+  const deadline = Date.now() + timeoutMs;
+  let stableSince = null;
+  let lastSignature = '';
+  while (Date.now() < deadline) {
+    const fresh = pick();
+    const sizes = fresh.map(name => { try { return statSync(join(directory, name)).size; } catch { return 0; } });
+    const ready = fresh.length >= expected && sizes.every(size => size > 0);
+    const signature = fresh.map((name, i) => `${name}:${sizes[i]}`).join('|');
+    if (ready && signature === lastSignature) {
+      if (!stableSince) stableSince = Date.now();
+      if (Date.now() - stableSince > 1200) return fresh;
+    } else {
+      stableSince = null;
+    }
+    lastSignature = signature;
+    await sleep(pollMs);
+  }
+  return pick();
+}

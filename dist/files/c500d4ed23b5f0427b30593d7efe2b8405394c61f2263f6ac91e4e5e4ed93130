@@ -1,0 +1,66 @@
+// 一个标签页 = 一个报表任务。所有标签页开在同一个窗口里，互不刷新、互不抢页面。
+import { cdp, evaluate, sleep } from './cdp.mjs';
+
+export class Page {
+  constructor({ key, targetId, sessionId, url }) {
+    this.key = key;
+    this.targetId = targetId;
+    this.sessionId = sessionId;
+    this.url = url;
+    this.closed = false;
+  }
+
+  eval(expression) { return evaluate(this.sessionId, expression); }
+
+  async reload(settleMs = 0) {
+    await this.eval('(() => { location.reload(); return true; })()').catch(() => {});
+    if (settleMs) await sleep(settleMs);
+  }
+
+  // 真导航（整页加载）：批量跑多个日期时比 location.href 更干净
+  async navigate(url, { timeoutMs = 30000, settleMs = 1200 } = {}) {
+    await cdp('Page.navigate', { url }, this.sessionId).catch(() => {});
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(400);
+      try {
+        const state = await evaluate(this.sessionId, 'document.readyState');
+        const href = await evaluate(this.sessionId, 'location.href');
+        if ((state === 'complete' || state === 'interactive') && href === url) { this.url = href; break; }
+      } catch { /* 导航中 */ }
+    }
+    if (settleMs) await sleep(settleMs);
+    return this;
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    await cdp('Target.closeTarget', { targetId: this.targetId }).catch(() => {});
+  }
+}
+
+// 在同一窗口新开一个标签页，等页面真正落地再返回，避免在 about:blank 上跑脚本
+export async function openTab(key, url, { timeoutMs = 35000 } = {}) {
+  const { targetId } = await cdp('Target.createTarget', { url, background: true });
+  const deadline = Date.now() + timeoutMs;
+  let sessionId = null;
+  while (Date.now() < deadline) {
+    try {
+      if (!sessionId) {
+        const attached = await cdp('Target.attachToTarget', { targetId, flatten: true });
+        sessionId = attached.sessionId;
+      }
+      const href = await evaluate(sessionId, 'location.href');
+      if (href && href !== 'about:blank' && !/^(chrome|devtools):/i.test(href)) {
+        const state = await evaluate(sessionId, 'document.readyState').catch(() => '');
+        if (state === 'complete' || state === 'interactive') {
+          return new Page({ key, targetId, sessionId, url: href });
+        }
+      }
+    } catch { /* 导航中，继续等 */ }
+    await sleep(300);
+  }
+  await cdp('Target.closeTarget', { targetId }).catch(() => {});
+  throw new Error(`标签页「${key}」未在 ${Math.round(timeoutMs / 1000)} 秒内就绪：${url}`);
+}

@@ -1,0 +1,13 @@
+// 环境自检：仅判断 Chrome 9222 是否可用，供启动脚本循环调用。退出码 0=可用，1=不可用。
+import { chromeAlive, probe } from './cdp.mjs';
+
+const chrome = await chromeAlive();
+if (!chrome.ok) {
+  console.log(`[X] ${chrome.reason}`);
+  process.exit(1);
+}
+const state = await probe();
+console.log(state.ok
+  ? `[OK] Chrome ${chrome.browser} 调试端口正常，桥已连接`
+  : `[OK] Chrome ${chrome.browser} 调试端口正常（桥待启动）`);
+process.exit(0);

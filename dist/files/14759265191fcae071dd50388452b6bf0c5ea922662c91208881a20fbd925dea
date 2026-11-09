@@ -1,0 +1,74 @@
+// 在线更新器（分发给运营的版本，随包在根目录叫「在线更新.mjs」）。
+// 用法：双击「检查更新.cmd」或 bin\node.exe 在线更新.mjs [--base <更新源URL>]
+// 机制：读更新源的 manifest.json，逐文件比对 sha256，只下载有变化的文件；
+//       替换前把旧文件备份到「备份-更新前-<时间戳>/」。
+// 绝不触碰：店铺配置 JSON、CSV 数据目录、bin\node.exe、.git——不在清单里就永远不会被改。
+import { createHash } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = basename(HERE) === 'app' ? dirname(HERE) : HERE;
+// 更新源：随包的「更新源.txt」可覆盖；--base 参数优先级最高。
+const DEFAULT_BASE = 'https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/';
+const baseArg = process.argv.find((arg, index) => process.argv[index - 1] === '--base');
+const sourceFile = join(ROOT, '更新源.txt');
+const BASE = (baseArg || (existsSync(sourceFile) ? readFileSync(sourceFile, 'utf8').trim() : '') || DEFAULT_BASE).replace(/\/?$/, '/');
+const sha256 = buffer => createHash('sha256').update(buffer).digest('hex');
+
+const fail = text => { console.error(`[X] ${text}`); process.exit(1); };
+
+const manifest = await fetch(`${BASE}manifest.json`, { headers: { 'cache-control': 'no-cache' } })
+  .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+  .catch(error => fail(`读不到更新清单（${BASE}manifest.json）：${error.message}。检查网络，或用 --base 指定更新源。`));
+
+if (!manifest?.version || !Array.isArray(manifest.files)) fail('更新清单格式不对，联系发布者。');
+console.log(`更新源：${BASE}`);
+console.log(`最新版本：${manifest.version}（发布于 ${manifest.createdAt}）`);
+console.log(`清单包含 ${manifest.files.length} 个文件，开始比对本地…\n`);
+
+const timestamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+const backupRoot = join(ROOT, `备份-更新前-${timestamp}`);
+const changed = [];
+let same = 0;
+
+for (const file of manifest.files) {
+  const local = join(ROOT, ...file.path.split('/'));
+  if (existsSync(local)) {
+    const current = sha256(readFileSync(local));
+    if (current === file.hash) { same += 1; continue; }
+  }
+  const url = `${BASE}files/${file.hash}`;
+  const response = await fetch(url).catch(error => Promise.reject(error));
+  if (!response.ok) fail(`下载 ${file.path} 失败：HTTP ${response.status}`);
+  const body = Buffer.from(await response.arrayBuffer());
+  if (sha256(body) !== file.hash) fail(`${file.path} 下载后校验不一致（网络传输损坏），本次更新中止，已更新 ${changed.length} 个文件保持可用。`);
+  if (existsSync(local)) {
+    const backupDir = join(backupRoot, ...file.path.split('/'));
+    mkdirSync(dirname(backupDir), { recursive: true });
+    copyFileSync(local, backupDir);
+    writeTemp(local, body);
+  } else {
+    mkdirSync(dirname(local), { recursive: true });
+    writeFileSync(local, body);
+  }
+  changed.push(file.path);
+  console.log(`[更新] ${file.path}（${(file.size / 1024).toFixed(1)} KB）`);
+}
+
+// writeTemp：先落临时文件再改名覆盖，替换中途失败不会留下半截文件。
+function writeTemp(target, body) {
+  const temp = `${target}.update-tmp`;
+  writeFileSync(temp, body);
+  renameSync(temp, target);
+}
+
+console.log('');
+if (!changed.length) {
+  console.log('✔ 本地已是最新版本，无需更新。');
+} else {
+  console.log(`✔ 更新完成：${changed.length} 个文件有变化（${same} 个一致跳过）。`);
+  if (existsSync(backupRoot)) console.log(`旧文件已备份到：${backupRoot}`);
+  console.log('重新运行下载/控制台即可使用新版本。');
+}

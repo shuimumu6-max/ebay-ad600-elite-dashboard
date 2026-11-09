@@ -1,0 +1,66 @@
+// CDP 端点发现：Chrome 144+ 的「原地远程调试」不再提供 /json/version 等 HTTP 接口（一律 404），
+// 只能从 user-data-dir 下的 DevToolsActivePort 文件读出真正的 WebSocket 地址。
+// 该文件两行：端口、浏览器级 WS 路径（含每次启动变化的 UUID）。
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+export const USER_DATA_CANDIDATES = [
+  process.env.CDP_USER_DATA_DIR,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data') : null,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome Beta', 'User Data') : null,
+].filter(Boolean);
+
+export function resolveCdpEndpoint() {
+  const tried = [];
+  for (const dir of USER_DATA_CANDIDATES) {
+    const file = join(dir, 'DevToolsActivePort');
+    if (!existsSync(file)) { tried.push(`${dir}（无文件）`); continue; }
+    try {
+      const lines = readFileSync(file, 'utf8').trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const port = Number(lines[0]);
+      if (!Number.isFinite(port) || port <= 0) { tried.push(`${dir}（端口非法）`); continue; }
+      const wsPath = lines[1] && lines[1].startsWith('/') ? lines[1] : '/devtools/browser';
+      return { ok: true, port, wsPath, url: `ws://127.0.0.1:${port}${wsPath}`, from: dir };
+    } catch (error) {
+      tried.push(`${dir}（读取失败：${error.message}）`);
+    }
+  }
+  return { ok: false, reason: '没找到 DevToolsActivePort，说明 Chrome 还没开启远程调试', tried };
+}
+
+// WS 握手 + Browser.getVersion：唯一能确认「端口真的可用」的判定方式
+export function wsProbe(url, timeoutMs = 8000) {
+  return new Promise(resolve => {
+    let settled = false;
+    let socket;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      try { socket?.close(); } catch { /* 忽略 */ }
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, reason: '握手超时' }), timeoutMs);
+    try {
+      socket = new WebSocket(url);
+    } catch (error) {
+      clearTimeout(timer);
+      return resolve({ ok: false, reason: error.message });
+    }
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
+    });
+    socket.addEventListener('message', event => {
+      clearTimeout(timer);
+      try {
+        const data = JSON.parse(String(event.data));
+        finish({ ok: true, product: data.result?.product || 'Chrome', protocol: data.result?.protocolVersion });
+      } catch {
+        finish({ ok: false, reason: '响应解析失败' });
+      }
+    });
+    socket.addEventListener('error', () => {
+      clearTimeout(timer);
+      finish({ ok: false, reason: '握手失败（端口未监听或需要重新授权）' });
+    });
+  });
+}

@@ -1,0 +1,5 @@
+@echo off
+chcp 65001 >nul
+title eBay Report Console
+"%~dp0bin\node.exe" "%~dp0ui\server.mjs"
+pause

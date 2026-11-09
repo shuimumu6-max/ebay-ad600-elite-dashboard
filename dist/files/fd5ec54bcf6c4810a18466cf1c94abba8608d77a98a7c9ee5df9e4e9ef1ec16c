@@ -1,0 +1,202 @@
+// 只读探查：采集报表中心「广告 → 促销刊登 — 优先 → 关键词」Campaigns 卡片里的全部活动。
+// 只读，不提交任何下载请求；跑完关闭自己开的标签页，并保证浏览器至少留一个标签页。
+// 用途：控制台活动多选列表的数据来源；迁移到新店铺时重跑一次即可。
+// 用法：node app/probe-priority-campaigns.mjs
+import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { ensureBridge, sleep, cdp } from './cdp.mjs';
+import { openTab } from './pages.mjs';
+import { REPORTS_URL } from './config.mjs';
+import { SHOP } from './shop-config.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT = join(HERE, 'priority-campaigns.json');
+
+const LABEL = `(n => (n.innerText || n.textContent || '').trim().replace(/\\s+/g, ' '))`;
+
+const DIALOG_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  return { ok: !!([...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0]) };
+})()`;
+
+const CANCEL = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const dlg = [...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0];
+  const b = [...(dlg || document).querySelectorAll('button')].filter(v)
+    .find(n => /^(取消|Cancel|Close Dialog)$/i.test(t(n)));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false };
+})()`;
+
+const OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => t(n) === 'Download report');
+  if (!b) return { ok: false }; b.click(); return { ok: true };
+})()`;
+
+const openCard = prefix => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('.se-field-card__body')].filter(v).find(n => t(n).startsWith(${JSON.stringify(prefix)}));
+  if (b) { b.click(); return { ok: true, text: t(b).slice(0, 80) }; }
+  return { ok: false, cards: [...document.querySelectorAll('.se-field-card__body')].filter(v).map(n => t(n).slice(0, 50)) };
+})()`;
+
+// 按可见文本点选项，不猜 value（页面文案与字段字典用的是同一套中文）
+const pickByText = text => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false, why: 'no pane' };
+  const want = ${JSON.stringify(text)};
+  const labels = [...pane.querySelectorAll('label, [class*=radio]')].filter(v);
+  for (const l of labels) {
+    const s = (l.innerText || '').trim().replace(/\\s+/g, ' ');
+    if (s === want || s.startsWith(want)) {
+      const input = l.querySelector('input[type=radio]');
+      (input || l).click();
+      return { ok: true, text: s, value: input ? input.value : null };
+    }
+  }
+  return { ok: false, why: 'no match', options: labels.map(l => (l.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 40)).filter(Boolean) };
+})()`;
+
+const DONE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  const b = [...(pane || document).querySelectorAll('button')].filter(v).find(n => /^(完成|Done)$/.test(t(n)));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false };
+})()`;
+
+// 活动卡片：读可见 checkbox 的 value（campaign ID）与所在行文本（活动名）
+const READ = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false, why: 'no pane' };
+  const boxes = [...pane.querySelectorAll('input[type=checkbox]')].filter(v)
+    .filter(c => c.value && c.value !== 'optionsRoot' && c.id !== 'chkBox-campaign-root');
+  // 名称在 checkbox 外层容器里（checkbox 自身那层 innerText 是空的），
+  // 往上找第一个「非空且不是纯 ID」的文本，就是这一行的活动名。
+  const rowName = c => {
+    let node = c, txt = '';
+    for (let k = 0; k < 6 && node; k++) {
+      node = node.parentElement;
+      if (!node) break;
+      const s = (node.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 200);
+      if (!s || s === c.value || /^\\d{8,15}$/.test(s)) continue;
+      if (s.length > 130) continue;   // 已经到了整列容器，跳过
+      txt = s; break;
+    }
+    return txt || c.value;
+  };
+  const items = boxes.map(c => ({ id: c.value, name: rowName(c), checked: c.checked }));
+  const sample = boxes.slice(0, 2).map(c => {
+    const layers = [];
+    let node = c;
+    for (let k = 0; k < 5 && node; k++) {
+      node = node.parentElement;
+      if (node) layers.push('L' + (k + 1) + ': ' + (node.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 120));
+    }
+    return layers.join(' | ');
+  });
+  return { ok: true, items, count: items.length, sample };
+})()`;
+
+// 虚拟列表可能分批渲染，滚到底再读，合并去重
+const SCROLL = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false };
+  let n = 0;
+  for (const el of [...pane.querySelectorAll('*')]) {
+    if (el.scrollHeight > el.clientHeight + 20 && el.clientHeight > 100) {
+      el.scrollTop = el.scrollHeight; n++;
+    }
+  }
+  return { ok: true, scrolled: n };
+})()`;
+
+async function openDialog(page) {
+  const isOpen = await page.eval(DIALOG_OPEN);
+  if (isOpen?.ok) await page.eval(CANCEL);
+  await sleep(700);
+  const r = await page.eval(OPEN);
+  if (!r?.ok) throw new Error('找不到 Download report 按钮（登录态可能失效）');
+  await sleep(1800);
+}
+
+async function pickStep(page, card, text) {
+  const opened = await page.eval(openCard(card));
+  if (!opened?.ok) throw new Error(`卡片「${card}」打不开：${JSON.stringify(opened?.cards)}`);
+  await sleep(900);
+  const picked = await page.eval(pickByText(text));
+  if (!picked?.ok) throw new Error(`选项「${text}」选不上：${JSON.stringify(picked?.options || picked)}`);
+  await sleep(500);
+  await page.eval(DONE);
+  await sleep(1600);
+  console.log(`[选好] ${card} → ${picked.text}`);
+}
+
+async function ensureOneTab() {
+  const { targetInfos } = await cdp('Target.getTargets');
+  if (!targetInfos.some(t => t.type === 'page')) {
+    await cdp('Target.createTarget', { url: 'about:blank', background: true }).catch(() => {});
+  }
+}
+
+async function run() {
+  await ensureBridge();
+  const page = await openTab('probe-priority-campaigns', REPORTS_URL);
+  try {
+    await page.navigate(REPORTS_URL, { settleMs: 2500 });
+    await openDialog(page);
+    for (const [card, text] of [
+      ['Source', '广告'],
+      ['Campaign strategy', '促销刊登 — 优先'],
+      ['Type', '关键词']
+    ]) await pickStep(page, card, text);
+    await sleep(1000);
+
+    const opened = await page.eval(openCard('Campaigns'));
+    if (!opened?.ok) throw new Error(`Campaigns 卡片打不开：${JSON.stringify(opened)}`);
+    console.log(`[已打开] ${opened.text}`);
+    await sleep(1800);
+
+    const byId = new Map();
+    for (let i = 0; i < 8; i++) {
+      const r = await page.eval(READ);
+      if (!r?.ok) throw new Error(`读活动列表失败：${JSON.stringify(r)}`);
+      for (const it of r.items) if (!byId.has(it.id)) byId.set(it.id, it);
+      console.log(`[读取] 第 ${i + 1} 轮：本轮 ${r.count} 个，累计 ${byId.size} 个`);
+      if (i === 0 && r.sample) r.sample.forEach((s, n) => console.log(`[DOM ${n}] ${s}`));
+      const s = await page.eval(SCROLL);
+      if (!s?.scrolled) break;
+      await sleep(700);
+    }
+
+    const campaigns = [...byId.values()].map(({ id, name }) => ({ id, name }));
+    if (!campaigns.length) throw new Error('一个活动都没读到');
+    const payload = {
+      shopName: SHOP.shopName,   // 快照归属：换店铺时 shop-config 会拒绝加载别店的快照
+      source: '报表中心 · 广告 → 促销刊登 — 优先 → 关键词 → Campaigns 卡片实采（只读）',
+      probedAt: new Date().toISOString(),
+      total: campaigns.length,
+      campaigns
+    };
+    writeFileSync(OUT, JSON.stringify(payload, null, 2), 'utf8');
+    console.log(`\n共 ${campaigns.length} 个活动，已写入 ${OUT}`);
+    for (const c of campaigns.slice(0, 5)) console.log(`  ${c.id}  ${c.name.slice(0, 60)}`);
+    await page.eval(DONE).catch(() => {});
+    await page.eval(CANCEL).catch(() => {});
+  } finally {
+    await page.close().catch(() => {});
+    await ensureOneTab().catch(() => {});
+  }
+  process.exit(0);
+}
+
+run().catch(e => { console.error('FATAL', e.message); process.exit(1); });

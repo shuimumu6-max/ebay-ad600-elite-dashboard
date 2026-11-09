@@ -1,0 +1,290 @@
+// 看板数据体检：扫正式目录里的 CSV，算出每类报表「哪天有、哪天缺」。
+// 规则：窗口结束取太平洋时间昨天（今天的数据还没出，不算缺）；窗口起点取该类最早有数据那天
+//       （= 链接上架之后），所以上架前的空白天不会被报成缺失。在售商品名单不参与。
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { extname, join, relative } from 'node:path';
+import { DATA_DIR, REPO_DIR } from './config.mjs';
+
+// ---------- 日期工具 ----------
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const pad = n => String(n).padStart(2, '0');
+const iso = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
+
+export function parseDateAny(raw) {
+  const s = String(raw || '').trim().replace(/^="?|"$/g, '');
+  if (!s) return null;
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return iso(+m[1], +m[2], +m[3]);
+  m = /^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/.exec(s);
+  if (m) {
+    const mon = MONTHS[m[2].toLowerCase()];
+    if (!mon) return null;
+    const y = +m[3] < 100 ? 2000 + +m[3] : +m[3];
+    return iso(y, mon, +m[1]);
+  }
+  m = /^([A-Za-z]{3})[a-z]*\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
+  if (m) {
+    const mon = MONTHS[m[1].toLowerCase()];
+    if (!mon) return null;
+    return iso(+m[3], mon, +m[2]);
+  }
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (m) return iso(+m[3], +m[1], +m[2]);
+  return null;
+}
+
+const toDay = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+const fromDay = ms => new Date(ms).toISOString().slice(0, 10);
+export function addDays(date, n) { return fromDay(toDay(date) + n * 86400000); }
+export function daySpan(a, b) { return Math.round((toDay(b) - toDay(a)) / 86400000); }
+
+export function pacificToday(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(now);
+  const pick = t => parts.find(p => p.type === t)?.value;
+  return `${pick('year')}-${pick('month')}-${pick('day')}`;
+}
+
+// 把零散日期合并成 [起, 止] 区间，界面上一眼看懂
+function toRanges(dates) {
+  const sorted = [...dates].sort();
+  const out = [];
+  for (const d of sorted) {
+    const last = out[out.length - 1];
+    if (last && daySpan(last.end, d) === 1) last.end = d;
+    else out.push({ start: d, end: d, days: 1 });
+  }
+  for (const r of out) r.days = daySpan(r.start, r.end) + 1;
+  return out;
+}
+
+// ---------- CSV 轻量解析 ----------
+// 只取前 n 个字段，遇到引号内逗号也能正确跳；大文件里每行只走到需要的位置就返回。
+function headFields(line, n) {
+  const out = [];
+  let i = 0;
+  const len = line.length;
+  while (out.length < n && i <= len) {
+    let val = '';
+    if (line[i] === '"') {
+      i++;
+      while (i < len) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') { val += '"'; i += 2; continue; }
+          i++; break;
+        }
+        val += line[i++];
+      }
+    } else {
+      while (i < len && line[i] !== ',') val += line[i++];
+    }
+    out.push(val);
+    if (line[i] === ',') i++; else break;
+  }
+  return out;
+}
+
+// 体检口径 = 看板真正要用的 5 份数据：
+//   流量单日（Traffic 日度）、PLG 链接广告（促销刊登·常规）、
+//   PLP 链接广告三份（Listing / Keyword / Search Query，来自「优先促销刊登」）。
+// 流量累计只用于对账，不进看板，所以不参与体检；活动汇总报表（campaign report）也不进看板。
+const FILE_KIND = {
+  trafficDaily: { key: 'trafficDaily', label: '流量单日', note: 'Traffic · 日度' },
+  plg: { key: 'plg', label: 'PLG 链接广告', note: '促销刊登 · 常规' },
+  plpListing: { key: 'plpListing', label: '物品刊登', note: 'Listing report', group: 'PLP 链接广告' },
+  plpKeyword: { key: 'plpKeyword', label: '关键词', note: 'Keyword report', group: 'PLP 链接广告' },
+  plpSearch: { key: 'plpSearch', label: '搜索词', note: 'Search Query report', group: 'PLP 链接广告' }
+};
+const ORDER = ['trafficDaily', 'plg', 'plpListing', 'plpKeyword', 'plpSearch'];
+
+function listCsv(root) {
+  const out = [];
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (/不参与看板|暂存/.test(entry.name)) continue;
+        walk(join(dir, entry.name));
+      } else if (extname(entry.name).toLowerCase() === '.csv') {
+        out.push(join(dir, entry.name));
+      }
+    }
+  };
+  if (existsSync(root)) walk(root);
+  return out;
+}
+
+// 读一份 CSV，返回 { kind, dates:Set, start, end }，认不出就返回 null
+function inspectFile(path) {
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch { return null; }
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const head = text.slice(0, 20000);
+
+  // 在售名单：不参与体检
+  if (/Item number/i.test(head) && /Available quantity/i.test(head)) return null;
+
+  const lines = text.split(/\r?\n/);
+
+  // Traffic：日期写在「Report for X to Y」前言里
+  const trafficHeader = lines.findIndex(l => /Listing title/i.test(l) && /eBay item ID/i.test(l));
+  if (trafficHeader >= 0) {
+    const preface = lines.slice(0, trafficHeader + 1).join(' ');
+    const m = /Report for\s+(.+?)\s+to\s+(.+?)(?:\s+compared|$)/i.exec(preface);
+    const start = m ? parseDateAny(m[1]) : null;
+    const end = m ? parseDateAny(m[2]) : null;
+    if (!start || !end) return null;
+    const dates = new Set();
+    for (let t = toDay(start); t <= toDay(end); t += 86400000) dates.add(fromDay(t));
+    return { kind: start === end ? 'trafficDaily' : 'trafficRange', dates, start, end };
+  }
+
+  // 广告报表（PLG / PLP 三类）：日期在 Date 列（新版权威报表）或 Start date 列（老版 PLP 快照）
+  let hi = -1, di = -1, kind = null;
+  for (let i = 0; i < Math.min(lines.length, 40); i++) {
+    const line = lines[i];
+    if (!/Campaign name/i.test(line)) continue;
+    const fields = headFields(line, 60).map(s => s.trim().replace(/^"|"$/g, ''));
+    if (!fields.some(f => /^Campaign name$/i.test(f))) continue;
+    const has = re => fields.some(f => re.test(f));
+    let k;
+    if (has(/^Search Query$/i)) k = 'plpSearch';              // 搜索词报表独有这一列，必须先判
+    else if (has(/^Seller Keyword$/i)) k = 'plpKeyword';
+    else if (has(/^Targeting strategy$/i) && has(/^Item ID$/i)) k = 'plpListing';
+    else if (has(/^Targeting strategy$/i)) return null;        // 活动汇总报表（campaign report）不进看板
+    else k = 'plg';
+    const dateCol = fields.findIndex(f => /^Date$/i.test(f));
+    const startCol = fields.findIndex(f => /^Start date$/i.test(f));
+    const col = dateCol >= 0 ? dateCol : startCol;
+    if (col < 0) continue;
+    hi = i; di = col; kind = k;
+    break;
+  }
+  if (hi < 0 || di < 0 || !kind) return null;
+
+  const dates = new Set();
+  for (let i = hi + 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const f = headFields(lines[i], di + 1);
+    if (f.length <= di) continue;
+    const d = parseDateAny(f[di]);
+    if (d) dates.add(d);
+  }
+  if (!dates.size) return null;
+  const sorted = [...dates].sort();
+  return { kind, dates, start: sorted[0], end: sorted[sorted.length - 1] };
+}
+
+// ---------- 线上看板同步状态 ----------
+function localBundleCreatedAt() {
+  const file = join(REPO_DIR, 'data.js');
+  if (!existsSync(file)) return null;
+  try {
+    const head = readFileSync(file, 'utf8').slice(0, 2000);
+    return /"createdAt":"([^"]+)"/.exec(head)?.[1] || null;
+  } catch { return null; }
+}
+
+async function onlineBundleCreatedAt(url) {
+  try {
+    const res = await fetch(url, { headers: { Range: 'bytes=0-1200' }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok && res.status !== 206) return null;
+    const text = await res.text();
+    return /"createdAt":"([^"]+)"/.exec(text)?.[1] || null;
+  } catch { return null; }
+}
+
+// ---------- 主流程 ----------
+export async function scanGaps(options = {}) {
+  const root = options.dataDir || DATA_DIR;
+  const dashboardUrl = options.dashboardUrl || null;
+  const now = options.now || new Date();
+  const windowEnd = addDays(pacificToday(now), -1);   // 排除今天
+  // 线上状态和本地扫描并行，网络慢也不拖累结果
+  const onlinePromise = dashboardUrl ? onlineBundleCreatedAt(dashboardUrl) : Promise.resolve(null);
+
+  const paths = listCsv(root);
+  const groups = {};
+  for (const key of ORDER) groups[key] = { ...FILE_KIND[key], dates: new Set(), files: 0, failures: [] };
+
+  for (const path of paths) {
+    const info = inspectFile(path);
+    if (!info) continue;
+    const g = groups[info.kind];
+    if (!g) continue;
+    g.files++;
+    for (const d of info.dates) g.dates.add(d);
+  }
+
+  // 上架锚点：所有报表里最早出现数据的那天，早于它的日子本来就没有链接，不算缺
+  let anchor = null;
+  for (const key of ORDER) {
+    const s = [...groups[key].dates].sort()[0];
+    if (s && (!anchor || s < anchor)) anchor = s;
+  }
+
+  const rows = [];
+  let totalMissing = 0;
+  for (const key of ORDER) {
+    const g = groups[key];
+    const sorted = [...g.dates].sort();
+    const first = sorted[0] || null;
+    const last = sorted[sorted.length - 1] || null;
+    const windowStart = first || anchor;
+
+    let missing = [];
+    if (windowStart && windowEnd >= windowStart) {
+      for (let t = toDay(windowStart); t <= toDay(windowEnd); t += 86400000) {
+        const d = fromDay(t);
+        if (!g.dates.has(d)) missing.push(d);
+      }
+    }
+
+    // 该类型还没有任何数据时，只报一个总数，不列几百天
+    const nothingYet = !first;
+    if (!nothingYet) totalMissing += missing.length;
+
+    rows.push({
+      key, label: g.label, note: g.note || '', group: g.group || '',
+      files: g.files,
+      coveredDays: g.dates.size,
+      first, last,
+      missingDays: nothingYet ? daySpan(windowStart, windowEnd) + 1 : missing.length,
+      missingRanges: nothingYet ? [] : toRanges(missing),
+      lagDays: last ? daySpan(last, windowEnd) : null,
+      nothingYet
+    });
+  }
+
+  // 线上与本地是否同步
+  const localAt = localBundleCreatedAt();
+  const onlineAt = await onlinePromise;
+  let csvNewest = 0;
+  for (const p of paths) { try { const t = statSync(p).mtimeMs; if (t > csvNewest) csvNewest = t; } catch { /* 忽略 */ } }
+  const onlineStale = !!(localAt && onlineAt && new Date(onlineAt) < new Date(localAt));
+  // 容差 60 秒：生成 data.js 时也会读文件，紧挨着的毫秒差不算「新数据没进看板」
+  const localNotRegenerated = !!(localAt && csvNewest > new Date(localAt).getTime() + 60000);
+
+  return {
+    ok: true,
+    dataDir: root,
+    windowStart: anchor,
+    windowEnd,
+    scannedFiles: paths.length,
+    totalMissing,
+    rows,
+    sync: {
+      localBundleAt: localAt,
+      onlineBundleAt: onlineAt,
+      onlineStale,
+      localNotRegenerated,
+      csvNewestAt: csvNewest ? new Date(csvNewest).toISOString() : null,
+      checked: !!onlineAt
+    }
+  };
+}
+
+if (process.argv[1] && /scan-gaps\.mjs$/.test(process.argv[1])) {
+  const out = await scanGaps({ dashboardUrl: process.argv[2] || null });
+  console.log(JSON.stringify(out, null, 2));
+}

@@ -1,0 +1,9 @@
+// 下载入口包装：把 download.mjs 的顶层异常收成一行中文提示，避免控制台日志里出现一大段堆栈。
+// 参数原样透传（download.mjs 自己读 process.argv），用法与 node download.mjs 完全一致。
+try {
+  await import('./download.mjs');
+} catch (error) {
+  const message = error?.message || String(error);
+  console.error(`[失败] ${message}`);
+  process.exitCode = 1;
+}

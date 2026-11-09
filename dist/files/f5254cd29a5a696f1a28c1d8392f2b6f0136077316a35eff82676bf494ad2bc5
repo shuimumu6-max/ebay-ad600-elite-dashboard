@@ -1,0 +1,147 @@
+// 只读探查：批量采集报表中心所有报表类型的字段清单（不提交下载）
+import { writeFileSync } from 'node:fs';
+import { ensureBridge, sleep } from './cdp.mjs';
+import { openTab } from './pages.mjs';
+import { REPORTS_URL } from './config.mjs';
+
+const LABEL = `(n => (n.innerText || n.textContent || '').trim().replace(/\\s+/g, ' '))`;
+
+const OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => t(n) === 'Download report');
+  if (!b) return { ok: false }; b.click(); return { ok: true };
+})()`;
+
+const DIALOG_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  return { ok: !!([...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0]) };
+})()`;
+
+const CANCEL = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const dlg = [...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0];
+  const b = [...(dlg || document).querySelectorAll('button')].filter(v).find(n => /^(取消|Cancel)$/i.test(t(n)));
+  if (b) { b.click(); return { ok: true }; } return { ok: false };
+})()`;
+
+const openCard = prefix => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('.se-field-card__body')].filter(v).find(n => t(n).startsWith(${JSON.stringify(prefix)}));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false, cards: [...document.querySelectorAll('.se-field-card__body')].filter(v).map(n => t(n).slice(0, 40)) };
+})()`;
+
+// 不按 value 猜，直接按选项可见文本点，避免优先级/订单取值写错
+const pickByText = text => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false, why: 'no pane' };
+  const want = ${JSON.stringify(text)};
+  const labels = [...pane.querySelectorAll('label, [class*=radio]')].filter(v);
+  for (const l of labels) {
+    const s = (l.innerText || '').trim().replace(/\\s+/g, ' ');
+    if (s === want || s.startsWith(want)) {
+      const r = l.querySelector('input[type=radio]') || l;
+      r.click();
+      const input = l.querySelector('input[type=radio]');
+      return { ok: true, text: s, value: input ? input.value : null };
+    }
+  }
+  return { ok: false, why: 'no match', options: labels.map(l => (l.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 40)).filter(Boolean) };
+})()`;
+
+const DONE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  const b = [...(pane || document).querySelectorAll('button')].filter(v).find(n => /^(完成|Done)$/.test(t(n)));
+  if (b) { b.click(); return { ok: true }; } return { ok: false };
+})()`;
+
+const READ = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const dlg = [...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0];
+  if (!dlg) return { ok: false };
+  const cards = [...dlg.querySelectorAll('.se-field-card')].filter(v).map(n => {
+    const l = n.querySelector('.se-field-card__content-label');
+    const d = n.querySelector('.se-field-card__content-description');
+    return { label: l ? (l.innerText || '').trim() : '', value: d ? (d.innerText || '').trim() : '' };
+  });
+  const box = [...dlg.querySelectorAll('.body-right > div')].filter(v)[0];
+  const cols = box ? [...box.querySelectorAll('.cols')].map(n => (n.innerText || '').trim()).filter(Boolean) : [];
+  return {
+    ok: true,
+    cls: box ? box.className : null,
+    cards,
+    cols,
+    descs: cards.map(c => c.value).join(' | ')
+  };
+})()`;
+
+async function openDialog(page) {
+  const isOpen = await page.eval(DIALOG_OPEN);
+  if (isOpen?.ok) await page.eval(CANCEL);
+  await sleep(600);
+  await page.eval(OPEN);
+  await sleep(1500);
+}
+
+async function pickStep(page, card, text) {
+  const opened = await page.eval(openCard(card));
+  if (!opened?.ok) throw new Error(`卡片「${card}」打不开：${JSON.stringify(opened?.cards)}`);
+  await sleep(700);
+  const picked = await page.eval(pickByText(text));
+  if (!picked?.ok) throw new Error(`选项「${text}」选不上：${JSON.stringify(picked?.options)}`);
+  await sleep(400);
+  await page.eval(DONE);
+  await sleep(1400);
+  return picked;
+}
+
+const CASES = [];
+
+// 订单：9 种
+for (const t of ['全部订单', '尚未付款', '尚未发货', '尚未发货 — 已逾期', '尚未发货 — 在 24 小时内发货', '尚未快递发货', '已付款并发货', '已付款 — 尚未留下信用评价', '已发货 — 尚未留下信用评价']) {
+  CASES.push({ key: `orders:${t}`, group: 'orders', steps: [['Source', '订单'], ['Type', t]] });
+}
+// 物品刊登：3 种
+for (const t of ['全部在售物品', '非在售物品刊登', '全部预定物品刊登']) {
+  CASES.push({ key: `listings:${t}`, group: 'listings', steps: [['Source', '物品刊登'], ['Type', t]] });
+}
+// 广告常规：只有物品刊登一种类型
+CASES.push({ key: 'plg:物品刊登', group: 'plg', steps: [['Source', '广告'], ['Campaign strategy', '促销刊登 — 常规'], ['Type', '物品刊登']] });
+// 广告优先：4 种
+for (const t of ['关键词', '物品刊登', '活动', '搜索查询']) {
+  CASES.push({ key: `priority:${t}`, group: 'priority', steps: [['Source', '广告'], ['Campaign strategy', '促销刊登 — 优先'], ['Type', t]] });
+}
+
+const run = async () => {
+  await ensureBridge();
+  const page = await openTab('probe-fields', REPORTS_URL);
+  await page.navigate(REPORTS_URL, { settleMs: 2500 });
+  const out = [];
+  for (const c of CASES) {
+    try {
+      await openDialog(page);
+      for (const [card, text] of c.steps) await pickStep(page, card, text);
+      await sleep(900);
+      const r = await page.eval(READ);
+      out.push({ ...c, ...r });
+      console.log(`[OK] ${c.key} → ${r.cols.length} 项 | ${r.descs} | ${r.cls}`);
+    } catch (e) {
+      out.push({ ...c, ok: false, error: e.message });
+      console.log(`[ERR] ${c.key} → ${e.message}`);
+    }
+    await page.eval(CANCEL).catch(() => {});
+    await sleep(700);
+  }
+  writeFileSync('_fields-raw.json', JSON.stringify(out, null, 1), 'utf8');
+  console.log('已写入 _fields-raw.json');
+  await page.close();
+  process.exit(0);
+};
+
+run().catch(e => { console.error('FATAL', e.message); process.exit(1); });

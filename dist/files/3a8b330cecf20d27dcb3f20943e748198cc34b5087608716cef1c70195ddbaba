@@ -1,0 +1,129 @@
+// 店铺 / 机器配置：迁移到另一家店铺或另一台电脑，只改这一个文件，主链路代码不用动。
+//
+// 两种方式（任选其一）：
+//   1. 直接改下面 DEFAULTS 里的值；
+//   2. 复制项目根目录的「新店铺配置示例.json」，填好后设环境变量
+//      EBAY_SHOP_CONFIG=C:\path\to\my-shop.json 指向它（推荐，代码完全不用动）。
+//
+// 后台结构一模一样时，需要换的通常只有：dataDir / runsDir / downloadsDir /
+// dashboardUrl / plpCampaigns / plgCampaigns 这 6 项；
+// 优先促销刊登活动列表不用手填，重跑 node app\probe-priority-campaigns.mjs 即可重采。
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+export const PROJECT_ROOT = dirname(HERE);
+
+// 优先促销刊登的 31 个活动：来自后台 Campaigns 卡片实采快照（只读探查，不是猜的）。
+// 迁移到新店铺时重跑探针覆盖 app/priority-campaigns.json，或在本文件/外部 JSON 里覆盖。
+function readPriorityCampaigns(expectedShop) {
+  try {
+    const path = join(HERE, 'priority-campaigns.json');
+    if (!existsSync(path)) return [];
+    const data = JSON.parse(readFileSync(path, 'utf8'));
+    // 迁移到新店铺时不能沿用上一家店的 31 个活动：快照带店铺归属，不匹配就忽略
+    if (data.shopName && data.shopName !== expectedShop) {
+      console.warn(`[店铺配置] 活动快照属于「${data.shopName}」，当前是「${expectedShop}」，已忽略；请重跑 node app\\probe-priority-campaigns.mjs`);
+      return [];
+    }
+    return normalizeCampaigns(data.campaigns);
+  } catch { return []; }
+}
+
+function normalizeCampaigns(list) {
+  return (Array.isArray(list) ? list : [])
+    .map(c => typeof c === 'string' ? { id: c, name: c } : { id: String(c?.id || ''), name: String(c?.name || c?.id || '') })
+    .filter(c => c.id);
+}
+
+// 当前店铺的默认值（保持原行为，不改动就不会影响现有使用）
+const DEFAULTS = {
+  shopName: 'AD600 Elite',
+  dataDir: 'C:/Users/XPTTOP20/Desktop/ebay ad600 Elite流量+PLG广告数据',
+  runsDir: 'C:/Users/XPTTOP20/Desktop/测试下载',
+  downloadsDir: 'C:/Users/XPTTOP20/Desktop/downloads',
+  dashboardUrl: 'https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/',
+  plpCampaigns: ['165210337019', '165349120019', '165542388019'],
+  plgCampaigns: [
+    { id: '165842950019', name: 'US.TD.PLG.UD900E.管培.非核心' },
+    { id: '165842906019', name: 'US.TD.PLG.UD900E.管培.核心' },
+    { id: '165777897019', name: 'US.TD.PLG.AD600.Elite' },
+    { id: '165233419019', name: 'US.TD.PLG.topdon_scanner.管培' },
+    { id: '165065608019', name: 'US.TD.PLG.topdon_scanner.管培.自动规则' },
+    { id: '44420301019', name: 'US.TD.PLG.topdon_scanner' }
+  ],
+  consolePort: 7788,
+  bridgePort: 9233,
+  chromeExe: ''
+};
+
+function readOverride() {
+  const path = process.env.EBAY_SHOP_CONFIG;
+  if (!path) return {};
+  if (!existsSync(path)) {
+    console.warn(`[店铺配置] EBAY_SHOP_CONFIG 指向的文件不存在：${path}，已用内置默认值`);
+    return {};
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    console.warn(`[店铺配置] 读取失败（${error.message}），已用内置默认值`);
+    return {};
+  }
+}
+
+const override = readOverride();
+export const SHOP = {
+  ...DEFAULTS,
+  ...override,
+  // 数组类字段不做浅合并，避免半份旧店铺活动混进新店铺
+  plpCampaigns: override.plpCampaigns ?? DEFAULTS.plpCampaigns,
+  plgCampaigns: override.plgCampaigns ?? DEFAULTS.plgCampaigns,
+  priorityCampaigns: override.priorityCampaigns
+    ? normalizeCampaigns(override.priorityCampaigns)
+    : readPriorityCampaigns(override.shopName ?? DEFAULTS.shopName),
+  // 默认只跑 PLP 那 3 个活动；想换默认集合就在外部 JSON 里写 priorityDefaultCampaigns
+  priorityDefaultCampaigns: override.priorityDefaultCampaigns ?? (override.plpCampaigns ?? DEFAULTS.plpCampaigns)
+};
+
+// 路径类统一导出，其余模块只引用这里
+export const DATA_DIR = SHOP.dataDir;
+export const PENDING_DIR = join(DATA_DIR, '90-待处理');
+export const REPO_DIR = join(DATA_DIR, '看板源码/ebay-online-dashboard');
+export const HTML_SOURCE = join(DATA_DIR, '看板源码/ebay-traffic-dashboard/ebay-traffic-dashboard.html');
+export const RUNS_DIR = SHOP.runsDir;
+export const DEFAULT_DOWNLOAD_DIR = SHOP.downloadsDir;
+export const DASHBOARD_URL = SHOP.dashboardUrl;
+export const PLP_CAMPAIGNS = SHOP.plpCampaigns;
+export const PLG_CAMPAIGNS = SHOP.plgCampaigns;
+
+// 优先促销刊登活动：快照缺省时退回 PLP 三个，保证控制台不会因为没跑探针而空白
+const priorityList = SHOP.priorityCampaigns.length
+  ? SHOP.priorityCampaigns
+  : SHOP.plpCampaigns.map(id => ({ id, name: id }));
+export const PRIORITY_CAMPAIGNS = priorityList.map(c => ({
+  id: c.id,
+  name: c.name || c.id,
+  plp: SHOP.plpCampaigns.includes(c.id)
+}));
+export const PRIORITY_DEFAULT_IDS = SHOP.priorityDefaultCampaigns
+  .filter(id => PRIORITY_CAMPAIGNS.some(c => c.id === id));
+
+export const CONSOLE_PORT = SHOP.consolePort;
+export const BRIDGE_PORT = SHOP.bridgePort;
+
+// 启动体检：把生效配置打出来，迁移时一眼看出有没有读对文件
+export function shopSummary() {
+  return {
+    shopName: SHOP.shopName,
+    configFile: process.env.EBAY_SHOP_CONFIG || '(内置默认值)',
+    dataDir: DATA_DIR,
+    runsDir: RUNS_DIR,
+    dashboardUrl: DASHBOARD_URL,
+    plpCampaigns: PLP_CAMPAIGNS.length,
+    plgCampaigns: PLG_CAMPAIGNS.length,
+    priorityCampaigns: PRIORITY_CAMPAIGNS.length,
+    priorityDefaultCampaigns: PRIORITY_DEFAULT_IDS.length
+  };
+}

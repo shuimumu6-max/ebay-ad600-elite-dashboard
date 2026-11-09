@@ -1,0 +1,727 @@
+// 报表注册表：控制台里所有可下载数据源的唯一事实来源。
+// 新增报表只改这一个文件，config / 服务端 / 页面 / 字段字典都会自动跟上。
+//
+// 字段清单来源：2026-11-07 在 eBay 报表中心 Download report 弹窗逐项只读采集
+//   （每种报表选完选项后右侧出现的 "Summary of ... columns" 区块），未提交任何下载。
+// csvMap / extraCsv 来源：本地已落盘的真实 CSV 表头（已下载过的报表才有），
+//   未下载过的报表 csvVerified=false，等首个文件落盘后补录。
+
+// 字段分组：用于看板梳理时按语义归类
+export const FIELD_GROUPS = {
+  order: '订单',
+  buyer: '买家',
+  item: '商品',
+  listing: '刊登',
+  price: '价格',
+  time: '时间',
+  campaign: '广告结构',
+  metric: '效果指标'
+};
+
+// 规范字段表：同名字段跨报表共用同一个 key，便于看板侧做勾连
+const F = {
+  salesRecordNumber: { name: 'Sales record number', group: 'order' },
+  orderNumber: { name: 'Order number', group: 'order' },
+
+  buyerUsername: { name: 'Buyer username', group: 'buyer' },
+  buyerEmail: { name: 'Buyer email', group: 'buyer' },
+  buyerNote: { name: 'Buyer note', group: 'buyer' },
+  buyerAddress: { name: 'Buyer address', group: 'buyer' },
+  shipToName: { name: 'Ship to name', group: 'buyer' },
+  shipToAddress: { name: 'Ship to address', group: 'buyer' },
+
+  itemNumber: { name: 'Item number', group: 'item' },
+  itemId: { name: 'Item ID', group: 'item' },
+  itemTitle: { name: 'Item title', group: 'item' },
+  title: { name: 'Title', group: 'item' },
+  variationDetails: { name: 'Variation details', group: 'item' },
+  sku: { name: 'Custom label (SKU)', group: 'item' },
+  relationship: { name: 'Relationship', group: 'item' },
+  upc: { name: 'UPC', group: 'item' },
+  condition: { name: 'Condition', group: 'item' },
+  categories: { name: 'Categories', group: 'item' },
+  listingSite: { name: 'Listing site', group: 'item' },
+
+  availableQuantity: { name: 'Available quantity', group: 'listing' },
+  quantityAvailable: { name: 'Quantity available', group: 'listing' },
+  format: { name: 'Format', group: 'listing' },
+  soldQuantity: { name: 'Sold quantity', group: 'listing' },
+  watchers: { name: 'Watchers', group: 'listing' },
+  bids: { name: 'Bids', group: 'listing' },
+
+  price: { name: 'Price', group: 'price' },
+  startPrice: { name: 'Start price', group: 'price' },
+  buyItNowPrice: { name: 'Buy It Now price', group: 'price' },
+  reservePrice: { name: 'Reserve Price', group: 'price' },
+
+  date: { name: 'Date', group: 'time' },
+  listingStartDate: { name: 'Listing start date', group: 'time' },
+  listingEndDate: { name: 'Listing end date', group: 'time' },
+
+  campaignDetails: { name: 'Campaign details', group: 'campaign' },
+  adGroupDetails: { name: 'Ad Group details', group: 'campaign' },
+  keywordDetails: { name: 'Keyword details', group: 'campaign' },
+  searchQuery: { name: 'Search Query', group: 'campaign' },
+
+  impressions: { name: 'Impressions', group: 'metric' },
+  clicks: { name: 'Clicks', group: 'metric' },
+  ctr: { name: 'CTR', group: 'metric' },
+  soldQuantityAd: { name: 'Sold quantity', group: 'metric' },
+  conversionRate: { name: 'Conversion rate', group: 'metric' },
+  avgCpc: { name: 'Average cost per click', group: 'metric' },
+  avgCps: { name: 'Average cost per sale', group: 'metric' },
+  sales: { name: 'Sales', group: 'metric' },
+
+  // ---- Traffic（/sh/performance/traffic 页面直接下载，不在报表中心）----
+  listingTitle: { name: 'Listing title', group: 'item' },
+  ebayItemId: { name: 'eBay item ID', group: 'item' },
+  itemStartDate: { name: 'Item Start Date', group: 'time' },
+  category: { name: 'Category', group: 'item' },
+  promotedStatus: { name: 'Current promoted listings status', group: 'item' },
+  trafficQuantityAvailable: { name: 'Quantity available', group: 'listing' },
+  totalImpressions: { name: 'Total impressions', group: 'metric' },
+  ctrSite: { name: 'Click-through rate = Page views from eBay site/Total impressions', group: 'metric' },
+  trafficQuantitySold: { name: 'Quantity sold', group: 'metric' },
+  top20SearchImpressionPct: { name: '% Top 20 Search Impressions', group: 'metric' },
+  salesConversionRate: { name: 'Sales conversion rate = Quantity sold/Total page views', group: 'metric' },
+  top20PlImpressions: { name: 'Top 20 search spot impressions from promoted listings', group: 'metric' },
+  top20PlChange: { name: '% Change in Top 20 search spot impressions from promoted listings', group: 'metric' },
+  top20OrganicImpressions: { name: 'Top 20 search spot organic impressions', group: 'metric' },
+  top20TotalChange: { name: '% Change in Top 20 search spot impressions', group: 'metric' },
+  restOfSearchImpressions: { name: 'Rest of search spot impressions', group: 'metric' },
+  totalSearchImpressions: { name: 'Total Search Impressions', group: 'metric' },
+  nonSearchPlImpressions: { name: 'Non-search promoted listings impressions', group: 'metric' },
+  nonSearchPlChange: { name: '% Change in non-search promoted listings impressions', group: 'metric' },
+  nonSearchOrganicImpressions: { name: 'Non-search organic impressions', group: 'metric' },
+  nonSearchOrganicChange: { name: '% Change in non-search organic impressions', group: 'metric' },
+  totalPlImpressions: { name: 'Total Promoted Listings impressions (applies to eBay site only)', group: 'metric' },
+  totalOffsiteImpressions: { name: 'Total Promoted Offsite impressions (applies to off-eBay only)', group: 'metric' },
+  totalOrganicImpressions: { name: 'Total organic impressions on eBay site', group: 'metric' },
+  totalPageViews: { name: 'Total page views', group: 'metric' },
+  pageViewsPlSite: { name: 'Page views via promoted listings impressions on eBay site', group: 'metric' },
+  pageViewsPlOffsite: { name: 'Page views via promoted listings Impressions from outside eBay (search engines, affilliates)', group: 'metric' },
+  pageViewsOrganicSite: { name: 'Page views via organic impressions on eBay site', group: 'metric' },
+  pageViewsOrganicOffsite: { name: 'Page views from organic impressions outside eBay (Includes page views from search engines)', group: 'metric' }
+};
+
+// ---- Traffic：页面直接下载，不在报表中心，字段取自真实文件表头 ----
+const TRAFFIC_COLUMNS = [
+  'listingTitle', 'ebayItemId', 'itemStartDate', 'category', 'promotedStatus',
+  'trafficQuantityAvailable', 'totalImpressions', 'ctrSite', 'trafficQuantitySold',
+  'top20SearchImpressionPct', 'salesConversionRate',
+  'top20PlImpressions', 'top20PlChange', 'top20OrganicImpressions', 'top20TotalChange',
+  'restOfSearchImpressions', 'totalSearchImpressions',
+  'nonSearchPlImpressions', 'nonSearchPlChange', 'nonSearchOrganicImpressions', 'nonSearchOrganicChange',
+  'totalPlImpressions', 'totalOffsiteImpressions', 'totalOrganicImpressions',
+  'totalPageViews', 'pageViewsPlSite', 'pageViewsPlOffsite', 'pageViewsOrganicSite', 'pageViewsOrganicOffsite'
+];
+// Traffic 的页面字段就是文件列名，一对一
+const TRAFFIC_CSV = Object.fromEntries(TRAFFIC_COLUMNS.map(k => [k, [F[k].name]]));
+
+const traffic = [
+  {
+    id: 'traffic.daily',
+    group: 'traffic',
+    groupLabel: '流量报表',
+    requestKind: 'traffic',
+    label: '单日流量',
+    sourceId: 'TRAFFIC',
+    sourceLabel: '流量页面',
+    strategy: null,
+    type: 'DAILY',
+    hasCampaigns: false,
+    timeUnit: false,
+    rangeKind: 'traffic',
+    folder: '01-Traffic单日',
+    rowMatch: null,
+    fileStem: 'Traffic',
+    implemented: true,
+    columnsTitle: 'CSV 表头',
+    columns: TRAFFIC_COLUMNS,
+    csvMap: TRAFFIC_CSV,
+    csvVerified: true,
+    extraCsv: [],
+    note: '从 /sh/performance/traffic 直接下载，指定单日；文件前言带「Report for 起 to 止」，报表中心里没有这一类。'
+  },
+  {
+    id: 'traffic.range',
+    group: 'traffic',
+    groupLabel: '流量报表',
+    requestKind: 'traffic',
+    label: '累计流量',
+    sourceId: 'TRAFFIC',
+    sourceLabel: '流量页面',
+    strategy: null,
+    type: 'RANGE',
+    hasCampaigns: false,
+    timeUnit: false,
+    rangeKind: 'traffic',
+    folder: '02-Traffic累计',
+    rowMatch: null,
+    fileStem: 'Traffic',
+    implemented: true,
+    columnsTitle: 'CSV 表头',
+    columns: TRAFFIC_COLUMNS,
+    csvMap: TRAFFIC_CSV,
+    csvVerified: true,
+    extraCsv: [],
+    note: '同一页面下载区间数据，起止日都可自选；列结构与单日完全一致。'
+  }
+];
+
+// 订单 9 种：表头与字段完全一致（实测逐种核对）
+const ORDER_COLUMNS = [
+  'salesRecordNumber', 'orderNumber',
+  'buyerUsername', 'buyerEmail', 'buyerNote', 'buyerAddress', 'shipToName', 'shipToAddress',
+  'itemNumber', 'itemTitle'
+];
+
+const ORDER_TYPES_DEF = [
+  { key: 'all', label: '全部订单', type: 'ALL_ORDERS' },
+  { key: 'unpaid', label: '尚未付款', type: 'AWAITING_PAYMENT' },
+  { key: 'unshipped', label: '尚未发货', type: 'AWAITING_SHIPMENT' },
+  { key: 'overdue', label: '尚未发货 · 已逾期', type: 'AWAITING_SHIPMENT_OVERDUE' },
+  { key: 'due24h', label: '尚未发货 · 24h 内', type: 'AWAITING_SHIPMENT_DUE_24H' },
+  { key: 'express', label: '尚未快递发货', type: 'AWAITING_EXPEDITED_SHIPMENT' },
+  { key: 'paidShipped', label: '已付款并发货', type: 'PAID_SHIPPED' },
+  { key: 'paidNoFeedback', label: '已付款 · 未评价', type: 'PAID_WAITING_TO_GIVE_FEEDBACK' },
+  { key: 'shippedNoFeedback', label: '已发货 · 未评价', type: 'SHIPPED_WAITING_TO_GIVE_FEEDBACK' }
+];
+
+const orders = ORDER_TYPES_DEF.map(t => ({
+  id: `orders.${t.key}`,
+  group: 'orders',
+  groupLabel: '订单报表',
+  requestKind: 'orders',
+  label: t.label,
+  sourceId: 'ORDERS',
+  sourceLabel: '订单',
+  strategy: null,
+  type: t.type,
+  hasCampaigns: false,
+  timeUnit: false,
+  rangeKind: 'orders',
+  folder: '10-订单报表',
+  rowMatch: 'orders',
+  fileStem: 'eBay-orders-report',
+  implemented: true,   // 9 种订单类型已逐个实测落盘
+  columnsTitle: 'Summary of Order reports columns',
+  columns: ORDER_COLUMNS,
+  csvMap: {
+    salesRecordNumber: ['Sales Record Number'],
+    orderNumber: ['Order Number'],
+    buyerUsername: ['Buyer Username'],
+    buyerEmail: ['Buyer Email'],
+    buyerNote: ['Buyer Note'],
+    buyerAddress: ['Buyer Address 1', 'Buyer Address 2'],
+    shipToName: ['Ship To Name'],
+    shipToAddress: ['Ship To Address 1', 'Ship To Address 2'],
+    itemNumber: ['Item Number'],
+    itemTitle: ['Item Title']
+  },
+  csvVerified: true,
+  extraCsv: [
+    'Buyer Name', 'Buyer City', 'Buyer State', 'Buyer Zip', 'Buyer Country',
+    'Buyer Tax Identifier Name', 'Buyer Tax Identifier Value',
+    'Ship To Phone', 'Ship To City', 'Ship To State', 'Ship To Zip', 'Ship To Country',
+    'Custom Label', 'Sold Via Promoted Listings', 'Quantity', 'Sold For',
+    'Shipping And Handling', 'Item Location', 'Item Zip Code', 'Item Country',
+    'eBay Collect And Remit Tax Rate', 'eBay Collect And Remit Tax Type',
+    'eBay Reference Name', 'eBay Reference Value', 'Tax Status',
+    'Seller Collected Tax', 'eBay Collected Tax',
+    'Electronic Waste Recycling Fee', 'Mattress Recycling Fee', 'Battery Recycling Fee',
+    'White Goods Disposal Tax', 'Tire Recycling Fee', 'Additional Fee', 'Lumber Fee',
+    'Prepaid Wireless Fee', 'Road Improvement And Food Delivery Fee',
+    'eBay Collected Charges', 'Total Price', 'eBay Collected Tax and Fees Included in Total',
+    'Payment Method', 'Sale Date', 'Paid On Date', 'Ship By Date',
+    'Minimum Estimated Delivery Date', 'Maximum Estimated Delivery Date', 'Shipped On Date',
+    'Feedback Left', 'Feedback Received', 'My Item Note',
+    'PayPal Transaction ID', 'Shipping Service', 'Tracking Number', 'Transaction ID',
+    'Variation Details', 'Global Shipping Program', 'Global Shipping Reference ID',
+    'Click And Collect', 'Click And Collect Reference Number', 'eBay Plus',
+    'Authenticity Verification Program', 'Authenticity Verification Status',
+    'Authenticity Verification Outcome Reason', 'PSA Vault Program', 'Vault Fulfillment Type',
+    'eBay Fulfillment Program', 'Tax City', 'Tax State', 'Tax Zip', 'Tax Country',
+    'eBay International Shipping'
+  ],
+  fieldNotes: {
+    buyerAddress: '页面一个 Buyer address，文件里拆成 Address 1 / Address 2，City / State / Zip / Country 在额外列',
+    shipToAddress: '页面一个 Ship to address，文件里拆成 Address 1 / Address 2，City / State / Zip / Country 在额外列'
+  },
+  note: '9 种订单类型字段完全相同；文件实测 82 列，页面只列 10 列。表头会用首字母大写（Sales Record Number），与页面写法不同。'
+}));
+
+// 物品刊登 3 种：字段各不相同
+const listingBase = {
+  group: 'listings',
+  groupLabel: '商品名单',
+  requestKind: 'active',
+  sourceId: 'LISTINGS',
+  sourceLabel: '物品刊登',
+  strategy: null,
+  hasCampaigns: false,
+  timeUnit: false,
+  rangeKind: null,
+  rowMatch: 'all active listings',
+  implemented: true
+};
+
+const listings = [
+  {
+    ...listingBase,
+    id: 'listings.active',
+    key: 'active',
+    label: '全部在售物品',
+    type: 'ALL_LISTINGS',
+    folder: '07-在售商品名单',
+    fileStem: 'eBay-all-active-listings-report',
+    columnsTitle: 'Summary of Listing reports columns',
+    columns: [
+      'itemNumber', 'title', 'variationDetails', 'sku', 'availableQuantity',
+      'format', 'price', 'soldQuantity', 'watchers', 'bids', 'listingSite'
+    ],
+    csvMap: {
+      itemNumber: ['Item number'],
+      title: ['Title'],
+      variationDetails: ['Variation details'],
+      sku: ['Custom label (SKU)'],
+      availableQuantity: ['Available quantity'],
+      format: ['Format'],
+      price: ['Currency', 'Start price', 'Auction Buy It Now price', 'Reserve price', 'Current price'],
+      soldQuantity: ['Sold quantity'],
+      watchers: ['Watchers'],
+      bids: ['Bids'],
+      listingSite: ['Listing site']
+    },
+    csvVerified: true,
+    extraCsv: [
+      'Start date', 'End date', 'eBay category 1 name', 'eBay category 1 number',
+      'eBay category 2 name', 'eBay category 2 number', 'Condition',
+      'CD:Professional Grader - (ID: 27501)', 'CD:Grade - (ID: 27502)',
+      'CDA:Certification Number - (ID: 27503)', 'CD:Card Condition - (ID: 40001)',
+      'eBay Product ID(ePID)', 'P:UPC', 'P:EAN', 'P:ISBN'
+    ],
+    fieldNotes: {
+      price: '页面合并成 Price 一列，实际文件按刊登形式拆成 Currency / Start price / Auction Buy It Now price / Reserve price / Current price'
+    }
+  },
+  {
+    ...listingBase,
+    id: 'listings.unsold',
+    key: 'unsold',
+    label: '非在售物品刊登',
+    type: 'INACTIVE_LISTINGS',
+    folder: '08-非在售名单',
+    fileStem: 'eBay-inactive-listings-report',
+    rowMatch: '(inactive|unsold) listings',
+    columnsTitle: 'Summary of Columns',
+    columns: [
+      'itemNumber', 'sku', 'title', 'relationship', 'upc', 'availableQuantity',
+      'price', 'format', 'condition', 'categories', 'bids', 'watchers'
+    ],
+    csvMap: {
+      itemNumber: ['Item number'],
+      sku: ['Custom label (SKU)'],
+      title: ['Title'],
+      relationship: ['Relationship', 'Relationship details'],
+      upc: ['P:UPC'],
+      availableQuantity: ['Available quantity'],
+      price: ['Start price', 'Buy It Now price', 'Reserve price', 'Current price (future)'],
+      format: ['Format'],
+      condition: ['Condition'],
+      categories: ['eBay category 1 name', 'eBay category 1 number'],
+      bids: ['Bids'],
+      watchers: ['Watchers']
+    },
+    csvVerified: true,
+    extraCsv: [
+      'High Bid', 'Start date', 'End date', 'Sold status', 'Relist status', 'Listing site',
+      'CD:Professional Grader - (ID: 27501)', 'CD:Grade - (ID: 27502)',
+      'CDA:Certification Number - (ID: 27503)', 'CD:Card Condition - (ID: 40001)'
+    ],
+    fieldNotes: {
+      price: '页面一个 Price，文件拆成 4 列（含 Current price (future)）',
+      relationship: '页面一个 Relationship，文件拆成 Relationship 与 Relationship details'
+    },
+    note: '固定统计过去 90 天未售出且已结束的刊登，没有时间选项；实测 27 列。'
+  },
+  {
+    ...listingBase,
+    id: 'listings.scheduled',
+    key: 'scheduled',
+    label: '全部预定物品刊登',
+    type: 'SCHEDULED_LISTINGS',
+    folder: '09-预定名单',
+    fileStem: 'eBay-scheduled-listings-report',
+    rowMatch: 'scheduled listings',
+    columnsTitle: 'Summary of Listing reports columns',
+    columns: [
+      'itemNumber', 'title', 'sku', 'variationDetails', 'availableQuantity',
+      'startPrice', 'buyItNowPrice', 'reservePrice', 'format', 'listingSite'
+    ],
+    csvMap: {
+      itemNumber: ['Item number'],
+      title: ['Title'],
+      sku: ['Custom label (SKU)'],
+      variationDetails: ['Variation details'],
+      availableQuantity: ['Available quantity'],
+      startPrice: ['Start price'],
+      buyItNowPrice: ['Buy It Now price'],
+      reservePrice: ['Reserve price'],
+      format: ['Format'],
+      listingSite: ['Listing site']
+    },
+    csvVerified: true,
+    extraCsv: ['eBay category 1 name', 'eBay category 1 ID', 'Start date', 'End date'],
+    note: '目前处于预定状态的刊登，没有时间选项；实测 14 列。该状态下常返回 0 行，属正常结果。'
+  }
+];
+
+// 广告：常规策略只有「物品刊登」一种；优先策略有 4 种
+const marketingBase = {
+  group: 'marketing',
+  groupLabel: '优先促销刊登',
+  requestKind: 'priority',
+  sourceId: 'MARKETING',
+  sourceLabel: '广告',
+  timeUnit: true,
+  rangeKind: 'marketing',
+  csvVerified: true
+};
+
+// 优先促销刊登 · 三种级别的真实表头（2026-11-06 实测落盘，列名原文含尾空格，匹配用 includes 不受影响）
+// 关键差异：日度报表在优先促刊里只有单个 Date 列（不是 Start date / End date）；
+// 指标名统一带 (in billing currency)，转化率分母写的是 Sold quantity 不是 Total Quantity Sold。
+const PRIORITY_LISTING_CSV = {
+  date: ['Date'],
+  campaignDetails: ['Campaign name', 'Campaign ID', 'Campaign start date', 'Campaign end date', 'Targeting strategy'],
+  adGroupDetails: ['Ad Group Name', 'Ad Group Id'],
+  itemId: ['Item ID'],
+  title: ['Title'],
+  price: ['Price (Current or Last Price)'],
+  quantityAvailable: ['Quantity available'],
+  listingStartDate: ['Listing start date'],
+  listingEndDate: ['Listing end date'],
+  impressions: ['Impressions'],
+  clicks: ['Clicks'],
+  ctr: ['CTR'],
+  soldQuantityAd: ['Sold quantity'],
+  conversionRate: ['Conversion rate (Sold quantity/Clicks)'],
+  avgCpc: ['Average cost per click (in billing currency)'],
+  sales: ['Sales (in billing currency)']
+};
+
+const PRIORITY_CAMPAIGN_CSV = {
+  date: ['Date'],
+  campaignDetails: ['Campaign name', 'Campaign ID', 'Campaign start date', 'Campaign end date', 'Targeting strategy'],
+  impressions: ['Impressions'],
+  clicks: ['Clicks'],
+  ctr: ['CTR'],
+  soldQuantityAd: ['Sold quantity'],
+  conversionRate: ['Conversion rate (Sold quantity/Clicks)'],
+  avgCpc: ['Average cost per click (in billing currency)'],
+  avgCps: ['Average cost per sale (in billing currency)'],
+  sales: ['Sales (in billing currency)']
+};
+
+// PLG 日期/活动结构：页面 11 列，实际文件 36 列（eBay / 外部渠道拆分 + 自然流量指标）
+const PLG_CSV = {
+  date: ['Date'],
+  campaignDetails: ['Campaign name', 'Campaign ID', 'Campaign start date', 'Campaign end date'],
+  itemId: ['Item ID'],
+  title: ['Title'],
+  price: ['Price (Current or Last Price)'],
+  quantityAvailable: ['Quantity available'],
+  listingStartDate: ['Listing start date'],
+  listingEndDate: ['Listing end date'],
+  impressions: ['Promoted Listings Impressions (via eBay Placements)'],
+  clicks: ['Total Promoted Listings Clicks']
+};
+
+const PLG_EXTRA = [
+  'Status', 'Listing format', 'Total Promoted Listings Sold quantity', 'Organic Sold Quantity',
+  'Total Quantity Sold', 'Promoted Listings Conversion rate (Promoted Listings Sold quantity/Promoted Listings Clicks)',
+  'Promoted Listings Contribution (Promoted Listings Sold quantity/Total Quantity Sold)',
+  'Total Promoted Listings Sales (in billing currency)', 'Ad fees (in billing currency)',
+  'Return on Ad spend (Sales/Ad fees)', 'Average cost per sale (in billing currency)',
+  'Promoted Listings Clicks (via eBay placements)', 'Promoted Listings Clicks (via external placements)',
+  'Promoted Listings Sold Quantity (via eBay placements)', 'Promoted Listings Sold Quantity (via external placements)',
+  'Promoted Listings Sales (via eBay placements)', 'Promoted Listings Sales (via external placements)',
+  'Ad fees (via eBay placements, in billing currency)', 'Ad fees (via external placements, in billing currency)',
+  'Promoted Listings Conversion Rate (via eBay placements)',
+  'Promoted Listings Conversion Rate (via external placements)', 'Organic Clicks', 'Organic Impressions'
+];
+
+const PLP_LISTING_COLUMNS = [
+  'date', 'campaignDetails', 'itemId', 'title', 'price', 'quantityAvailable',
+  'listingStartDate', 'listingEndDate', 'impressions', 'clicks', 'ctr'
+];
+
+// 优先促刊的链接级报表：与 PLG 页面列相同，但文件表头更规范（一列一天 + 独立 CTR 列）
+const PLP_LISTING_CSV = {
+  date: ['Start date', 'End date'],
+  campaignDetails: ['Campaign name', 'Campaign ID', 'Campaign start date', 'Campaign end date', 'Targeting strategy'],
+  itemId: ['Item ID'],
+  title: ['Title'],
+  price: ['Price (Current or Last Price)'],
+  quantityAvailable: ['Quantity available'],
+  listingStartDate: ['Listing start date'],
+  listingEndDate: ['Listing end date'],
+  impressions: ['Impressions'],
+  clicks: ['Clicks'],
+  ctr: ['CTR']
+};
+
+const marketing = [
+  {
+    id: 'marketing.plg.listing',
+    group: 'plg',
+    groupLabel: 'PLG 链接广告',
+    requestKind: 'plg',
+    label: 'PLG 链接广告',
+    sourceId: 'MARKETING',
+    sourceLabel: '广告',
+    strategy: 'PL_G',
+    type: 'LISTING',
+    hasCampaigns: true,
+    timeUnit: true,
+    rangeKind: 'marketing',
+    folder: '03-PLG链接广告',
+    // 实测：PLG 常规策略与「优先促刊·物品刊登」的请求行名都叫 Advertising Listing，
+    // 行文本无法区分两者。隔离靠 download.mjs 的 queueReportCenter 串行队列 + knownRefs
+    // 快照，这里必须保持宽松匹配；收窄正则会让 PLG 等不到自己的请求（已踩过一次）。
+    rowMatch: 'Advertising',
+    fileStem: 'eBay-promoted-listing-general-listing-report',
+    implemented: true,
+    columnsTitle: 'Summary of Columns',
+    columns: PLP_LISTING_COLUMNS,
+    csvMap: PLG_CSV,
+    csvVerified: true,
+    extraCsv: PLG_EXTRA,
+    fieldNotes: {
+      ctr: '派生指标：Clicks ÷ Impressions，文件里没有同名裸列',
+      campaignDetails: '页面合并成 Campaign details，实际拆成 Campaign name / Campaign ID / Campaign start date / Campaign end date',
+      impressions: '文件列名为 Promoted Listings Impressions (via eBay Placements)，只统计 eBay 站内曝光',
+      clicks: '文件列名为 Total Promoted Listings Clicks，站内 + 站外合计'
+    },
+    note: '常规策略只有「物品刊登」一种类型；活动可 6 选 N。'
+  },
+  {
+    id: 'marketing.priority.listing',
+    ...marketingBase,
+    label: '物品刊登',
+    strategy: 'PL_P',
+    type: 'LISTING',
+    hasCampaigns: true,
+    folder: '11-优先促刊',
+    rowMatch: 'Advertising Listing',
+    fileStem: 'eBay-promoted-listing-priority-listing-report',
+    implemented: true,
+    columnsTitle: 'Summary of Columns',
+    columns: PLP_LISTING_COLUMNS,
+    csvMap: PRIORITY_LISTING_CSV,
+    extraCsv: [
+      // 页面没列出的「Additional columns」：广告组维度 + 成交/费用指标
+      'Ad Group Name', 'Ad Group Id', 'Sold quantity', 'Sales (in billing currency)',
+      'Conversion rate (Sold quantity/Clicks)', 'Average cost per click (in billing currency)',
+      'Status', 'Ad fees (in billing currency)', 'Return on Ad spend (Sales/Ad fees)',
+      'Average cost per sale (in billing currency)'
+    ],
+    fieldNotes: {
+      date: '页面一个 Date，文件里也是一个 Date（优先促刊的日度报表不再拆 Start/End）'
+    },
+    note: '实测 25 列（2026-11-06）。与 campaign 页的 PLP 链接报表同族但更窄：PLP 27 列、优先促刊 25 列，差异是无 Start/End 拆分、无 Total sold quantity。'
+  },
+  {
+    id: 'marketing.priority.keyword',
+    ...marketingBase,
+    label: '关键词',
+    strategy: 'PL_P',
+    type: 'KEYWORD',
+    hasCampaigns: true,
+    folder: '11-优先促刊',
+    rowMatch: 'Advertising Keyword',
+    fileStem: 'eBay-promoted-listing-priority-keyword-report',
+    implemented: true,
+    columnsTitle: 'Summary of Columns',
+    columns: [
+      'date', 'campaignDetails', 'adGroupDetails', 'keywordDetails',
+      'impressions', 'clicks', 'ctr', 'soldQuantityAd', 'conversionRate', 'avgCpc', 'sales'
+    ],
+    csvMap: {
+      date: ['Date'],
+      campaignDetails: ['Campaign name', 'Campaign ID', 'Campaign start date', 'Campaign end date', 'Targeting strategy'],
+      adGroupDetails: ['Ad Group Name', 'Ad Group Id'],
+      keywordDetails: ['Seller Keyword', 'Keyword ID', 'Keyword Match Type'],
+      impressions: ['Impressions'],
+      clicks: ['Clicks'],
+      ctr: ['CTR'],
+      soldQuantityAd: ['Sold quantity'],
+      conversionRate: ['Conversion rate (Sold quantity/Clicks)'],
+      avgCpc: ['Average cost per click (in billing currency)'],
+      sales: ['Sales (in billing currency)']
+    },
+    extraCsv: [
+      'Bid', 'Status', 'Ad fees (in billing currency)', 'Return on Ad spend (Sales/Ad fees)',
+      'Average cost per sale (in billing currency)'
+    ],
+    fieldNotes: {
+      date: '页面一个 Date，文件里也是一个 Date'
+    },
+    note: '实测 23 列（2026-11-06）。与 campaign 页的 PLP 关键词报表同源但不同构：PLP 24 列、本表 23 列，差异是日期只有一个 Date、费用类列名带 (in billing currency)、转化率分母是 Sold quantity 而非 Total Quantity Sold。'
+  },
+  {
+    id: 'marketing.priority.campaign',
+    ...marketingBase,
+    label: '活动',
+    strategy: 'PL_P',
+    type: 'CAMPAIGN',
+    hasCampaigns: false,
+    folder: '11-优先促刊',
+    rowMatch: 'Advertising Campaign',
+    fileStem: 'eBay-promoted-listing-priority-campaign-report',
+    implemented: true,
+    columnsTitle: 'Summary of Columns',
+    columns: [
+      'date', 'campaignDetails', 'quantityAvailable', 'impressions', 'clicks', 'ctr',
+      'soldQuantityAd', 'conversionRate', 'sales', 'avgCpc', 'avgCps'
+    ],
+    csvMap: PRIORITY_CAMPAIGN_CSV,
+    extraCsv: [
+      'Daily budget', 'Daily budget (in billing currency)', 'Daily budget status',
+      'Status', 'Bidding strategy', 'Listing strategy', 'Max CPC',
+      'Ad fees (in billing currency)', 'Return on Ad spend (Sales/Ad fees)'
+    ],
+    fieldNotes: {
+      date: '页面一个 Date，文件里也是一个 Date',
+      quantityAvailable: '页面列了 Quantity available，活动级文件里没有（该指标只到物品级）'
+    },
+    note: '「活动」级没有 Campaigns 卡片，一次导出全部活动的汇总；实测 23 列（2026-11-06），比物品刊登多预算/竞价策略字段，少物品与广告组字段。'
+  },
+  {
+    id: 'marketing.priority.search',
+    ...marketingBase,
+    label: '搜索查询',
+    strategy: 'PL_P',
+    type: 'SEARCH_QUERY',
+    hasCampaigns: true,
+    folder: '11-优先促刊',
+    rowMatch: 'Advertising Search',
+    fileStem: 'eBay-promoted-listing-priority-search-query-report',
+    implemented: true,
+    columnsTitle: 'Summary of Columns',
+    columns: [
+      'date', 'campaignDetails', 'adGroupDetails', 'searchQuery',
+      'impressions', 'clicks', 'ctr', 'soldQuantityAd', 'conversionRate', 'avgCpc', 'sales'
+    ],
+    csvMap: {
+      date: ['Date'],
+      campaignDetails: ['Campaign name', 'Campaign ID', 'Campaign start date', 'Campaign end date', 'Targeting strategy'],
+      adGroupDetails: ['Ad Group Name', 'Ad Group Id'],
+      searchQuery: ['Search Query'],
+      impressions: ['Impressions'],
+      clicks: ['Clicks'],
+      ctr: ['CTR'],
+      soldQuantityAd: ['Sold quantity'],
+      conversionRate: ['Conversion rate (Sold quantity/Clicks)'],
+      avgCpc: ['Average cost per click (in billing currency)'],
+      sales: ['Sales (in billing currency)']
+    },
+    extraCsv: [
+      'Seller Keyword', 'Keyword ID', 'Keyword Match Type', 'Keyword Bid', 'Keyword Status',
+      'Ad fees (in billing currency)', 'Return on Ad spend (Sales/Ad fees)',
+      'Average cost per sale (in billing currency)'
+    ],
+    fieldNotes: {
+      date: '页面一个 Date，文件里也是一个 Date'
+    },
+    note: '实测 24 列（2026-11-06）。与关键词报表同族，多出 Search Query / Keyword Bid / Keyword Status，少了独立的 Bid（改成 Keyword Bid）。'
+  }
+];
+
+export const REPORTS = [...traffic, ...orders, ...listings, ...marketing];
+
+// ---------- 派生视图 ----------
+
+// 分组口径 = 下载视图的 5 张卡片，一字不差；后台里的旧叫法只出现在 note/备注里
+export const GROUP_LABELS = {
+  traffic: '流量报表',
+  orders: '订单报表',
+  listings: '商品名单',
+  plg: 'PLG 链接广告',
+  marketing: '优先促销刊登'
+};
+
+// 按 id 取一条
+export function getReport(id) {
+  return REPORTS.find(r => r.id === id) || null;
+}
+
+// 展开字段：把 key 换成完整对象
+export function reportFields(report) {
+  return report.columns.map(key => {
+    const def = F[key];
+    if (!def) throw new Error(`字段 ${key} 未在 F 中定义（报表 ${report.id}）`);
+    const csv = report.csvMap ? (report.csvMap[key] || []) : [];
+    const note = report.fieldNotes?.[key] || null;
+    return {
+      key,
+      name: def.name,
+      group: def.group,
+      groupLabel: FIELD_GROUPS[def.group],
+      csv,
+      note
+    };
+  });
+}
+
+// 字段字典：一个字段出现在哪些报表里，以及各自的 CSV 列名
+export function fieldIndex() {
+  const map = new Map();
+  for (const key of Object.keys(F)) {
+    map.set(key, { key, name: F[key].name, group: F[key].group, groupLabel: FIELD_GROUPS[F[key].group], reports: [] });
+  }
+  for (const r of REPORTS) {
+    for (const key of r.columns) {
+      const e = map.get(key);
+      if (!e) continue;
+      e.reports.push({
+        id: r.id,
+        label: r.label,
+        group: r.group,
+        csv: r.csvMap ? (r.csvMap[key] || []) : [],
+        verified: !!r.csvVerified
+      });
+    }
+  }
+  return [...map.values()].filter(e => e.reports.length);
+}
+
+// 给页面用的完整快照
+export function catalogSnapshot() {
+  return {
+    groups: GROUP_LABELS,
+    fieldGroups: FIELD_GROUPS,
+    reports: REPORTS.map(r => ({
+      id: r.id,
+      group: r.group,
+      groupLabel: r.groupLabel,
+      label: r.label,
+      source: r.sourceLabel,
+      strategy: r.strategy,
+      type: r.type,
+      hasCampaigns: r.hasCampaigns,
+      timeUnit: r.timeUnit,
+      rangeKind: r.rangeKind,
+      rowMatch: r.rowMatch,
+      folder: r.folder,
+      implemented: r.implemented,
+      columnsTitle: r.columnsTitle,
+      columns: reportFields(r),
+      extraCsv: r.extraCsv,
+      csvVerified: r.csvVerified,
+      note: r.note || null
+    })),
+    fields: fieldIndex()
+  };
+}

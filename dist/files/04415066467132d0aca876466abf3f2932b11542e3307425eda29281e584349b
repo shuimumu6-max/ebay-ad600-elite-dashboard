@@ -1,0 +1,837 @@
+[
+ {
+  "key": "orders:全部订单",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "全部订单"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "全部订单"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 全部订单 | 过去 90 天"
+ },
+ {
+  "key": "orders:尚未付款",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "尚未付款"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "尚未付款"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 尚未付款 | 过去 90 天"
+ },
+ {
+  "key": "orders:尚未发货",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "尚未发货"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "尚未发货"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 尚未发货 | 过去 90 天"
+ },
+ {
+  "key": "orders:尚未发货 — 已逾期",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "尚未发货 — 已逾期"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "尚未发货 — 已逾期"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 尚未发货 — 已逾期 | 过去 90 天"
+ },
+ {
+  "key": "orders:尚未发货 — 在 24 小时内发货",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "尚未发货 — 在 24 小时内发货"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "尚未发货 — 在 24 小时内发货"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 尚未发货 — 在 24 小时内发货 | 过去 90 天"
+ },
+ {
+  "key": "orders:尚未快递发货",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "尚未快递发货"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "尚未快递发货"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 尚未快递发货 | 过去 90 天"
+ },
+ {
+  "key": "orders:已付款并发货",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "已付款并发货"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "已付款并发货"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 已付款并发货 | 过去 90 天"
+ },
+ {
+  "key": "orders:已付款 — 尚未留下信用评价",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "已付款 — 尚未留下信用评价"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "已付款 — 尚未留下信用评价"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 已付款 — 尚未留下信用评价 | 过去 90 天"
+ },
+ {
+  "key": "orders:已发货 — 尚未留下信用评价",
+  "group": "orders",
+  "steps": [
+   [
+    "Source",
+    "订单"
+   ],
+   [
+    "Type",
+    "已发货 — 尚未留下信用评价"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "订单"
+   },
+   {
+    "label": "Type",
+    "value": "已发货 — 尚未留下信用评价"
+   },
+   {
+    "label": "Date range",
+    "value": "过去 90 天"
+   }
+  ],
+  "cols": [
+   "Summary of Order reports columns:",
+   "Sales record number",
+   "Order number",
+   "Buyer username",
+   "Buyer email",
+   "Buyer note",
+   "Buyer address",
+   "Ship to name",
+   "Ship to address",
+   "Item number",
+   "Item title",
+   "Additional columns"
+  ],
+  "descs": "订单 | 已发货 — 尚未留下信用评价 | 过去 90 天"
+ },
+ {
+  "key": "listings:全部在售物品",
+  "group": "listings",
+  "steps": [
+   [
+    "Source",
+    "物品刊登"
+   ],
+   [
+    "Type",
+    "全部在售物品"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "物品刊登"
+   },
+   {
+    "label": "Type",
+    "value": "全部在售物品"
+   }
+  ],
+  "cols": [
+   "Summary of Listing reports columns:",
+   "Item number",
+   "Title",
+   "Variation details",
+   "Custom label (SKU)",
+   "Available quantity",
+   "Format",
+   "Price",
+   "Sold quantity",
+   "Watchers",
+   "Bids",
+   "Listing site",
+   "Additional columns"
+  ],
+  "descs": "物品刊登 | 全部在售物品"
+ },
+ {
+  "key": "listings:非在售物品刊登",
+  "group": "listings",
+  "steps": [
+   [
+    "Source",
+    "物品刊登"
+   ],
+   [
+    "Type",
+    "非在售物品刊登"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "物品刊登"
+   },
+   {
+    "label": "Type",
+    "value": "非在售物品刊登"
+   }
+  ],
+  "cols": [
+   "Summary of Columns:",
+   "Item number",
+   "Custom label (SKU)",
+   "Title",
+   "Relationship",
+   "UPC",
+   "Available quantity",
+   "Price",
+   "Format",
+   "Condition",
+   "Categories",
+   "Bids",
+   "Watchers",
+   "Additional columns"
+  ],
+  "descs": "物品刊登 | 非在售物品刊登"
+ },
+ {
+  "key": "listings:全部预定物品刊登",
+  "group": "listings",
+  "steps": [
+   [
+    "Source",
+    "物品刊登"
+   ],
+   [
+    "Type",
+    "全部预定物品刊登"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "物品刊登"
+   },
+   {
+    "label": "Type",
+    "value": "全部预定物品刊登"
+   }
+  ],
+  "cols": [
+   "Summary of Listing reports columns:",
+   "Item number",
+   "Title",
+   "Custom label (SKU)",
+   "Variation details",
+   "Available quantity",
+   "Start price",
+   "Buy It Now price",
+   "Reserve Price",
+   "Format",
+   "Listing site",
+   "Additional columns"
+  ],
+  "descs": "物品刊登 | 全部预定物品刊登"
+ },
+ {
+  "key": "plg:物品刊登",
+  "group": "plg",
+  "steps": [
+   [
+    "Source",
+    "广告"
+   ],
+   [
+    "Campaign strategy",
+    "促销刊登 — 常规"
+   ],
+   [
+    "Type",
+    "物品刊登"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "广告"
+   },
+   {
+    "label": "Campaign strategy",
+    "value": "促销刊登 — 常规"
+   },
+   {
+    "label": "Type",
+    "value": "物品刊登"
+   },
+   {
+    "label": "Campaigns",
+    "value": "已选择 6 个活动"
+   },
+   {
+    "label": "Time unit",
+    "value": "摘要"
+   },
+   {
+    "label": "Date range",
+    "value": "本周"
+   }
+  ],
+  "cols": [
+   "Summary of Columns:",
+   "Date",
+   "Campaign details",
+   "Item ID",
+   "Title",
+   "Price",
+   "Quantity available",
+   "Listing start date",
+   "Listing end date",
+   "Impressions",
+   "Clicks",
+   "CTR"
+  ],
+  "descs": "广告 | 促销刊登 — 常规 | 物品刊登 | 已选择 6 个活动 | 摘要 | 本周"
+ },
+ {
+  "key": "priority:关键词",
+  "group": "priority",
+  "steps": [
+   [
+    "Source",
+    "广告"
+   ],
+   [
+    "Campaign strategy",
+    "促销刊登 — 优先"
+   ],
+   [
+    "Type",
+    "关键词"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "广告"
+   },
+   {
+    "label": "Campaign strategy",
+    "value": "促销刊登 — 优先"
+   },
+   {
+    "label": "Type",
+    "value": "关键词"
+   },
+   {
+    "label": "Campaigns",
+    "value": "已选择 31 个活动"
+   },
+   {
+    "label": "Time unit",
+    "value": "摘要"
+   },
+   {
+    "label": "Date range",
+    "value": "本周"
+   }
+  ],
+  "cols": [
+   "Summary of Columns:",
+   "Date",
+   "Campaign details",
+   "Ad Group details",
+   "Keyword details",
+   "Impressions",
+   "Clicks",
+   "CTR",
+   "Sold quantity",
+   "Conversion rate",
+   "Average cost per click",
+   "Sales",
+   "Additional columns"
+  ],
+  "descs": "广告 | 促销刊登 — 优先 | 关键词 | 已选择 31 个活动 | 摘要 | 本周"
+ },
+ {
+  "key": "priority:物品刊登",
+  "group": "priority",
+  "steps": [
+   [
+    "Source",
+    "广告"
+   ],
+   [
+    "Campaign strategy",
+    "促销刊登 — 优先"
+   ],
+   [
+    "Type",
+    "物品刊登"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "广告"
+   },
+   {
+    "label": "Campaign strategy",
+    "value": "促销刊登 — 优先"
+   },
+   {
+    "label": "Type",
+    "value": "物品刊登"
+   },
+   {
+    "label": "Campaigns",
+    "value": "已选择 31 个活动"
+   },
+   {
+    "label": "Time unit",
+    "value": "摘要"
+   },
+   {
+    "label": "Date range",
+    "value": "本周"
+   }
+  ],
+  "cols": [
+   "Summary of Columns:",
+   "Date",
+   "Campaign details",
+   "Item ID",
+   "Title",
+   "Price",
+   "Quantity available",
+   "Listing start date",
+   "Listing end date",
+   "Impressions",
+   "Clicks",
+   "CTR"
+  ],
+  "descs": "广告 | 促销刊登 — 优先 | 物品刊登 | 已选择 31 个活动 | 摘要 | 本周"
+ },
+ {
+  "key": "priority:活动",
+  "group": "priority",
+  "steps": [
+   [
+    "Source",
+    "广告"
+   ],
+   [
+    "Campaign strategy",
+    "促销刊登 — 优先"
+   ],
+   [
+    "Type",
+    "活动"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "广告"
+   },
+   {
+    "label": "Campaign strategy",
+    "value": "促销刊登 — 优先"
+   },
+   {
+    "label": "Type",
+    "value": "活动"
+   },
+   {
+    "label": "Time unit",
+    "value": "摘要"
+   },
+   {
+    "label": "Date range",
+    "value": "本周"
+   }
+  ],
+  "cols": [
+   "Summary of Columns:",
+   "Date",
+   "Campaign details",
+   "Quantity available",
+   "Impressions",
+   "Clicks",
+   "CTR",
+   "Sold quantity",
+   "Conversion rate",
+   "Sales",
+   "Average cost per click",
+   "Average cost per sale",
+   "Additional columns"
+  ],
+  "descs": "广告 | 促销刊登 — 优先 | 活动 | 摘要 | 本周"
+ },
+ {
+  "key": "priority:搜索查询",
+  "group": "priority",
+  "steps": [
+   [
+    "Source",
+    "广告"
+   ],
+   [
+    "Campaign strategy",
+    "促销刊登 — 优先"
+   ],
+   [
+    "Type",
+    "搜索查询"
+   ]
+  ],
+  "ok": true,
+  "cls": "body-right__orders-report-column bg",
+  "cards": [
+   {
+    "label": "Source",
+    "value": "广告"
+   },
+   {
+    "label": "Campaign strategy",
+    "value": "促销刊登 — 优先"
+   },
+   {
+    "label": "Type",
+    "value": "搜索查询"
+   },
+   {
+    "label": "Campaigns",
+    "value": "已选择 31 个活动"
+   },
+   {
+    "label": "Time unit",
+    "value": "摘要"
+   },
+   {
+    "label": "Date range",
+    "value": "本周"
+   }
+  ],
+  "cols": [
+   "Summary of Columns:",
+   "Date",
+   "Campaign details",
+   "Ad Group details",
+   "Search Query",
+   "Impressions",
+   "Clicks",
+   "CTR",
+   "Sold quantity",
+   "Conversion rate",
+   "Average cost per click",
+   "Sales",
+   "Additional columns"
+  ],
+  "descs": "广告 | 促销刊登 — 优先 | 搜索查询 | 已选择 31 个活动 | 摘要 | 本周"
+ }
+]

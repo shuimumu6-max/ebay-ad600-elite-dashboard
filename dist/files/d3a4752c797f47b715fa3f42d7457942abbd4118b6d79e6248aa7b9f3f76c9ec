@@ -1,0 +1,90 @@
+// 临时验收脚本：用真实浏览器打开控制台，检查渲染结果与运行时报错
+import { ensureBridge, sleep, cdp } from './cdp.mjs';
+import { openTab } from './pages.mjs';
+
+const URL = 'http://127.0.0.1:7788/';
+const HOOK = `(() => {
+  window.__errs = [];
+  window.addEventListener('error', e => window.__errs.push('error: ' + (e.message || '')));
+  window.addEventListener('unhandledrejection', e => window.__errs.push('promise: ' + String(e.reason)));
+  return true;
+})()`;
+
+const READ = `(() => {
+  const q = s => document.querySelectorAll(s).length;
+  const txt = s => (document.querySelector(s)?.textContent || '').trim();
+  return {
+    title: document.title,
+    runtimeErrors: (window.__errs || []).slice(),
+    cards: q('#viewDownload .card'),
+    plpCard: q('#cardPlp'),
+    priorityTag: txt('#cardPriority .tag'),
+    priorityTypeChips: q('#priorityTypes .chip'),
+    priorityTypeChecked: q('#priorityTypes input:checked'),
+    campaignOptions: q('#priorityCampaigns .dd-opt'),
+    campaignChecked: q('#priorityCampaigns input:checked'),
+    campaignSummary: txt('#prCampaignSummary'),
+    campaignHint: txt('#prCampaignHint'),
+    priorityHint: txt('#hintPriority'),
+    priorityIntro: q('#cardPriority .card-b > .hint'),
+    campaignHasIdInLabel: [...document.querySelectorAll('#priorityCampaigns .nm')]
+      .filter(n => /^\\d{8,15}$/.test(n.textContent.trim())).length,
+    fieldGroups: q('#fldReports .fld-group'),
+    fieldItems: q('#fldReports .fld-item'),
+    fieldGroupNames: [...document.querySelectorAll('#fldReports .gname')].map(n => n.textContent.trim()),
+    fieldRemarks: [...document.querySelectorAll('#fldReports .gremark')].map(n => n.textContent.trim()),
+    cardNames: [...document.querySelectorAll('#viewDownload .card[id] h2')].map(n => n.textContent.trim()),
+    fldTitle: txt('#fldTitle'),
+    maxTabs: document.querySelector('#maxTabs')?.value,
+    headerSub: txt('.brand p'),
+    vtHint: txt('#vtHint')
+  };
+})()`;
+
+async function ensureOneTab() {
+  const { targetInfos } = await cdp('Target.getTargets');
+  if (!targetInfos.some(t => t.type === 'page')) {
+    await cdp('Target.createTarget', { url: 'about:blank', background: true }).catch(() => {});
+  }
+}
+
+async function run() {
+  await ensureBridge();
+  const page = await openTab('verify-ui', URL);
+  try {
+    await cdp('Page.addScriptToEvaluateOnNewDocument', { source: HOOK }, page.sessionId).catch(() => {});
+    await page.navigate(URL, { timeoutMs: 25000, settleMs: 1800 });
+    await sleep(3500);   // 等 /api/state 回来并渲染
+    const r = await page.eval(READ);
+    console.log(JSON.stringify(r, null, 2));
+    const fail = [];
+    if (r.runtimeErrors.length) fail.push('运行时报错：' + r.runtimeErrors.join(' | '));
+    if (r.plpCard) fail.push('PLP 卡片仍在');
+    if (r.priorityTypeChips !== 4) fail.push('优先促刊类型 chips 不是 4');
+    if (r.campaignOptions !== 31) fail.push('活动选项不是 31');
+    if (r.campaignChecked !== 3) fail.push('默认勾选不是 3');
+    if (r.campaignHasIdInLabel) fail.push('有活动只显示 ID');
+    if (r.fieldGroups !== 5) fail.push('字段字典分组不是 5');
+    if (r.headerSub) fail.push('顶栏副标题应已删除，实际仍有：' + r.headerSub);
+    if (r.vtHint) fail.push('视图标签右侧计数应已删除，实际仍有：' + r.vtHint);
+    if (r.campaignHint) fail.push('活动说明段应已删除，实际仍有：' + r.campaignHint);
+    if (r.priorityHint) fail.push('优先级提示段应已删除，实际仍有：' + r.priorityHint);
+    if (r.priorityIntro) fail.push('优先促刊卡片说明段应已删除');
+    if (!r.campaignSummary) fail.push('活动下拉按钮的已选摘要丢了');
+    // 口径一致性：字段字典 5 个分组名必须和下载视图 5 张卡片同名，一字不差
+    const expectGroups = r.cardNames.filter(n => n !== '下载哪些报表');
+    if (JSON.stringify(r.fieldGroupNames) !== JSON.stringify(expectGroups)) {
+      fail.push(`字段字典分组与卡片口径不一致：字典 ${JSON.stringify(r.fieldGroupNames)} ≠ 卡片 ${JSON.stringify(expectGroups)}`);
+    }
+    const titleParts = r.fldTitle.split(' · ');
+    if (titleParts.length > 1 && titleParts[0] === titleParts[1]) fail.push('字段标题重复：' + r.fldTitle);
+    if (!r.priorityTag.includes('PLP')) fail.push('优先促刊缺 PLP 备注');
+    console.log(fail.length ? '\n验收失败：\n  ' + fail.join('\n  ') : '\n前端运行时验收 PASS');
+    if (fail.length) process.exitCode = 1;
+  } finally {
+    await page.close().catch(() => {});
+    await ensureOneTab().catch(() => {});
+  }
+  process.exit(process.exitCode || 0);
+}
+run().catch(e => { console.error('FATAL', e.message); process.exit(1); });

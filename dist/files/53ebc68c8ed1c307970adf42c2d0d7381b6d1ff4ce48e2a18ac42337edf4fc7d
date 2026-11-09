@@ -1,0 +1,345 @@
+// 常驻 CDP 桥：整个系统只在浏览器重新启动后需要授权一次。
+// 桥自己永不退出、永不主动断开，连着的时候每 20 秒发一次心跳，
+// 让 Chrome 认为调试会话一直活跃，不会因为闲置把调试开关关掉。
+// 所有脚本都通过 http://127.0.0.1:9233 转发，不再各自新建 9222 连接，也就不会重复弹授权。
+import { createServer } from 'node:http';
+import { Socket } from 'node:net';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = dirname(fileURLToPath(import.meta.url));
+const PORT = 9233;
+const DOWNLOAD_DIR = join(root, 'downloads');
+const logFile = join(root, 'bridge.log');
+
+// 只保留最近的日志，避免文件无限增长（长期常驻）
+const LOG_MAX_BYTES = 1024 * 1024;
+
+// Chrome 144+ 的原地调试服务不暴露 /json/*，真正的 WS 地址只在 DevToolsActivePort 里，
+// 且每次启动 UUID 都会变，所以每次连接都要重新读取。
+const USER_DATA_DIRS = [
+  process.env.CDP_USER_DATA_DIR,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data') : null,
+].filter(Boolean);
+
+function listCdpCandidates() {
+  const found = [];
+  for (const dir of USER_DATA_DIRS) {
+    const file = join(dir, 'DevToolsActivePort');
+    if (!existsSync(file)) continue;
+    try {
+      const lines = readFileSync(file, 'utf8').trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const port = Number(lines[0]);
+      if (!Number.isFinite(port) || port <= 0) continue;
+      const wsPath = lines[1] && lines[1].startsWith('/') ? lines[1] : '/devtools/browser';
+      found.push({ url: `ws://127.0.0.1:${port}${wsPath}`, port, from: dir, mtime: statSync(file).mtimeMs });
+    } catch { /* 继续找下一个 */ }
+  }
+  // 多个配置目录都可能留着端口文件，最新写入的更可能是当前活跃实例
+  return found.sort((a, b) => b.mtime - a.mtime);
+}
+
+function resolveCdpUrl() {
+  const list = listCdpCandidates();
+  if (list.length) return { ...list[0], ageMs: Date.now() - list[0].mtime };
+  return { url: 'ws://127.0.0.1:9222/devtools/browser', port: 9222, from: 'fallback', ageMs: null, mtime: 0 };
+}
+
+// 端口文件可能残留（浏览器关掉后文件还在），必须真正探一次 TCP 才算数
+function portOpen(port, timeoutMs = 400) {
+  return new Promise(resolve => {
+    const sock = new Socket();
+    let done = false;
+    const finish = ok => { if (done) return; done = true; sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+    sock.connect(port, '127.0.0.1');
+  });
+}
+
+async function resolveLiveEndpoint() {
+  const list = listCdpCandidates();
+  for (const item of list) {
+    if (await portOpen(item.port)) return { ...item, ageMs: Date.now() - item.mtime };
+  }
+  return { url: 'ws://127.0.0.1:9222/devtools/browser', port: 9222, from: 'fallback', ageMs: null, mtime: 0 };
+}
+
+const log = text => {
+  const line = `${new Date().toISOString()} ${text}`;
+  console.log(line);
+  try {
+    if (existsSync(logFile) && statSync(logFile).size > LOG_MAX_BYTES) {
+      // 简单轮转：超限就清空重写，长期常驻也不会把磁盘写满
+      writeFileSync(logFile, '');
+    }
+    appendFileSync(logFile, line + '\n');
+  } catch { /* 日志失败不影响服务 */ }
+};
+
+let seq = 0;
+let socket = null;
+let connected = false;
+let everConnected = false;
+let lastConnectedAt = 0;
+let lastClosedAt = 0;
+let reconnectTries = 0;
+let reconnectTimer = null;
+let waitingAuth = false;     // 已发起连接但还没握手成功（Chrome 正在等用户点允许）
+let lastAttemptAt = 0;
+let lastLogAt = 0;
+const pending = new Map();
+const events = [];
+let trafficSession = null;
+let trafficTargetId = null;
+
+function send(method, params = {}, sessionId) {
+  if (!connected || !socket) throw new Error('浏览器调试未连接（需要点一次允许）');
+  return new Promise((resolve, reject) => {
+    const id = ++seq;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(method + ' 超时（30 秒）')); }, 30000);
+    pending.set(id, { resolve, reject, timer });
+    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+}
+
+function onMessage(event) {
+  let data;
+  try { data = JSON.parse(String(event.data)); } catch { return; }
+  const task = pending.get(data.id);
+  if (task) {
+    clearTimeout(task.timer);
+    pending.delete(data.id);
+    if (data.error) task.reject(new Error(JSON.stringify(data.error)));
+    else task.resolve(data.result);
+    return;
+  }
+  if (data.method === 'Browser.downloadWillBegin' || data.method === 'Browser.downloadProgress') {
+    events.push({ at: Date.now(), method: data.method, params: data.params });
+    if (events.length > 60) events.shift();
+    if (data.method === 'Browser.downloadProgress' && data.params.state === 'completed') log('检测到报表下载完成。');
+  }
+}
+
+function scheduleReconnect(delayMs) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; attemptConnect().catch(() => {}); }, delayMs);
+}
+
+// 建立一次连接。成功就长期保持；失败按退避重试，永不退出进程。
+async function attemptConnect() {
+  if (connected || waitingAuth) return;
+  if (socket) { try { socket.__manual = true; socket.close(); } catch { /* 忽略 */ } socket = null; }
+
+  const endpoint = await resolveLiveEndpoint();
+  lastAttemptAt = Date.now();
+  const quiet = reconnectTries >= 6; // 长时间连不上时降噪，避免日志刷屏
+
+  if (!quiet) log(`正在连接浏览器调试：${endpoint.url}（来源 ${endpoint.from}）`);
+  waitingAuth = true;
+
+  const ws = new WebSocket(endpoint.url);
+  socket = ws;
+  let settled = false;
+
+  ws.addEventListener('message', onMessage);
+
+  ws.addEventListener('open', () => {
+    settled = true;
+    connected = true;
+    everConnected = true;
+    waitingAuth = false;
+    reconnectTries = 0;
+    lastConnectedAt = Date.now();
+    log('浏览器调试已连接。此后所有任务走本地常驻桥，不会再要求点允许。');
+    setupSession();
+  });
+
+  ws.addEventListener('error', () => {
+    // 端口没开 / 开关已关闭，都会走到这里
+    if (settled) return;
+    settled = true;
+    ws.__manual = true;   // 紧随其后的 close 事件不必再排一次重连，避免重连计数翻倍
+    waitingAuth = false;
+    connected = false;
+    socket = null;
+    reconnectTries += 1;
+    const backoff = [5000, 5000, 10000, 20000, 30000, 60000][Math.min(reconnectTries - 1, 5)];
+    const now = Date.now();
+    if (!quiet || now - lastLogAt > 120000) {
+      lastLogAt = now;
+      log(`第 ${reconnectTries} 次连接失败：端口未开放（需要把远程调试开关打开）。${backoff / 1000} 秒后重试。`);
+    }
+    scheduleReconnect(backoff);
+  });
+
+  ws.addEventListener('close', () => {
+    // 主动替换旧连接时不要触发重连，否则会自我打架
+    if (ws.__manual) return;
+    const wasConnected = connected;
+    connected = false;
+    waitingAuth = false;
+    trafficSession = null;
+    trafficTargetId = null;
+    for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error('CDP 连接断开')); }
+    pending.clear();
+    lastClosedAt = Date.now();
+    if (wasConnected) {
+      log('调试连接断开（浏览器关闭或重启了）。会自动重试；浏览器重新打开并允许一次调试即可恢复。');
+      reconnectTries = 1;
+      scheduleReconnect(3000);
+    } else {
+      // 首次连接时用户直接关掉了浏览器：也要继续重试，不能就此卡住
+      reconnectTries += 1;
+      scheduleReconnect(8000);
+    }
+  });
+}
+
+async function setupSession() {
+  try {
+    mkdirSync(DOWNLOAD_DIR, { recursive: true });
+    await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_DIR, eventsEnabled: true });
+    log(`下载目录已设为 ${DOWNLOAD_DIR}`);
+  } catch (error) { log('设置下载目录失败：' + error.message); }
+}
+
+async function ensureTrafficSession(pathMatch) {
+  const { targetInfos } = await send('Target.getTargets');
+  const target = targetInfos.find(item => {
+    if (item.type !== 'page') return false;
+    try {
+      const url = new URL(item.url);
+      return /^(www\.)?ebay\.com$/.test(url.hostname) && (pathMatch ? url.pathname.includes(pathMatch) : url.pathname === '/sh/performance/traffic');
+    } catch { return false; }
+  });
+  if (!target) throw new Error('未找到 eBay Traffic 标签页，请先打开该页面。');
+  if (trafficSession && trafficTargetId === target.targetId) return trafficSession;
+  const { sessionId } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+  trafficSession = sessionId;
+  trafficTargetId = target.targetId;
+  return sessionId;
+}
+
+const readBody = req => new Promise((resolve, reject) => {
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); }
+    catch (error) { reject(new Error('请求体不是有效 JSON：' + error.message)); }
+  });
+  req.on('error', reject);
+});
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+  const reply = (code, obj) => {
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(obj));
+  };
+  try {
+    if (url.pathname === '/health') {
+      const endpoint = resolveCdpUrl();
+      return reply(200, {
+        connected, everConnected, port: PORT, reconnectTries,
+        phase: connected ? 'connected' : (waitingAuth ? 'waiting-auth' : 'reconnecting'),
+        needsAuth: !connected && !waitingAuth,
+        pid: process.pid,
+        uptimeSec: Math.round(process.uptime()),
+        lastConnectedAt: lastConnectedAt || null,
+        lastClosedAt: lastClosedAt || null,
+        endpointPort: endpoint.port,
+        endpointFrom: endpoint.from,
+        hint: connected
+          ? null
+          : waitingAuth
+            ? '浏览器正在等待授权：请在弹窗或 chrome://inspect 页面点一次「允许」'
+            : '浏览器调试端口未开放：打开开关后桥会自动连上，无需重启任何东西',
+        downloadDir: DOWNLOAD_DIR,
+        lastEvent: events.at(-1) || null
+      });
+    }
+    if (url.pathname === '/events') return reply(200, { events });
+    if (url.pathname === '/reconnect' && req.method === 'POST') {
+      reconnectTries = 0;
+      scheduleReconnect(100);
+      return reply(200, { ok: true });
+    }
+    if (url.pathname === '/targets') {
+      const result = await send('Target.getTargets');
+      return reply(200, { targets: result.targetInfos.map(t => ({ type: t.type, title: t.title, url: t.url })) });
+    }
+    if (url.pathname === '/cdp' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!body.method) return reply(400, { error: '缺少 method' });
+      const result = await send(body.method, body.params || {}, body.sessionId);
+      return reply(200, { result });
+    }
+    if (url.pathname === '/eval' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!body.expression) return reply(400, { error: '缺少 expression' });
+      const sessionId = await ensureTrafficSession(body.path);
+      const result = await send('Runtime.evaluate', {
+        expression: body.expression, returnByValue: true, awaitPromise: true
+      }, sessionId);
+      if (result.exceptionDetails) {
+        return reply(200, { ok: false, error: result.exceptionDetails.text + ' ' + (result.exceptionDetails.exception?.description || '') });
+      }
+      return reply(200, { ok: true, value: result.result.value });
+    }
+    return reply(404, { error: '未知接口' });
+  } catch (error) {
+    log('请求失败：' + error.message);
+    return reply(500, { error: error.message });
+  }
+});
+
+server.on('error', error => {
+  if (error.code === 'EADDRINUSE') {
+    // 已经有桥在跑，直接正常退出，让守护去等待，不要在这里死循环
+    log('端口 9233 已被占用（已有桥在运行），本进程退出。');
+    process.exit(0);
+  }
+  log('桥服务启动失败：' + error.message);
+  process.exit(1);
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  log(`本地常驻桥已启动：http://127.0.0.1:${PORT}/health（pid ${process.pid}）`);
+});
+
+// 未连接时轻量盯着 DevToolsActivePort：用户在 Chrome 里把开关打开后，
+// 这个文件会立刻被重写，桥能 3 秒内自动连上，不用等退避周期、也不用重启任何东西。
+let lastEndpointSig = '';
+setInterval(() => {
+  if (connected || waitingAuth) return;
+  const ep = resolveCdpUrl();
+  const sig = `${ep.port}|${ep.mtime}`;
+  if (sig === lastEndpointSig) return;
+  lastEndpointSig = sig;
+  // 用户一拨开关，Chrome 会立刻重写这个文件，mtime 变化即视为「端口刚就绪」
+  if (ep.from !== 'fallback' && reconnectTries > 0) {
+    log(`检测到调试端口文件更新（端口 ${ep.port}），立即重连。`);
+    reconnectTries = 0;
+    scheduleReconnect(50);
+  }
+}, 3000);
+
+// 心跳保活：复用同一条连接，绝不新建 WebSocket。20 秒一次，让 Chrome 始终认为会话活跃。
+let beat = 0;
+setInterval(() => {
+  if (!connected) return;
+  beat += 1;
+  // 每 3 次心跳顺带取一次 target 列表，比单纯的 getVersion 更像真实活动
+  const method = beat % 3 === 0 ? 'Target.getTargets' : 'Browser.getVersion';
+  send(method).catch(() => { /* 断线由 close 事件处理 */ });
+}, 20000);
+
+// 兜底：桥进程绝不能因为未捕获异常退出
+process.on('unhandledRejection', error => log('未捕获拒绝（已忽略，桥继续运行）：' + (error?.message || error)));
+process.on('uncaughtException', error => log('未捕获异常（已忽略，桥继续运行）：' + (error?.message || error)));
+
+attemptConnect().catch(() => {});

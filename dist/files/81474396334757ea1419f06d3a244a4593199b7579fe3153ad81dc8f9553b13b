@@ -1,0 +1,36 @@
+// 一键下载入口（供桌面 .cmd 调用）：固定输出目录，自动串联 下载 → 分类 → 可选归档/更新看板。
+// 用法：quick-download.mjs [--full] [2026-11-05] [--dates 2026-11-01..2026-11-05] [--only ...]
+import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ensureEnv } from './ensure-env.mjs';
+import { SHOP } from './shop-config.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const OUT_DIR = process.env.REPORT_OUT_DIR || SHOP.runsDir;
+const raw = process.argv.slice(2);
+const full = raw.includes('--full');
+const passthrough = raw.filter(arg => arg !== '--full');
+
+// 位置参数支持直接写日期：一键下载.cmd 2026-11-05
+const positional = passthrough.filter(arg => /^\d{4}-\d{2}-\d{2}$/.test(arg));
+const args = ['run-download.mjs', '--out', OUT_DIR];
+if (full) args.push('--apply', '--publish');
+for (const arg of passthrough) args.push(arg);
+
+const bail = text => { console.log(''); console.log('[X] ' + text); process.exit(1); };
+
+// 统一入口：先问常驻桥（毫秒级），不在就拉起守护；只有浏览器重启后才需要拨一次开关
+const env = await ensureEnv({ onLog: text => console.log('[环境] ' + text), openInspect: true, waitAuthMs: 0 });
+if (!env.ok) {
+  if (env.needsAuth) {
+    bail('浏览器调试开关是关的。' + (env.openedInspect
+      ? '已帮你打开开关页面，把「Allow remote debugging」拨到开，然后重新运行即可（只需这一次）。'
+      : '在浏览器打开 chrome://inspect/#remote-debugging，把开关拨开一次，然后重新运行即可。'));
+  }
+  bail(env.reason || '环境未就绪');
+}
+if (positional.length) console.log(`[目标日] ${positional.join(', ')}`);
+
+const child = spawn(process.execPath, args, { cwd: here, stdio: 'inherit' });
+child.on('exit', code => process.exit(code ?? 1));

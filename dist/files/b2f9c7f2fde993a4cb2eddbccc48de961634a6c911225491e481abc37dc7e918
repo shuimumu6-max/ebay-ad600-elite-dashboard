@@ -1,0 +1,74 @@
+// 归档（--apply）与发布（--publish）。默认下载测试不会调用这里。
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { join, basename, extname, parse } from 'node:path';
+import { DATA_DIR, PENDING_DIR, REPO_DIR, HTML_SOURCE } from './config.mjs';
+import { sha256File } from './inspect.mjs';
+
+function walkCsv(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (/不参与看板|暂存/.test(entry.name)) continue;
+      walkCsv(join(dir, entry.name), out);
+    } else if (extname(entry.name).toLowerCase() === '.csv') {
+      out.push(join(dir, entry.name));
+    }
+  }
+  return out;
+}
+
+// 把本次校验通过的报表放进正式目录的 90-待处理；内容重复的直接跳过
+export function applyFiles(results) {
+  const known = new Set(walkCsv(DATA_DIR).map(path => {
+    try { return sha256File(path); } catch { return null; }
+  }).filter(Boolean));
+  const applied = [];
+  const skipped = [];
+  for (const item of results) {
+    if (item.problem || !item.path) continue;
+    let hash;
+    try { hash = sha256File(item.path); } catch { continue; }
+    if (known.has(hash)) { skipped.push({ name: item.name, reason: '内容已在正式目录' }); continue; }
+    const ext = extname(item.name) || '.csv';
+    const stem = parse(item.name).name;
+    let target = join(PENDING_DIR, item.name);
+    let version = 2;
+    while (existsSync(target) && sha256File(target) !== hash) {
+      target = join(PENDING_DIR, `${stem}-v${version}${ext}`);
+      version++;
+    }
+    copyFileSync(item.path, target);
+    known.add(hash);
+    applied.push({ name: item.name, target });
+  }
+  return { applied, skipped };
+}
+
+// 调用看板仓库自己的更新脚本（已修正为本机路径），并推送 GitHub Pages
+export function publishDashboard() {
+  const result = spawnSync(process.execPath, ['update-dashboard.mjs', '--publish'], {
+    cwd: REPO_DIR,
+    env: {
+      ...process.env,
+      EBAY_SOURCE_DIR: DATA_DIR,
+      EBAY_DASHBOARD_HTML: HTML_SOURCE
+    },
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  return {
+    ok: result.status === 0,
+    code: result.status,
+    stdout: (result.stdout || '').slice(-4000),
+    stderr: (result.stderr || '').slice(-2000)
+  };
+}
+
+export function dataDirState() {
+  if (!existsSync(DATA_DIR)) return { exists: false };
+  return {
+    exists: true,
+    csvCount: walkCsv(DATA_DIR).length,
+    pendingCount: existsSync(PENDING_DIR) ? readdirSync(PENDING_DIR).filter(n => n.toLowerCase().endsWith('.csv')).length : 0
+  };
+}
