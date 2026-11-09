@@ -39,6 +39,11 @@
     .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
     .status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .product-switch { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); flex: 0 0 auto; }
+    .product-btn { min-height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-family: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+    .product-btn:hover { color: var(--blue); }
+    .product-btn.active { color: var(--blue); background: var(--panel); box-shadow: var(--shadow); }
+    .product-notice { margin-bottom: 14px; padding: 11px 14px; border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; background: var(--amber-soft); color: #6b4a00; font-size: 12px; line-height: 1.7; }
     .workspace { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: calc(100vh - 62px); }
     .sidebar { padding: 18px 12px; background: #f8f9fb; border-right: 1px solid var(--line); }
     .nav { display: grid; gap: 5px; position: sticky; top: 80px; }
@@ -162,8 +167,10 @@
       .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
-      .topbar { height: auto; min-height: 58px; padding: 10px 14px; }
+      .topbar { height: auto; min-height: 58px; padding: 10px 14px; flex-wrap: wrap; gap: 8px; }
       .brand p, .status span:last-child { display: none; }
+      .product-switch { order: 3; width: 100%; overflow-x: auto; }
+      .product-btn { flex: 1 0 auto; }
       .content { padding: 18px 14px 34px; }
       .page-head { align-items: flex-start; flex-direction: column; }
       .filters { grid-template-columns: 1fr 1fr; }
@@ -196,10 +203,23 @@
     const SHARED_READONLY = location.protocol !== 'file:' && !BUILDER_MODE;
     const MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
     const EMPTY_ADS = { dates: [], campaigns: [], campaignDaily: {}, plpRows: [], keywordRows: [], searchRows: [], bidChanges: [] };
-    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [], ads: EMPTY_ADS, activeListings: null };
+    const DEFAULT_STATE = { plgRaw: [], trafficRaw: [], sources: [], ads: EMPTY_ADS, activeListings: null, products: null, productCounts: null };
+    // fullState = 全量数据（含两个产品）；dataState = 当前产品视图，页面函数一律读 dataState。
+    let fullState = structuredClone(DEFAULT_STATE);
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { page: 'dashboard', product: 'all', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
+    // 仅 builder 模式（手工上传 CSV）使用：在售名单里的 itemId→SKU
+    let skuByItemId = new Map();
+
+    // === PRODUCTS-BEGIN（与 update-dashboard.mjs 中的同名常量逐字一致；check-products.mjs 会校验） ===
+    const PRODUCTS = [
+      { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
+      { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
+    ];
+    const PRODUCT_ALL = 'all';
+    const PRODUCT_UNKNOWN = 'unknown';
+    // === PRODUCTS-END ===
 
     const COVERAGE = [
       ['自然曝光', '直接提供', 'Traffic：Total organic impressions on eBay site；PLG：Organic Impressions'],
@@ -230,9 +250,65 @@
 
     function clean(value) { return String(value ?? '').replace(/^\uFEFF/, '').trim(); }
     function titleKey(value) { return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
-    function isTargetModelTitle(value) {
-      const normalized = titleKey(value);
-      return normalized.includes('artidiag600elite') || normalized.includes('ad600elite');
+    // 与构建端同一口径：标题 token > campaign 名 > SKU 兜底 > unknown。
+    // 线上数据每行已带 product；SKU 兜底只服务 builder 模式手工导入的 CSV。
+    function productOf(row) {
+      const title = titleKey(row?.title);
+      const byTitle = title && PRODUCTS.find(product => product.titleTokens.some(token => title.includes(token)));
+      if (byTitle) return byTitle.key;
+      const campaign = titleKey(row?.campaign);
+      const byCampaign = campaign && PRODUCTS.find(product => product.titleTokens.some(token => campaign.includes(token)));
+      if (byCampaign) return byCampaign.key;
+      const sku = String(row?.sku ?? skuByItemId.get(String(row?.itemId ?? '')) ?? '').toLowerCase();
+      const bySku = sku && PRODUCTS.find(product => product.sku.toLowerCase() === sku);
+      if (bySku) return bySku.key;
+      return PRODUCT_UNKNOWN;
+    }
+    function inProduct(row, key = ui.product) {
+      const product = row?.product || productOf(row);
+      if (!product || product === PRODUCT_UNKNOWN) return false;
+      return key === PRODUCT_ALL || product === key;
+    }
+    // 兼容旧调用与线上自检：判断标题是否属于「任一」目标产品，不受当前产品切换影响
+    function isTargetModelTitle(value) { return inProduct({ title: value }, PRODUCT_ALL); }
+
+    function productOptions() {
+      return [[PRODUCT_ALL, '全部'], ...PRODUCTS.map(product => [product.key, product.label])];
+    }
+    function productSwitch() {
+      return productOptions().map(([key, label]) => `<button class="product-btn ${ui.product === key ? 'active' : ''}" data-product="${esc(key)}" aria-pressed="${ui.product === key}">${esc(label)}</button>`).join('');
+    }
+    // 外部广告快照目前只覆盖 AD600 Elite，其它产品的 PLP/关键词/搜索词为空属正常，不显示为 0
+    function productNotice() {
+      if (ui.product === PRODUCT_ALL || ui.product === PRODUCTS[0].key) return '';
+      const ads = dataState.ads || EMPTY_ADS;
+      const count = ['plpRows', 'keywordRows', 'searchRows'].reduce((total, field) => total + (ads[field] || []).length, 0);
+      if (count) return '';
+      const label = PRODUCTS.find(product => product.key === ui.product)?.label || ui.product;
+      return `<div class="product-notice">当前产品「${esc(label)}」暂无 PLP / 关键词 / 搜索词数据（现有广告快照仅覆盖 ${esc(PRODUCTS[0].label)}）；流量与 PLG 数据可正常查看。</div>`;
+    }
+    function normalizeState(state) {
+      state.products = state.products?.length ? state.products : structuredClone(PRODUCTS);
+      [state.plgRaw, state.trafficRaw, state.ads?.plpRows, state.activeListings?.items].forEach(rows => {
+        (rows || []).forEach(row => { if (!row.product) row.product = productOf(row); });
+      });
+      return state;
+    }
+    function applyProduct() {
+      fullState = normalizeState(fullState);
+      if (ui.product === PRODUCT_ALL) { dataState = structuredClone(fullState); return; }
+      const pick = rows => (rows || []).filter(row => row.product === ui.product);
+      const ads = fullState.ads || structuredClone(EMPTY_ADS);
+      const keepAds = ui.product === PRODUCTS[0].key;
+      dataState = {
+        plgRaw: pick(fullState.plgRaw),
+        trafficRaw: pick(fullState.trafficRaw),
+        activeListings: fullState.activeListings ? { ...fullState.activeListings, items: pick(fullState.activeListings.items) } : null,
+        sources: structuredClone(fullState.sources || []),
+        products: structuredClone(fullState.products),
+        productCounts: structuredClone(fullState.productCounts || null),
+        ads: keepAds ? structuredClone(ads) : { ...structuredClone(EMPTY_ADS), plpRows: pick(ads.plpRows || []) }
+      };
     }
     function number(value) {
       const text = clean(value).replace(/,/g, '').replace(/[$%]/g, '').replace(/[()]/g, '');
@@ -310,7 +386,7 @@
     async function saveState() {
       const db = await openDb();
       return new Promise((resolve, reject) => {
-        const request = db.transaction(DB_STORE, 'readwrite').objectStore(DB_STORE).put(dataState, DB_KEY);
+        const request = db.transaction(DB_STORE, 'readwrite').objectStore(DB_STORE).put(fullState, DB_KEY);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       });
@@ -328,7 +404,12 @@
         rows.slice(activeHeader + 1).forEach(row => {
           const itemId = clean(val(row, map, 'Item number')).replace(/^="?|"$/g, '');
           const title = clean(val(row, map, 'Title'));
-          if (/^\d+$/.test(itemId) && isTargetModelTitle(title)) items.set(itemId, { itemId, title, available: number(val(row, map, 'Available quantity')) });
+          const sku = clean(val(row, map, 'Custom label (SKU)'));
+          if (!/^\d+$/.test(itemId)) return;
+          if (sku) skuByItemId.set(itemId, sku.toLowerCase());
+          const product = productOf({ itemId, title, sku });
+          if (product === PRODUCT_UNKNOWN) return;
+          items.set(itemId, { itemId, title, available: number(val(row, map, 'Available quantity')), product, sku });
         });
         return { type: 'Active', rows: [...items.values()], source: { id: `${file.name}|${file.size}|${file.lastModified}`, name: file.name, type: 'Active', start: date, end: date, count: items.size, importedAt: new Date(file.lastModified).toISOString(), periodKind: '在售名单快照' } };
       }
@@ -346,11 +427,13 @@
         const itemId = clean(val(row, map, 'Item ID'));
         const date = isoFromEnglish(val(row, map, 'Date'));
         const title = clean(val(row, map, 'Title'));
-        if (!itemId || !date || !isTargetModelTitle(title)) continue;
+        const campaign = clean(val(row, map, 'Campaign name')) || '未命名广告活动';
+        const product = productOf({ itemId, title, campaign });
+        if (!itemId || !date || product === PRODUCT_UNKNOWN) continue;
         const campaignId = clean(val(row, map, 'Campaign ID'));
         parsed.push({
           key: `${date}|${itemId}|${campaignId || clean(val(row, map, 'Campaign name'))}`,
-          date, itemId, campaignId,
+          date, itemId, campaignId, product,
           campaign: clean(val(row, map, 'Campaign name')) || '未命名广告活动',
           title,
           status: clean(val(row, map, 'Status  ')) || clean(val(row, map, 'Status')),
@@ -383,10 +466,11 @@
       for (const row of rows.slice(headerIndex + 1)) {
         const itemId = clean(val(row, map, 'eBay item ID'));
         const title = clean(val(row, map, 'Listing title'));
-        if (!itemId || !isTargetModelTitle(title)) continue;
+        const product = productOf({ itemId, title });
+        if (!itemId || product === PRODUCT_UNKNOWN) continue;
         parsed.push({
           key: `${start}|${end}|${itemId}`,
-          start, end, itemId,
+          start, end, itemId, product,
           title,
           listingStartDate: isoFromEnglish(val(row, map, 'Item Start Date')),
           category: clean(val(row, map, 'Category')),
@@ -418,21 +502,22 @@
 
     function mergeImport(result) {
       if (result.type === 'Active') {
-        const current = dataState.activeListings;
+        const current = fullState.activeListings;
         const rank = result.source.start + '|' + result.source.importedAt + '|' + result.source.name;
-        if (!current || rank > current.date + '|' + current.importedAt + '|' + current.name) dataState.activeListings = { date: result.source.start, importedAt: result.source.importedAt, name: result.source.name, items: result.rows };
+        if (!current || rank > current.date + '|' + current.importedAt + '|' + current.name) fullState.activeListings = { date: result.source.start, importedAt: result.source.importedAt, name: result.source.name, items: result.rows };
       } else if (result.type === 'PLG') {
-        const map = new Map(dataState.plgRaw.map(row => [row.key, row]));
+        const map = new Map(fullState.plgRaw.map(row => [row.key, row]));
         result.rows.forEach(row => map.set(row.key, row));
-        dataState.plgRaw = [...map.values()];
+        fullState.plgRaw = [...map.values()];
       } else {
-        const map = new Map(dataState.trafficRaw.map(row => [row.key, row]));
+        const map = new Map(fullState.trafficRaw.map(row => [row.key, row]));
         result.rows.forEach(row => map.set(row.key, row));
-        dataState.trafficRaw = [...map.values()];
+        fullState.trafficRaw = [...map.values()];
       }
-      const sources = new Map(dataState.sources.map(row => [row.id, row]));
+      const sources = new Map(fullState.sources.map(row => [row.id, row]));
       sources.set(result.source.id, result.source);
-      dataState.sources = [...sources.values()].sort((a, b) => b.importedAt.localeCompare(a.importedAt));
+      fullState.sources = [...sources.values()].sort((a, b) => b.importedAt.localeCompare(a.importedAt));
+      applyProduct();
     }
 
     function aggregateDaily() {
@@ -493,12 +578,12 @@
     }
 
     function trafficSelection() {
-      const daily = dataState.trafficRaw.filter(row => row.start && row.start === row.end && isTargetModelTitle(row.title));
+      const daily = dataState.trafficRaw.filter(row => row.start && row.start === row.end && inProduct(row));
       const dates = unique(daily.map(row => row.start)).sort();
       const start = ui.start || dates[0] || '';
       const end = ui.end || dates.at(-1) || '';
       if (!start || !end || start > end) return { rows: [], note: '请选择有效日期，开始日期不能晚于结束日期。', complete: false };
-      const snapshot = dataState.trafficRaw.filter(row => row.start === start && row.end === end && isTargetModelTitle(row.title));
+      const snapshot = dataState.trafficRaw.filter(row => row.start === start && row.end === end && inProduct(row));
       const selected = daily.filter(row => row.start >= start && row.start <= end).sort((a, b) => a.start.localeCompare(b.start));
       const covered = new Set(selected.map(row => row.start));
       const dayCount = Math.floor((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
@@ -545,7 +630,7 @@
     }
 
     function plgDateRange() {
-      const dates = dataState.plgRaw.filter(row => isTargetModelTitle(row.title)).map(row => row.date).filter(date => (!ui.start || date >= ui.start) && (!ui.end || date <= ui.end)).sort();
+      const dates = dataState.plgRaw.filter(row => inProduct(row)).map(row => row.date).filter(date => (!ui.start || date >= ui.start) && (!ui.end || date <= ui.end)).sort();
       return [dates[0] || '', dates[dates.length - 1] || ''];
     }
 
@@ -576,7 +661,7 @@
       const trafficRows = selection.rows;
       const trafficMap = new Map(trafficRows.map(row => [row.itemId, row]));
       const plgMap = new Map();
-      for (const row of dataState.plgRaw.filter(row => isTargetModelTitle(row.title) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
+      for (const row of dataState.plgRaw.filter(row => inProduct(row) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end))) {
         if (!plgMap.has(row.itemId)) plgMap.set(row.itemId, { itemId: row.itemId, title: row.title, price: row.price, totalSold: 0, organicSold: 0, adImpressions: 0, adClicks: 0, adSold: 0, adSales: 0, adFees: 0 });
         const item = plgMap.get(row.itemId);
         item.title = row.title || item.title;
@@ -651,7 +736,7 @@
 
     function dailyItemRecords() {
       const query = ui.query.toLowerCase();
-      return aggregateDaily().filter(row => isTargetModelTitle(row.title) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end) && (!query || row.itemId.includes(query) || row.title.toLowerCase().includes(query))).map(row => {
+      return aggregateDaily().filter(row => inProduct(row) && (!ui.start || row.date >= ui.start) && (!ui.end || row.date <= ui.end) && (!query || row.itemId.includes(query) || row.title.toLowerCase().includes(query))).map(row => {
         return {
           ...row,
           link: `https://www.ebay.com/itm/${row.itemId}`,
@@ -671,7 +756,8 @@
         ['daily', 'calendar-range', '每日记录']
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
       return `<header class="topbar">
-        <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay AD600 Elite 流量与广告看板</h1><p>Traffic + PLG + PLP + 关键词</p></div></div>
+        <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay 流量与广告看板</h1><p>${PRODUCTS.map(product => product.label).join(' · ')} ｜ Traffic + PLG + PLP + 关键词</p></div></div>
+        <div class="product-switch" role="group" aria-label="产品范围">${productSwitch()}</div>
         <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'}</span></div>
       </header>
       <div class="workspace">
@@ -797,8 +883,8 @@
       const rows = dailyItemRecords();
       const dates = unique(rows.map(row => row.date)).sort();
       const itemCount = unique(rows.map(row => row.itemId)).length;
-      const trafficDates = unique(dataState.trafficRaw.filter(row => isTargetModelTitle(row.title) && row.start && row.start === row.end).map(row => row.start)).sort();
-      const plgDates = unique(dataState.plgRaw.filter(row => isTargetModelTitle(row.title)).map(row => row.date)).sort();
+      const trafficDates = unique(dataState.trafficRaw.filter(row => inProduct(row) && row.start && row.start === row.end).map(row => row.start)).sort();
+      const plgDates = unique(dataState.plgRaw.filter(row => inProduct(row)).map(row => row.date)).sort();
       const missingTraffic = plgDates.filter(date => !trafficDates.includes(date));
       return `<div class="page-head"><div><h2>Item 每日记录</h2><p>按“日期 + Item ID”合并单日 Traffic、PLG 和 PLP。</p></div><div class="actions"><button class="btn" id="dailyExportBtn">${icon('download')}导出每日记录</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传日报</button>`}</div></div>
         ${filterPanel('每日记录')}
@@ -854,7 +940,7 @@
 
     function listingStatusPanel() {
       const snapshot = dataState.activeListings;
-      const history = new Set([...dataState.trafficRaw, ...dataState.plgRaw, ...(dataState.ads.plpRows || [])].filter(row => isTargetModelTitle(row.title)).map(row => row.itemId));
+      const history = new Set([...dataState.trafficRaw, ...dataState.plgRaw, ...(dataState.ads.plpRows || [])].filter(row => inProduct(row)).map(row => row.itemId));
       const active = new Set((snapshot?.items || []).map(row => row.itemId));
       const absent = [...history].filter(id => !active.has(id)).length;
       const selected = ui.listingStatus || 'active';
@@ -908,7 +994,7 @@
     }
 
     function adDetailRows() {
-      const plg = dataState.plgRaw.filter(row => isTargetModelTitle(row.title)).map(row => ({ date: row.date, campaign: row.campaign, adType: 'PLG', itemId: row.itemId, title: row.title, impressions: row.adImpressions, clicks: row.adClicks, sold: row.adSold, sales: row.adSales, adFees: row.adFees, naturalImpressions: row.organicImpressions, naturalClicks: row.organicClicks, naturalSold: row.organicSold }));
+      const plg = dataState.plgRaw.filter(row => inProduct(row)).map(row => ({ date: row.date, campaign: row.campaign, adType: 'PLG', itemId: row.itemId, title: row.title, impressions: row.adImpressions, clicks: row.adClicks, sold: row.adSold, sales: row.adSales, adFees: row.adFees, naturalImpressions: row.organicImpressions, naturalClicks: row.organicClicks, naturalSold: row.organicSold }));
       const plp = (dataState.ads.plpRows || []).map(row => ({ ...row, adType: 'PLP', naturalImpressions: null, naturalClicks: null, naturalSold: null }));
       return [...plg, ...plp].filter(row => withinAdsRange(row) && (!ui.campaigns.length || ui.campaigns.includes(row.campaign)));
     }
@@ -1165,6 +1251,14 @@
         render();
       });
       document.querySelectorAll('[data-page]').forEach(button => button.addEventListener('click', () => { ui.page = button.dataset.page; render(); }));
+      document.querySelectorAll('[data-product]').forEach(button => button.addEventListener('click', () => {
+        ui.product = button.dataset.product;
+        // 两个产品的数据日期范围不同，切换后让日期区间按当前产品重新推导
+        ui.start = ''; ui.end = ''; ui.trafficPeriod = ''; ui.campaigns = []; ui.query = '';
+        ui.adTab = 'overview';
+        applyProduct();
+        render();
+      }));
       document.querySelectorAll('[data-ad-tab]').forEach(button => button.addEventListener('click', () => { ui.adTab = button.dataset.adTab; render(); }));
       document.querySelectorAll('[data-campaign]').forEach(button => button.addEventListener('click', () => {
         const campaign = button.dataset.campaign;
@@ -1311,9 +1405,11 @@
 
     async function clearData() {
       if (!confirm('确定清空当前浏览器中保存的所有报表数据吗？')) return;
-      dataState = structuredClone(DEFAULT_STATE);
+      fullState = structuredClone(DEFAULT_STATE);
+      skuByItemId = new Map();
+      applyProduct();
       await saveState();
-      ui = { page: 'import', query: '', start: '', end: '', trafficPeriod: '', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      ui = { page: 'import', product: PRODUCT_ALL, adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
       render();
       toast('数据已清空。');
     }
@@ -1347,7 +1443,7 @@
         }
       }
       const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'ads' ? advertisingPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : detailPage();
-      document.getElementById('app').innerHTML = baseLayout(pageContent);
+      document.getElementById('app').innerHTML = baseLayout(productNotice() + pageContent);
       bindEvents();
     }
 
@@ -1360,24 +1456,28 @@
     (async function start() {
       try {
         if (BUILDER_MODE) {
-          dataState = structuredClone(DEFAULT_STATE);
+          fullState = structuredClone(DEFAULT_STATE);
         } else {
-          dataState = await loadState();
+          fullState = await loadState();
           const seeded = window.EBAY_PRELOADED_DATA;
           if (seeded && seeded.bundleId !== localStorage.getItem('ebay-preloaded-bundle')) {
-            dataState = {
+            fullState = {
               plgRaw: seeded.plgRaw || [],
               trafficRaw: seeded.trafficRaw || [],
               activeListings: seeded.activeListings || null,
               sources: seeded.sources || [],
-              ads: seeded.ads || structuredClone(EMPTY_ADS)
+              ads: seeded.ads || structuredClone(EMPTY_ADS),
+              products: seeded.products || structuredClone(PRODUCTS),
+              productCounts: seeded.productCounts || null
             };
             await saveState();
             localStorage.setItem('ebay-preloaded-bundle', seeded.bundleId);
           }
         }
+        applyProduct();
       } catch (error) {
         toast('无法读取本地数据，将以空白工作台启动。', true);
+        applyProduct();
       }
       render();
     })();
