@@ -98,11 +98,13 @@ try {
     $runsDir = (Join-Path $Dest '下载结果') -replace '\\', '/'
     $downloadsDir = ((Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads')) -replace '\\', '/'
     # 手写 JSON 而不是 ConvertTo-Json：字段顺序固定、空数组写成 []、不带 BOM（BOM 会让 Node 解析失败）
+    # shopName 和活动都留空是**故意的**：
+    #   店铺名空着显示「我的店铺」，界面里点一下就能改；
+    #   活动空着 = 报表中心后台的全部活动，报表 CSV 里本来就带 Campaign 列，看板直接读报表。
     $json = @"
 {
-  "_说明": "填好下面几项保存即可；不用设环境变量，程序会自动读本文件夹的 my-shop.json。",
-  "_活动ID在哪找": "eBay 卖家后台 → 广告 → Campaigns，活动名字后面那串数字 ID。",
-  "shopName": "请改成你的店铺名",
+  "_说明": "这个文件是安装程序自动生成的，已经能直接用，不用改。店铺名在控制台界面上能改；活动留空就是后台全部活动。",
+  "shopName": "",
   "dataDir": "$dataDir",
   "runsDir": "$runsDir",
   "downloadsDir": "$downloadsDir",
@@ -114,7 +116,7 @@ try {
 }
 "@
     [IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-    Line '      my-shop.json 已生成（等下只需填店铺名和活动 ID）。' 'Green'
+    Line '      配置已自动生成（不需要你填任何东西）。' 'Green'
   }
 
   Line ''
@@ -122,15 +124,15 @@ try {
   Line '   安装完成！' 'Green'
   Line '==================================================' 'Green'
   Line ''
-  Line '接下来只需两件事：' 'White'
-  Line '  ① 在打开的文件夹里双击 my-shop.json，把「店铺名」和两个「活动 ID」填上，保存。'
-  Line '     （活动 ID：eBay 后台 → 广告 → Campaigns，活动名后面那串数字）'
-  Line '  ② 浏览器登录 eBay 后台 → 打开 chrome://inspect/#remote-debugging'
+  Line '接下来只有两步，都不用填任何东西：' 'White'
+  Line '  ① 用 Chrome / Edge 登录 eBay 卖家后台，打开 chrome://inspect/#remote-debugging'
   Line '     → 把 Allow remote debugging 拨到开（只需一次）。'
+  Line '  ② 双击「报表控制台.cmd」，在页面最上面点「自动下载最近 30 天」。'
+  Line '     跑完打开看板就有数据了。'
   Line ''
-  Line ' 然后双击「报表控制台.cmd」就能用了。看数据双击「打开看板.cmd」。' 'White'
+  Line ' 店铺名、活动 ID 都不用填：店铺名在界面右上角随时能改名，活动留空就是后台全部活动。' 'White'
   Line ''
-  Line ' 以后有新版本：双击「检查更新.cmd」，配置和报表数据不会被覆盖。'
+  Line ' 以后有新版本：双击「检查更新.cmd」，配置和下载好的报表不会被覆盖。'
   $ok = $true
 } catch {
   Line ''

@@ -10,7 +10,7 @@ import { yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, O
 import { dataDirState } from '../app/publish.mjs';
 import { scanGaps, pacificToday } from '../app/scan-gaps.mjs';
 import { catalogSnapshot } from '../app/reports.mjs';
-import { SHOP, shopSummary } from '../app/shop-config.mjs';
+import { SHOP, shopSummary, configFilePath, saveConfigPatch } from '../app/shop-config.mjs';
 import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, GAP_DEFAULT_SEC } from './gap-plan.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -21,9 +21,50 @@ let OUT_DIR = process.env.REPORT_OUT_DIR || SHOP.runsDir;
 const LOG_FILE = join(here, 'console.log');
 const DASHBOARD_URL = process.env.DASHBOARD_URL || SHOP.dashboardUrl;
 
+// 活动列表可在运行中热更新（点「刷新活动列表」跑完自动扫描后不用重启控制台）：
+// 空数组 = 报表中心后台默认的全部活动，这是默认状态，完全不需要配置。
+let plgList = PLG_CAMPAIGNS;
+let priorityList = PRIORITY_CAMPAIGNS;
+let priorityDefault = PRIORITY_DEFAULT_IDS;
+let shopMeta = { shopName: SHOP.shopName, sellerName: SHOP.sellerName || '' };
+// null = 还没扫过；true/false = 下载结果目录里有没有 CSV（决定要不要显示「首次使用」引导）
+let runsCsvSeen = null;
+let runsCsvCheckedAt = 0;
+
+function readJsonFile(path) {
+  try { return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; }
+}
+
+// 从磁盘重读活动配置：my-shop.json（PLP/PLG + 店铺名）+ app/priority-campaigns.json（活动名池）
+function reloadCampaigns() {
+  const config = readJsonFile(configFilePath()) || {};
+  const normalize = list => (Array.isArray(list) ? list : [])
+    .map(c => typeof c === 'string' ? { id: c, name: c } : { id: String(c?.id || ''), name: String(c?.name || c?.id || '') })
+    .filter(c => c.id);
+  plgList = normalize(config.plgCampaigns);
+  const plpIds = (Array.isArray(config.plpCampaigns) ? config.plpCampaigns : []).map(String).filter(Boolean);
+  const snapshot = readJsonFile(join(APP_DIR, 'priority-campaigns.json'));
+  const owner = shopMeta.sellerName || shopMeta.shopName;
+  const snapshotOwner = snapshot?.seller || snapshot?.shopName;
+  const pool = snapshot && (!snapshotOwner || !owner || snapshotOwner === owner)
+    ? normalize(snapshot.campaigns)
+        .map(c => ({ ...c, plp: plpIds.includes(c.id) }))
+    : plpIds.map(id => ({ id, name: id, plp: true }));
+  priorityList = pool;
+  priorityDefault = Array.isArray(config.priorityDefaultCampaigns)
+    ? config.priorityDefaultCampaigns.map(String)
+    : plpIds.filter(id => pool.some(c => c.id === id));
+  shopMeta = {
+    shopName: String(config.shopName || '').trim() || SHOP.shopName,
+    sellerName: String(config.sellerName || shopMeta.sellerName || '').trim()
+  };
+  return { plgList, priorityList, priorityDefault, shopMeta };
+}
+
 
 // ---------- 运行态 ----------
 let child = null;
+let scanChild = null;                                // 活动扫描子进程（只读，不影响下载）
 let runInfo = null;                                  // { startedAt, args, lines }
 // 逐天串行队列：一键补齐全天跑完一天 → 等一会儿 → 再跑下一天（同一天重复提交容易被 eBay 拒）
 let seq = null;                                      // { steps, i, gapMs, label, timer }
@@ -43,6 +84,74 @@ function broadcast(event, payload) {
   for (const res of clients) res.write(`event: ${event}\ndata: ${j(payload)}\n\n`);
 }
 
+// ---------- 首次初始化：一次把最近 30 天的数据下下来，看板一打开就有内容 ----------
+// 运营不用理解「哪些报表、什么粒度」：Traffic 逐日、PLG 本月+上月、优先促刊 4 类走一个 30 天区间、
+// 在售名单 1 份。以后要补哪一段，再用界面上的单项下载。
+function shiftDays(iso, days) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function firstRunPlan(days = 30) {
+  const end = yesterdayPacific();
+  const start = shiftDays(end, -(days - 1));
+  const base = ['run-download.mjs', '--out', OUT_DIR, '--max-tabs', '10'];
+  const steps = [
+    {
+      day: `Traffic ${start}~${end}`,
+      title: `流量报表（${start} ~ ${end}，逐日 ${days} 份）`,
+      mode: 'download', gapMs: 0,
+      args: [...base, '--only', 'traffic', '--dates', `${start}..${end}`, '--date', end]
+    },
+    {
+      day: 'PLG 上月',
+      title: 'PLG 链接广告（上月，按日）',
+      mode: 'download',
+      args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'PREVIOUSMONTH']
+    },
+    {
+      day: 'PLG 本月',
+      title: 'PLG 链接广告（本月，按日）',
+      mode: 'download',
+      args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'CURRENTMONTH']
+    },
+    {
+      day: '优先促刊',
+      title: `优先促销刊登（${start} ~ ${end}：物品刊登 / 关键词 / 活动 / 搜索词）`,
+      mode: 'download',
+      args: [...base, '--only', 'priority', '--date', end,
+        '--priority-types', 'listing,keyword,campaign,search',
+        '--priority-unit', 'DAILY',
+        '--priority-range', 'CUSTOM',
+        '--priority-custom-start', start, '--priority-custom-end', end]
+    },
+    {
+      day: '在售名单',
+      title: '在售商品名单（1 份，用于产品/机型归属）',
+      mode: 'download',
+      args: [...base, '--only', 'active', '--date', end, '--active-type', 'active']
+    }
+  ];
+  return { steps, start, end, days };
+}
+
+// 下载结果目录里有没有 CSV：新用户装完第一次打开时用来判断「要不要引导初始化」
+function runsCsvCount() {
+  let count = 0;
+  const walk = dir => {
+    if (count > 500) return;
+    let entries = [];
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) walk(join(dir, entry.name));
+      else if (entry.name.toLowerCase().endsWith('.csv')) count++;
+    }
+  };
+  if (existsSync(OUT_DIR)) walk(OUT_DIR);
+  return count;
+}
+
 // ---------- 环境体检 ----------
 // 只问常驻桥（毫秒级），不再每次做 8 秒的 WS 握手探测；
 // 桥不在就顺手拉起守护，用户不用关心进程在不在。
@@ -52,6 +161,11 @@ async function envState() {
   if (!h && Date.now() - lastDaemonTry > 10000) {
     lastDaemonTry = Date.now();
     startBridgeDaemon();
+  }
+  // 有没有下载过 CSV：15 秒最多扫一次目录，避免每次轮询都遍历几千个文件
+  if (runsCsvSeen === null || (!runsCsvSeen && Date.now() - runsCsvCheckedAt > 15000)) {
+    runsCsvSeen = runsCsvCount() > 0;
+    runsCsvCheckedAt = Date.now();
   }
   const connected = !!h?.connected;
   return {
@@ -75,6 +189,17 @@ async function envState() {
     outDir: OUT_DIR,
     dashboard: DASHBOARD_URL,
     dataState: dataDirState(),
+    // 新用户第一次打开：下载结果目录里还没有任何 CSV，就在页面上引导「自动下载最近 30 天」
+    firstRun: { needed: !runsCsvSeen, days: 30, outDir: OUT_DIR },
+    shop: {
+      name: shopMeta.shopName,
+      seller: shopMeta.sellerName,
+      configFile: configFilePath(),
+      // 0 个活动不是错：代表「报表中心后台默认全部活动」，也是最省事的默认状态
+      plgCount: plgList.length,
+      priorityCount: priorityList.length,
+      campaignsMode: (plgList.length || priorityList.length) ? '指定活动' : '后台全部活动'
+    },
     defaults: defaultForm(),
     last: lastSummary()
   };
@@ -86,15 +211,16 @@ function defaultForm() {
     date,
     rangeStart: monthStart(date),
     rangeEnd: date,
-    plgCampaigns: PLG_CAMPAIGNS.map(c => c.id),
-    plgCampaignList: PLG_CAMPAIGNS,
+    // 空数组不是「没选」：空 = 报表中心后台默认的全部活动，下载侧不传活动参数
+    plgCampaigns: plgList.map(c => c.id),
+    plgCampaignList: plgList,
     ranges: RC_RANGES,
     activeTypes: Object.entries(ACTIVE_TYPES).map(([key, v]) => ({ key, label: v.label })),
     orderTypes: ORDER_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp })),
     orderRanges: ORDER_RANGES,
     priorityTypes: PRIORITY_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp })),
-    priorityCampaignList: PRIORITY_CAMPAIGNS,
-    priorityDefaultCampaigns: PRIORITY_DEFAULT_IDS,
+    priorityCampaignList: priorityList,
+    priorityDefaultCampaigns: priorityDefault,
     outDir: OUT_DIR
   };
 }
@@ -211,12 +337,12 @@ function buildArgs(form) {
       if (form.plgCustomStart > form.plgCustomEnd) throw new Error('自定义区间起始日晚于结束日');
       args.push('--plg-custom-start', form.plgCustomStart, '--plg-custom-end', form.plgCustomEnd);
     }
-    // 没传活动列表就按「全部活动」处理；显式传了空数组才算选错
-    const plgPicked = form.plgCampaigns === undefined
-      ? PLG_CAMPAIGNS.map(c => c.id)
-      : (form.plgCampaigns || []).filter(Boolean);
-    if (!plgPicked.length) throw new Error('PLG 至少要选一个活动');
-    if (plgPicked.length < PLG_CAMPAIGNS.length) args.push('--plg-campaigns', plgPicked.join(','));
+    // 活动列表：空 = 不传参数 = 报表中心后台默认的全部活动（推荐路径，运营不用管）。
+    // 只有明确挑了「一部分活动」才传，用来缩小报表范围。
+    const plgPicked = (form.plgCampaigns || []).filter(Boolean);
+    if (plgPicked.length && plgList.length && plgPicked.length < plgList.length) {
+      args.push('--plg-campaigns', plgPicked.join(','));
+    }
   }
   if (form.active) args.push('--active-type', form.activeType || 'active');
 
@@ -244,11 +370,11 @@ function buildArgs(form) {
       args.push('--priority-custom-start', form.priorityCustomStart, '--priority-custom-end', form.priorityCustomEnd);
     }
     const pc = (form.priorityCampaigns || []).filter(Boolean);
-    const known = new Set(PRIORITY_CAMPAIGNS.map(c => c.id));
+    const known = new Set(priorityList.map(c => c.id));
     const unknown = pc.filter(id => !known.has(id));
     if (unknown.length) throw new Error(`优先促销刊登活动不在列表里：${unknown.join(',')}`);
-    if (pc.length && pc.length < PRIORITY_CAMPAIGNS.length) args.push('--priority-campaigns', pc.join(','));
-    else if (pc.length === PRIORITY_CAMPAIGNS.length) args.push('--priority-campaigns', 'all');
+    if (pc.length && pc.length < priorityList.length) args.push('--priority-campaigns', pc.join(','));
+    else if (priorityList.length && pc.length === priorityList.length) args.push('--priority-campaigns', 'all');
   }
   if (form.keepTabs) args.push('--keep');
   if (form.publish) args.push('--publish');
@@ -411,6 +537,56 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/api/state') return send(res, 200, await envState());
 
+    // 改店铺名：名字只是个标签，界面上随手改，写回 my-shop.json
+    if (path === '/api/shop-name' && req.method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().slice(0, 40);
+      try {
+        const saved = saveConfigPatch({ shopName: name });
+        shopMeta.shopName = name || SHOP.shopName;
+        broadcast('shop', { name: shopMeta.shopName });
+        say(`[控制台] 店铺名已改为「${shopMeta.shopName}」（写入 ${saved}）`);
+        return send(res, 200, { ok: true, name: shopMeta.shopName, file: saved });
+      } catch (error) {
+        return send(res, 500, { ok: false, error: `保存失败：${error.message}` });
+      }
+    }
+
+    // 刷新活动列表（可选功能）：只读扫描报表中心的 Campaigns 卡片，把活动名填进下拉框。
+    // 不点也完全能用——活动留空就是「后台默认全部活动」。
+    if (path === '/api/auto-scan' && req.method === 'POST') {
+      if (scanChild || child || seq) return send(res, 409, { ok: false, error: '有任务在跑，等它结束再刷新活动列表' });
+      say('[控制台] 开始扫描报表中心的活动列表（只读，不提交任何下载）…');
+      const proc = spawn(NODE, [join(APP_DIR, 'auto-scan.mjs'), '--json'], { cwd: dirname(APP_DIR), windowsHide: true });
+      scanChild = proc;
+      let out = '';
+      const onData = chunk => {
+        const text = String(chunk);
+        out += text;
+        for (const line of text.split(/\r?\n/)) {
+          if (!line.trim() || line.startsWith('@@')) continue;
+          say(line);
+        }
+      };
+      proc.stdout.on('data', onData);
+      proc.stderr.on('data', onData);
+      proc.on('close', code => {
+        scanChild = null;
+        const lists = reloadCampaigns();
+        const payload = { ok: code === 0, ...lists };
+        const resultLine = out.split(/\r?\n/).reverse().find(l => l.startsWith('@@result:'));
+        if (resultLine) {
+          try { payload.result = JSON.parse(resultLine.slice('@@result:'.length)); } catch { /* 忽略 */ }
+        }
+        say(code === 0
+          ? `[控制台] 活动列表已刷新：PLG ${lists.plgList.length} 个 / 优先促刊 ${lists.priorityList.length} 个`
+          : '[控制台] 活动扫描没成功，不影响使用：留空就是后台全部活动，直接下载即可');
+        broadcast('scan-done', payload);
+        broadcast('shop', { name: shopMeta.shopName });
+      });
+      return send(res, 200, { ok: true, started: true });
+    }
+
     // 需要授权时：拉起守护 + 在浏览器里打开开关页面，用户拨一次即可
     if (path === '/api/fix-env' && req.method === 'POST') {
       if (!findChrome()) return send(res, 500, { ok: false, error: '没找到 Chrome 安装路径' });
@@ -442,6 +618,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // 首次初始化：一键下载最近 30 天（Traffic 逐日 + PLG 本月/上月 + 优先促刊 4 类 + 在售名单）。
+    // 目的是让新装的人打开看板就有数据，不用先研究「该下哪些报表、什么粒度」。
+    if (path === '/api/first-run' && req.method === 'POST') {
+      if (child || seq || scanChild) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
+      const body = await readBody(req).catch(() => ({}));
+      const days = Math.min(90, Math.max(7, Number(body.days) || 30));
+      const plan = firstRunPlan(days);
+      if (body.dryRun) {
+        return send(res, 200, { ok: true, dryRun: true, start: plan.start, end: plan.end, steps: plan.steps.map(s => ({ day: s.day, title: s.title, args: s.args })) });
+      }
+      say(`[控制台] 首次初始化：最近 ${days} 天（${plan.start} ~ ${plan.end}），共 ${plan.steps.length} 步，全程只读下载，不会改动任何已有数据`);
+      startSequence(plan.steps, `首次初始化（${plan.start} ~ ${plan.end}）`, 60 * 1000);
+      return send(res, 200, { ok: true, started: true, ...plan, steps: plan.steps.map(s => ({ day: s.day, title: s.title })) });
+    }
+
     // 一键补齐：扫描正式目录的缺口 → 只下载缺的那些 → 归档 → 更新看板
     // 口径（2026-11-08 定）：看板日更 = 流量单日 + PLG 链接广告 + PLP 链接广告（走 campaign 页）
     if (path === '/api/gap-fill' && req.method === 'POST') {
@@ -453,7 +644,13 @@ const server = http.createServer(async (req, res) => {
       const daysOf = key => (byKey[key]?.missingRanges || []).flatMap(r => dayList(r.start, r.end));
       const trafficDays = daysOf('trafficDaily');
       const plgDays = daysOf('plg');
-      const plpDays = [...new Set([...daysOf('plpListing'), ...daysOf('plpKeyword'), ...daysOf('plpSearch')])].sort();
+      // PLP 走 campaign 页通道，必须知道具体活动；活动留空（= 后台全部）时这一路补不了，
+      // 直接跳过 PLP、只补流量和 PLG，不让用户卡在一个他没法填的配置项上。
+      const plpDaysRaw = [...new Set([...daysOf('plpListing'), ...daysOf('plpKeyword'), ...daysOf('plpSearch')])].sort();
+      const plpDays = priorityDefault.length ? plpDaysRaw : [];
+      if (!priorityDefault.length && plpDaysRaw.length) {
+        say(`[控制台] 跳过 PLP 补齐：当前没指定活动（${plpDaysRaw.length} 天缺口）。PLP 报表需要具体活动，需要补就在「优先促刊」里勾几个活动。`);
+      }
 
       if (!trafficDays.length && !plgDays.length && !plpDays.length) {
         return send(res, 200, { ok: true, started: false, message: '没有缺口，直接更新看板就行' });
@@ -473,7 +670,7 @@ const server = http.createServer(async (req, res) => {
       const gapSec = clampGapSec(form.gapSec);
       const { steps } = planGapFill({
         trafficDays, plgDays, plpDays, plgPreset,
-        outDir: OUT_DIR, campaigns: PRIORITY_DEFAULT_IDS, gapSec
+        outDir: OUT_DIR, campaigns: priorityDefault, gapSec
       });
       startSequence(steps, '一键补齐缺口', gapSec * 1000, { thenArchive: true });
       return send(res, 200, {

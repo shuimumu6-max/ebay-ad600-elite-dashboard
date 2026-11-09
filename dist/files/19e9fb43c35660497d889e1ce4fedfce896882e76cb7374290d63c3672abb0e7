@@ -1,0 +1,16 @@
+{
+  "_说明": "复制本文件、改成新店铺的值，然后设环境变量 EBAY_SHOP_CONFIG 指向它（或者直接改名成 my-shop.json 放在程序目录，不用设环境变量）。后台结构一致时只需改下面几项。",
+  "_能不填就不填": "店铺名空着显示「我的店铺」，界面右上角随时能改；活动留空数组 = 报表中心后台的全部活动（报表 CSV 自带 Campaign 列，看板直接读报表）。只有三个目录必须改成真实路径。",
+  "_活动列表（可选）": "想让活动显示成名字、只挑主力活动：跑 node app\\auto-scan.mjs 只读扫描（会生成 app\\priority-campaigns.json，含 ID + 名称 + 卖家归属），或在控制台「优先促刊 → 活动范围」点「刷新活动列表」。也可直接在本文件写 priorityCampaigns：[{\"id\":\"活动ID\",\"name\":\"活动名称\"}]。快照带卖家归属，别店的快照会被自动忽略。",
+  "_默认活动（可选）": "priorityDefaultCampaigns 可不写，默认等于 plpCampaigns；plpCampaigns 也空着时，优先促刊就按后台默认全部活动下载。",
+  "shopName": "",
+  "dataDir": "C:/Users/你的用户名/Desktop/新店铺正式数据",
+  "runsDir": "C:/Users/你的用户名/Desktop/新店铺下载结果",
+  "downloadsDir": "C:/Users/你的用户名/Desktop/downloads",
+  "dashboardUrl": "https://你的用户名.github.io/新店铺看板/",
+  "plpCampaigns": [],
+  "plgCampaigns": [],
+  "consolePort": 7788,
+  "bridgePort": 9233,
+  "chromeExe": ""
+}

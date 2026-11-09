@@ -1,30 +1,36 @@
 // 店铺 / 机器配置：迁移到另一家店铺或另一台电脑，只改这一个文件，主链路代码不用动。
 //
+// 设计原则（2026-11-09 定）：**能自动的一律不要让运营填**。
+//   - 店铺名：可空，空着显示「我的店铺」，界面上随时能改；
+//   - PLP / PLG 活动：可空，空着就是「报表中心后台默认的全部活动」——
+//     报表 CSV 里本来就带 Campaign 列，看板直接读报表，不需要先知道活动 ID；
+//   - 只有三个目录（dataDir / runsDir / downloadsDir）必须落盘，安装器已经自动填好。
+//
 // 两种方式（任选其一）：
 //   1. 直接改下面 DEFAULTS 里的值；
-//   2. 复制项目根目录的「新店铺配置示例.json」，填好后设环境变量
-//      EBAY_SHOP_CONFIG=C:\path\to\my-shop.json 指向它（推荐，代码完全不用动）。
-//
-// 后台结构一模一样时，需要换的通常只有：dataDir / runsDir / downloadsDir /
-// dashboardUrl / plpCampaigns / plgCampaigns 这 6 项；
-// 优先促销刊登活动列表不用手填，重跑 node app\probe-priority-campaigns.mjs 即可重采。
-import { readFileSync, existsSync } from 'node:fs';
+//   2. 程序目录放一份 my-shop.json（安装器会自动生成），或用环境变量
+//      EBAY_SHOP_CONFIG=C:\path\to\my-shop.json 指向它。
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = dirname(HERE);
 
-// 优先促销刊登的 31 个活动：来自后台 Campaigns 卡片实采快照（只读探查，不是猜的）。
-// 迁移到新店铺时重跑探针覆盖 app/priority-campaigns.json，或在本文件/外部 JSON 里覆盖。
-function readPriorityCampaigns(expectedShop) {
+// 优先促销刊登的活动池：来自后台 Campaigns 卡片实采快照（只读探查，不是猜的）。
+// 没有快照也不影响使用——控制台活动留空就等于「后台默认全部活动」，
+// 快照只是让下拉框能显示活动名、方便只挑主力活动。
+function readPriorityCampaigns(expectedShop, expectedSeller) {
   try {
     const path = join(HERE, 'priority-campaigns.json');
     if (!existsSync(path)) return [];
     const data = JSON.parse(readFileSync(path, 'utf8'));
-    // 迁移到新店铺时不能沿用上一家店的 31 个活动：快照带店铺归属，不匹配就忽略
-    if (data.shopName && data.shopName !== expectedShop) {
-      console.warn(`[店铺配置] 活动快照属于「${data.shopName}」，当前是「${expectedShop}」，已忽略；请重跑 node app\\probe-priority-campaigns.mjs`);
+    // 迁移到新店铺时不能沿用上一家店的活动：快照带店铺归属，不匹配就忽略。
+    // 优先比卖家账号（稳定），没有 seller 字段时才比店铺名。
+    const snapshotOwner = data.seller || data.shopName;
+    const currentOwner = expectedSeller || expectedShop;
+    if (snapshotOwner && currentOwner && snapshotOwner !== currentOwner) {
+      console.warn(`[店铺配置] 活动快照属于「${snapshotOwner}」，当前是「${currentOwner}」，已忽略；需要活动名就重跑 node app\\auto-scan.mjs`);
       return [];
     }
     return normalizeCampaigns(data.campaigns);
@@ -58,11 +64,15 @@ const DEFAULTS = {
   chromeExe: ''
 };
 
+// 当前实际生效的配置文件路径（改名、自动扫描都写回这里）
+let activeConfigPath = '';
+
 function readOverride() {
   // 优先级：环境变量 EBAY_SHOP_CONFIG → 程序目录下的 my-shop.json → 内置默认值。
   // 第二个入口专为「不懂环境变量」的运营准备：安装目录里放一个 my-shop.json 就生效。
   const envPath = process.env.EBAY_SHOP_CONFIG;
   const localPath = join(PROJECT_ROOT, 'my-shop.json');
+  if (!activeConfigPath) activeConfigPath = envPath || localPath;
   const candidates = envPath ? [envPath, localPath] : [localPath];
   for (const path of candidates) {
     if (!existsSync(path)) {
@@ -70,7 +80,8 @@ function readOverride() {
       continue;
     }
     try {
-      const data = JSON.parse(readFileSync(path, 'utf8'));
+      const data = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
+      activeConfigPath = path;
       console.log(`[店铺配置] 已读取：${path}`);
       return data;
     } catch (error) {
@@ -80,17 +91,40 @@ function readOverride() {
   return {};
 }
 
+export const configFilePath = () => activeConfigPath || join(PROJECT_ROOT, 'my-shop.json');
+
+// 改一项配置就写回配置文件（控制台里改店铺名、自动扫描填活动都走这里）。
+// 手写 JSON 不用 ConvertTo-Json 之类的工具：那类工具会带 BOM，Node 读回会直接报错。
+export function saveConfigPatch(patch) {
+  const path = configFilePath();
+  let current = {};
+  if (existsSync(path)) {
+    try { current = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')); } catch { current = {}; }
+  }
+  const next = { ...current, ...patch };
+  writeFileSync(path, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  return path;
+}
+
 const override = readOverride();
+const shopName = override.shopName === undefined
+  ? DEFAULTS.shopName
+  : (String(override.shopName).trim() || '我的店铺');
+const sellerName = String(override.sellerName || '').trim();
+
 export const SHOP = {
   ...DEFAULTS,
   ...override,
-  // 数组类字段不做浅合并，避免半份旧店铺活动混进新店铺
+  shopName,
+  sellerName,
+  // 数组类字段不做浅合并，避免半份旧店铺活动混进新店铺。
+  // 空数组是**有效值**，意思是「后台默认的全部活动」——不要回退成 DEFAULTS 里的固定几个。
   plpCampaigns: override.plpCampaigns ?? DEFAULTS.plpCampaigns,
   plgCampaigns: override.plgCampaigns ?? DEFAULTS.plgCampaigns,
-  priorityCampaigns: override.priorityCampaigns
+  priorityCampaigns: Array.isArray(override.priorityCampaigns)
     ? normalizeCampaigns(override.priorityCampaigns)
-    : readPriorityCampaigns(override.shopName ?? DEFAULTS.shopName),
-  // 默认只跑 PLP 那 3 个活动；想换默认集合就在外部 JSON 里写 priorityDefaultCampaigns
+    : readPriorityCampaigns(shopName, sellerName),
+  // 优先促刊默认勾选：没配就走 plpCampaigns（空 = 后台默认全部）
   priorityDefaultCampaigns: override.priorityDefaultCampaigns ?? (override.plpCampaigns ?? DEFAULTS.plpCampaigns)
 };
 
@@ -124,13 +158,16 @@ export const BRIDGE_PORT = SHOP.bridgePort;
 export function shopSummary() {
   return {
     shopName: SHOP.shopName,
-    configFile: process.env.EBAY_SHOP_CONFIG || (existsSync(join(PROJECT_ROOT, 'my-shop.json')) ? join(PROJECT_ROOT, 'my-shop.json') : '(内置默认值)'),
+    sellerName: SHOP.sellerName,
+    configFile: configFilePath(),
     dataDir: DATA_DIR,
     runsDir: RUNS_DIR,
     dashboardUrl: DASHBOARD_URL,
+    // 0 不是错：0 表示「后台默认全部活动」，控制台和下载侧都按全部处理
     plpCampaigns: PLP_CAMPAIGNS.length,
     plgCampaigns: PLG_CAMPAIGNS.length,
     priorityCampaigns: PRIORITY_CAMPAIGNS.length,
-    priorityDefaultCampaigns: PRIORITY_DEFAULT_IDS.length
+    priorityDefaultCampaigns: PRIORITY_DEFAULT_IDS.length,
+    campaignsMode: (PLP_CAMPAIGNS.length || PLG_CAMPAIGNS.length) ? '指定活动' : '后台全部活动'
   };
 }

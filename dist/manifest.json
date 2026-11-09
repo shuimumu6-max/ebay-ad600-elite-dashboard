@@ -1,6 +1,6 @@
 {
-  "version": "v5",
-  "createdAt": "2026-11-09 10:55:03",
+  "version": "v6",
+  "createdAt": "2026-11-09 11:21:01",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -9,9 +9,19 @@
       "size": 3332
     },
     {
+      "path": "app/auto-scan.mjs",
+      "hash": "f816b3e4242ed4389e0c5ad99bc3eba03fda7abbe1100c7e75cf6a56a556ccee",
+      "size": 7738
+    },
+    {
       "path": "app/bridge-daemon.mjs",
       "hash": "99e7a067e9ed4fc7dcc45128cd85d47c5db7a4150b5f5ae00f2624afb8717a5d",
       "size": 2460
+    },
+    {
+      "path": "app/campaign-scan.mjs",
+      "hash": "46d20d9d888af45d0922687a833de1caa158a4fa19c16e698674a9ba0fbb185d",
+      "size": 7886
     },
     {
       "path": "app/cdp-bridge.mjs",
@@ -40,8 +50,8 @@
     },
     {
       "path": "app/check-options.mjs",
-      "hash": "5d4a913d545b28acf9165898e8180bbb90d7e7ff72cd94d540bacc9fdc8be943",
-      "size": 8062
+      "hash": "05a091903f49f00a585caf16c5899998381419658b528b4f217e8f1f55879adf",
+      "size": 8299
     },
     {
       "path": "app/check-ui.mjs",
@@ -140,18 +150,18 @@
     },
     {
       "path": "app/shop-config.mjs",
-      "hash": "2c42202ea6d6e9acd2908868651276cb3c28ae06bb30490dbfdadbe2e17d1f94",
-      "size": 6375
+      "hash": "d0c654dae95758a6b63e6ad18adf612b19cf935ab67de045f4186b806549a657",
+      "size": 8210
     },
     {
       "path": "ui/index.html",
-      "hash": "b03f3454a452c77320d9e954a49cfa11d1734c7aaf5fcb879b1e685812ca2910",
-      "size": 95337
+      "hash": "2ef297a060c0411aaea53127f10cce1f30fd900dedf61bcfa8256a8590ae036d",
+      "size": 101622
     },
     {
       "path": "ui/server.mjs",
-      "hash": "5da4840c3189d9f90a5b858d78701a1b313d85e10e69a3ce30bc0a0f67d6ab5c",
-      "size": 27510
+      "hash": "29d42039fa25dfb0e1991fe5f3e6189f58b54cd9644a8a4e77e591fedefa783d",
+      "size": 37954
     },
     {
       "path": "ui/gap-plan.mjs",
@@ -175,8 +185,8 @@
     },
     {
       "path": "新店铺配置示例.json",
-      "hash": "7058176fbb2baf831dbd1c8543bc8a5e4a116fa397252dd460712c1413aac00d",
-      "size": 1215
+      "hash": "19e9fb43c35660497d889e1ce4fedfce896882e76cb7374290d63c3672abb0e7",
+      "size": 1533
     },
     {
       "path": "看板/ebay-shop-dashboard.html",

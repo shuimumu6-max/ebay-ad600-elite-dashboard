@@ -71,6 +71,18 @@
   .topbar .viewtabs{margin-bottom:0}
 
   .workspace{display:grid;grid-template-columns:minmax(0,1fr) 412px;gap:16px;align-items:start}
+
+  /* ---------- 首次使用引导：装完第一次打开就能用，不用研究下哪些报表 ---------- */
+  .firstrun{display:flex;gap:18px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+    margin:0 0 16px;padding:16px 20px;border:1px solid #cfe2f7;border-radius:12px;
+    background:linear-gradient(180deg,#f7fbff,#edf5ff)}
+  .firstrun[hidden]{display:none}
+  .firstrun h3{margin:0 0 7px;font-size:15px;font-weight:600;color:var(--ink);letter-spacing:.01em}
+  .firstrun p{margin:0;font-size:12.5px;line-height:1.75;color:var(--ink-3);max-width:780px}
+  .firstrun .fr-hint{margin-top:5px;color:var(--ink-4)}
+  .firstrun .fr-actions{display:flex;gap:8px;flex:0 0 auto;align-items:center}
+  .firstrun .fr-actions .btn.primary{height:38px;padding:0 18px;font-size:13px}
+  @media (max-width:1120px){.firstrun{padding:14px 16px}}
   @media (max-width:1360px){.workspace{grid-template-columns:minmax(0,1fr) 388px}}
   @media (max-width:1120px){
     .app{padding:14px 14px 32px}
@@ -371,6 +383,8 @@
       <div class="top-right">
         <div class="pill"><span class="dot" id="dotChrome"></span><span id="txtChrome">检查浏览器…</span>
           <button class="link" id="btnFix" hidden>去开开关</button></div>
+        <div class="pill"><span class="dot ok" id="dotShop"></span><span id="txtShop">我的店铺</span>
+          <button class="link" id="btnShopName" title="只是个显示名，随时能改">改名</button></div>
         <div class="pill"><span class="dot" id="dotRun"></span><span id="txtRun">空闲</span></div>
         <a class="tlink" id="linkDash" href="#" target="_blank" rel="noopener">在线看板 ↗</a>
       </div>
@@ -383,6 +397,20 @@
   </div>
 
   <div id="viewDownload">
+
+  <!-- 首次使用引导：只在下载结果里还没有 CSV 时出现，点一次就有 30 天数据 -->
+  <div class="firstrun" id="firstRun" hidden>
+    <div class="fr-body">
+      <h3>第一次用？点一下，自动把最近 30 天的数据下下来</h3>
+      <p>会自动下载：流量报表（逐日 30 份）、PLG 链接广告（上月 + 本月）、优先促销刊登（物品刊登 / 关键词 / 活动 / 搜索词）、在售商品名单。大概 20~30 分钟，期间可以最小化窗口，但别关控制台。</p>
+      <p class="fr-hint">下完这些，打开看板就能看到数据；以后只需要补缺的日子，或者自己勾想下的报表。</p>
+    </div>
+    <div class="fr-actions">
+      <button class="btn primary" id="btnFirstRun">自动下载最近 30 天</button>
+      <button class="btn" id="btnFirstRunSkip">不用，我自己选</button>
+    </div>
+  </div>
+
   <div class="workspace">
 
     <!-- 左：选报表 -->
@@ -544,22 +572,23 @@
               </div>
               <div class="row mt12">
                 <div class="field">
-                  <label>活动（默认勾选 PLP 3 个，点开可改）</label>
+                  <label>活动范围（不用管：不勾就是后台全部活动）</label>
                   <div class="dd" id="prCampaignDD">
                     <button type="button" class="dd-btn" id="prCampaignBtn" aria-expanded="false">
-                      <span class="dd-sum" id="prCampaignSummary">已选 3 个活动</span>
+                      <span class="dd-sum" id="prCampaignSummary">全部活动</span>
                       <span class="dd-caret">▾</span>
                     </button>
                     <div class="dd-panel" id="prCampaignPanel" hidden>
                       <input type="text" class="dd-search" id="prCampaignSearch" placeholder="搜索活动名称" autocomplete="off">
                       <div class="dd-quick">
-                        <button type="button" class="chip" id="prPickPlp">仅 PLP 3 个</button>
+                        <button type="button" class="chip" id="prPickPlp">PLP 默认</button>
                         <button type="button" class="chip" id="prPickAll">全部活动</button>
-                        <button type="button" class="chip" id="prPickNone">清空</button>
+                        <button type="button" class="chip" id="prPickNone">清空（= 全部）</button>
+                        <button type="button" class="chip" id="prRefresh">刷新活动列表</button>
                       </div>
                       <div class="dd-list" id="priorityCampaigns"></div>
                       <div class="dd-foot">
-                        <span id="prCampaignCount">已选 3 / 31</span>
+                        <span id="prCampaignCount">全部活动</span>
                         <button type="button" class="dd-done" id="prCampaignDone">完成</button>
                       </div>
                     </div>
@@ -903,12 +932,13 @@ function prChecked(){ return $$('#priorityCampaigns input:checked').map(i => i.v
 function prUpdate(){
   const picked = prChecked();
   const names = prCampaigns.filter(c => picked.includes(c.id)).map(c => shortName(c.name));
-  $('#prCampaignCount').textContent = `已选 ${picked.length} / ${prCampaigns.length}`;
+  // 一个都不勾 = 不传活动参数 = 报表中心后台的全部活动，这是默认状态
+  $('#prCampaignCount').textContent = picked.length ? `已选 ${picked.length} / ${prCampaigns.length}` : '全部活动';
   const isDefault = picked.length === prDefaultIds.length && prDefaultIds.every(id => picked.includes(id));
   $('#prCampaignSummary').textContent = !picked.length
-    ? '未选活动（按后台默认全部活动）'
+    ? '全部活动（不用选）'
     : isDefault
-      ? `已选 ${picked.length} 个活动 · PLP 默认组合`
+      ? `已选 ${picked.length} 个活动 · 默认组合`
       : `已选 ${picked.length} 个活动 · ${names.slice(0, 2).join('、')}${names.length > 2 ? ` 等 ${names.length} 个` : ''}`;
   $$('#priorityCampaigns .dd-opt').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
 }
@@ -918,7 +948,7 @@ function renderPriorityCampaigns(list, defaultIds){
   prBox.innerHTML = prCampaigns.map(c => `<label class="dd-opt" data-name="${escAttr(String(c.name).toLowerCase())}" title="${escAttr(c.name)}">
       <input type="checkbox" value="${escAttr(c.id)}"${prDefaultIds.includes(c.id) ? ' checked' : ''}>
       ${c.plp ? '<span class="plp">PLP</span>' : ''}<span class="nm">${escAttr(c.name)}</span>
-    </label>`).join('') || '<div class="dd-empty">没有可选活动</div>';
+    </label>`).join('') || '<div class="dd-empty">不用选：留空就是报表中心后台的全部活动<br><span class="dim">想让活动显示成名字，点上方「刷新活动列表」（只读扫描，几十秒）</span></div>';
   prUpdate();
 }
 function prToggle(open){
@@ -929,6 +959,68 @@ function prToggle(open){
 }
 prBtn.addEventListener('click', () => prToggle());
 $('#prCampaignDone').addEventListener('click', () => prToggle(false));
+
+// 刷新活动列表：只读扫描报表中心 Campaigns 卡片，把活动名填进下拉框。
+// 不点也完全能用——留空就是后台全部活动；这一步只是让名字好看、方便只挑主力活动。
+$('#prRefresh').addEventListener('click', async () => {
+  const btn = $('#prRefresh');
+  if (btn.dataset.busy) return;
+  btn.dataset.busy = '1';
+  btn.textContent = '扫描中…';
+  toast('正在扫描报表中心的活动列表（只读，不提交任何下载），约 30 秒');
+  try {
+    const r = await (await fetch('/api/auto-scan', { method: 'POST' })).json();
+    if (!r.ok) throw new Error(r.error || '扫描没启动');
+  } catch (error) {
+    btn.textContent = '刷新活动列表';
+    delete btn.dataset.busy;
+    toast(error.message, true);
+  }
+});
+
+/* ---------- 首次使用：一键下最近 30 天，让看板一打开就有数据 ---------- */
+$('#btnFirstRun').addEventListener('click', async () => {
+  const btn = $('#btnFirstRun');
+  btn.disabled = true;
+  btn.textContent = '正在启动…';
+  try {
+    const r = await (await fetch('/api/first-run', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ days: 30 })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    $('#firstRun').hidden = true;
+    toast('已开始下载最近 30 天数据，进度看下方日志（约 20~30 分钟）');
+  } catch (error) {
+    toast(error.message, true);
+    btn.disabled = false;
+    btn.textContent = '自动下载最近 30 天';
+  }
+});
+$('#btnFirstRunSkip').addEventListener('click', () => {
+  sessionStorage.setItem('firstRunSkip', '1');
+  $('#firstRun').hidden = true;
+});
+
+/* ---------- 店铺名：只是个显示名，随时能改，不影响任何数据 ---------- */
+function renderShopName(name){
+  const txt = $('#txtShop');
+  if (!txt) return;
+  txt.textContent = name || '我的店铺';
+  txt.title = `当前店铺：${name || '我的店铺'}（点右边「改名」可改，只影响显示）`;
+}
+$('#btnShopName').addEventListener('click', async () => {
+  const cur = $('#txtShop').textContent.trim();
+  const next = prompt('店铺名（只是个显示名，随便填，随时能改）', cur === '我的店铺' ? '' : cur);
+  if (next === null) return;
+  try {
+    const r = await (await fetch('/api/shop-name', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: next })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '改名失败');
+    renderShopName(r.name);
+    toast(`店铺名已改为「${r.name}」`);
+  } catch (error) { toast(error.message, true); }
+});
 document.addEventListener('click', e => { if (!e.target.closest('#prCampaignDD')) prToggle(false); });
 $('#prCampaignSearch').addEventListener('input', e => {
   const q = e.target.value.trim().toLowerCase();
@@ -1150,6 +1242,10 @@ async function refreshState(){
       updateSubLabels();
     }
     if (s.outDir && !$('#outDir').value) $('#outDir').placeholder = s.outDir;
+    if (s.shop) renderShopName(s.shop.name);
+    // 首次使用引导：还没有任何 CSV 时出现；点过「不用」或正在跑就收起
+    const fr = $('#firstRun');
+    if (fr) fr.hidden = !s.firstRun?.needed || !!s.running || sessionStorage.getItem('firstRunSkip') === '1';
     if (s.dashboard) $('#linkDash').href = s.dashboard;
     if (s.dataState) renderDataState(s.dataState);
     $('#dotRun').className = 'dot ' + (s.running ? 'busy' : 'ok');
@@ -1196,6 +1292,24 @@ es.onmessage = e => {
   if (logLines === 0) logEl.innerHTML = '';
   appendLog(line);
 };
+// 活动扫描完成：把新扫到的活动名填回界面（不重启控制台）
+es.addEventListener('scan-done', e => {
+  let data = {};
+  try { data = JSON.parse(e.data); } catch { /* 忽略 */ }
+  const btn = $('#prRefresh');
+  if (btn) { btn.textContent = '刷新活动列表'; delete btn.dataset.busy; }
+  if (!data.ok) {
+    toast('活动列表没扫到：不影响使用，留空就是后台全部活动', true);
+    return;
+  }
+  if (Array.isArray(data.plgList)) renderPlgCampaigns(data.plgList);
+  if (Array.isArray(data.priorityList)) renderPriorityCampaigns(data.priorityList, data.priorityDefault || []);
+  toast(`活动列表已更新：PLG ${(data.plgList || []).length} 个、优先促刊 ${(data.priorityList || []).length} 个`);
+});
+es.addEventListener('shop', e => {
+  try { renderShopName(JSON.parse(e.data).name); } catch { /* 忽略 */ }
+});
+
 es.addEventListener('run', e => {
   const data = JSON.parse(e.data);
   if (data.phase === 'start'){

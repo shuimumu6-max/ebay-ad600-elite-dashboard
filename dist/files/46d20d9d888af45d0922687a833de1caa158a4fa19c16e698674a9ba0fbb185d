@@ -1,0 +1,183 @@
+// 报表中心「Download report → Campaigns 卡片」只读扫描：抽取活动 ID + 活动名。
+// 只读，不提交任何下载请求。probe-priority-campaigns.mjs 与 auto-scan.mjs 共用这一份 DOM 逻辑，
+// 页面结构变了只改这里。
+//
+// 用法（模块）：
+//   import { scanCampaignList } from './campaign-scan.mjs';
+//   const list = await scanCampaignList(page, { strategy: '促销刊登 — 优先', type: '关键词' });
+import { sleep } from './cdp.mjs';
+
+const LABEL = `(n => (n.innerText || n.textContent || '').trim().replace(/\\s+/g, ' '))`;
+
+const DIALOG_OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  return { ok: !!([...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0]) };
+})()`;
+
+const CANCEL = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const dlg = [...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0];
+  const b = [...(dlg || document).querySelectorAll('button')].filter(v)
+    .find(n => /^(取消|Cancel|Close Dialog)$/i.test(t(n)));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false };
+})()`;
+
+const OPEN = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('button')].filter(v).find(n => t(n) === 'Download report');
+  if (!b) return { ok: false }; b.click(); return { ok: true };
+})()`;
+
+const openCard = prefix => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const b = [...document.querySelectorAll('.se-field-card__body')].filter(v).find(n => t(n).startsWith(${JSON.stringify(prefix)}));
+  if (b) { b.click(); return { ok: true, text: t(b).slice(0, 80) }; }
+  return { ok: false, cards: [...document.querySelectorAll('.se-field-card__body')].filter(v).map(n => t(n).slice(0, 50)) };
+})()`;
+
+// 按可见文本点选项，不猜 value（页面文案与字段字典用的是同一套中文）
+const pickByText = text => `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false, why: 'no pane' };
+  const want = ${JSON.stringify(text)};
+  const labels = [...pane.querySelectorAll('label, [class*=radio]')].filter(v);
+  for (const l of labels) {
+    const s = (l.innerText || '').trim().replace(/\\s+/g, ' ');
+    if (s === want || s.startsWith(want)) {
+      const input = l.querySelector('input[type=radio]');
+      (input || l).click();
+      return { ok: true, text: s, value: input ? input.value : null };
+    }
+  }
+  return { ok: false, why: 'no match', options: labels.map(l => (l.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 40)).filter(Boolean) };
+})()`;
+
+const DONE = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const t = ${LABEL};
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  const b = [...(pane || document).querySelectorAll('button')].filter(v).find(n => /^(完成|Done)$/.test(t(n)));
+  if (b) { b.click(); return { ok: true }; }
+  return { ok: false };
+})()`;
+
+// 活动卡片：读可见 checkbox 的 value（campaign ID）与所在行文本（活动名）
+const READ = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false, why: 'no pane' };
+  const boxes = [...pane.querySelectorAll('input[type=checkbox]')].filter(v)
+    .filter(c => c.value && c.value !== 'optionsRoot' && c.id !== 'chkBox-campaign-root');
+  // 名称在 checkbox 外层容器里（checkbox 自身那层 innerText 是空的），
+  // 往上找第一个「非空且不是纯 ID」的文本，就是这一行的活动名。
+  const rowName = c => {
+    let node = c, txt = '';
+    for (let k = 0; k < 6 && node; k++) {
+      node = node.parentElement;
+      if (!node) break;
+      const s = (node.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 200);
+      if (!s || s === c.value || /^\\d{8,15}$/.test(s)) continue;
+      if (s.length > 130) continue;   // 已经到了整列容器，跳过
+      txt = s; break;
+    }
+    return txt || c.value;
+  };
+  const items = boxes.map(c => ({ id: c.value, name: rowName(c), checked: c.checked }));
+  return { ok: true, items, count: items.length };
+})()`;
+
+// 虚拟列表可能分批渲染，滚到底再读，合并去重
+const SCROLL = `(() => {
+  const v = n => n.getClientRects().length > 0;
+  const pane = [...document.querySelectorAll('.flyout-pane')].filter(v)[0];
+  if (!pane) return { ok: false };
+  let n = 0;
+  for (const el of [...pane.querySelectorAll('*')]) {
+    if (el.scrollHeight > el.clientHeight + 20 && el.clientHeight > 100) {
+      el.scrollTop = el.scrollHeight; n++;
+    }
+  }
+  return { ok: true, scrolled: n };
+})()`;
+
+// 报表中心当前账号的卖家名（Seller Hub 页头 “Hi hongbo!”）
+const SELLER = `(() => {
+  const t = n => ((n && (n.innerText || n.textContent)) || '').trim().replace(/\\s+/g, ' ');
+  const el = document.querySelector('.gh-identity__greeting') || document.querySelector('#gh-ug');
+  let text = el ? t(el) : '';
+  let name = '';
+  const m = text.match(/^(?:Hi|Hello|Welcome back)[,\\s]+(.+?)[!,.\\s]*$/i);
+  if (m) name = m[1];
+  else if (text && text.length < 40) name = text.replace(/^Hi[,\\s]+/i, '');
+  return { ok: !!name, name, raw: text.slice(0, 60), title: document.title.slice(0, 60) };
+})()`;
+
+export async function openDialog(page) {
+  const isOpen = await page.eval(DIALOG_OPEN);
+  if (isOpen?.ok) await page.eval(CANCEL);
+  await sleep(700);
+  const r = await page.eval(OPEN);
+  if (!r?.ok) throw new Error('找不到 Download report 按钮（登录态可能失效）');
+  await sleep(1800);
+}
+
+export async function closeDialog(page) {
+  await page.eval(DONE).catch(() => {});
+  await page.eval(CANCEL).catch(() => {});
+}
+
+async function pickStep(page, card, text) {
+  const opened = await page.eval(openCard(card));
+  if (!opened?.ok) throw new Error(`卡片「${card}」打不开：${JSON.stringify(opened?.cards)}`);
+  await sleep(900);
+  const picked = await page.eval(pickByText(text));
+  if (!picked?.ok) throw new Error(`选项「${text}」选不上：${JSON.stringify(picked?.options || picked)}`);
+  await sleep(500);
+  await page.eval(DONE);
+  await sleep(1600);
+  return picked.text;
+}
+
+export async function readSellerName(page) {
+  const r = await page.eval(SELLER).catch(() => null);
+  return r?.ok ? r.name : '';
+}
+
+/**
+ * 扫描某一种广告策略下的全部活动。
+ * @param {import('./pages.mjs').Page} page 已经落在报表中心的标签页
+ * @param {{strategy: string, type: string, log?: (line: string) => void, rounds?: number}} opts
+ * @returns {Promise<Array<{id: string, name: string}>>}
+ */
+export async function scanCampaignList(page, { strategy, type, log = () => {}, rounds = 8 }) {
+  await openDialog(page);
+  await pickStep(page, 'Source', '广告');
+  await pickStep(page, 'Campaign strategy', strategy);
+  await pickStep(page, 'Type', type);
+  await sleep(1000);
+
+  const opened = await page.eval(openCard('Campaigns'));
+  if (!opened?.ok) throw new Error(`Campaigns 卡片打不开：${JSON.stringify(opened)}`);
+  log(`[打开] ${opened.text}`);
+  await sleep(1800);
+
+  const byId = new Map();
+  for (let i = 0; i < rounds; i++) {
+    const r = await page.eval(READ);
+    if (!r?.ok) throw new Error(`读活动列表失败：${JSON.stringify(r)}`);
+    for (const it of r.items) if (!byId.has(it.id)) byId.set(it.id, it);
+    log(`[读取] 第 ${i + 1} 轮：本轮 ${r.count} 个，累计 ${byId.size} 个`);
+    const s = await page.eval(SCROLL);
+    if (!s?.scrolled) break;
+    await sleep(700);
+  }
+
+  await closeDialog(page);
+  if (!byId.size) throw new Error(`${strategy} 下一个活动都没读到`);
+  return [...byId.values()].map(({ id, name }) => ({ id, name }));
+}

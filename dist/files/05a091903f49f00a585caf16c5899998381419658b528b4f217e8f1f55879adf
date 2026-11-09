@@ -101,18 +101,20 @@ lines.push(check('优先促刊时间粒度', ['DAILY', 'SUMMARY'], segVals('segP
 lines.push(check('同步方式', ['local', 'apply', 'publish'], segVals('segSync')));
 lines.push(check('并行标签页 1–10', Array.from({ length: 10 }, (_, i) => String(i + 1)), selectVals('maxTabs')));
 
-// 动态渲染的四组：HTML 里只是空容器，完整列表来自「服务端常量 → /api/state → 前端渲染」
+// 动态渲染的四组：HTML 里只是空容器，完整列表来自「服务端常量 → /api/state → 前端渲染」。
+// 活动列表在服务端是可热更新的变量（plgList / priorityList）：点了「刷新活动列表」不用重启就生效，
+// 所以这里断言的是「服务端把变量透给前端」，而不是必须直接引用常量。
 const server = readFileSync(join(ROOT, 'ui/server.mjs'), 'utf8');
 const dynamic = [
   { label: 'PLG 活动', count: PLG_CAMPAIGNS.length,
-    ui: /renderPlgCampaigns\(s\.defaults\.plgCampaignList\)/, api: /plgCampaignList:\s*PLG_CAMPAIGNS/ },
+    ui: /renderPlgCampaigns\(s\.defaults\.plgCampaignList\)/, api: /plgCampaignList:\s*plgList\b/ },
   { label: '订单类型（单选）', count: ORDER_TYPES.length,
     ui: /renderSingleChips\('#orderTypes', s\.defaults\.orderTypes/, api: /orderTypes:\s*ORDER_TYPES\.map/ },
   { label: '优先促刊类型（多选）', count: PRIORITY_TYPES.length,
     ui: /renderMultiChips\('#priorityTypes', s\.defaults\.priorityTypes/, api: /priorityTypes:\s*PRIORITY_TYPES\.map/ },
   { label: '优先促刊活动（名称下拉）', count: PRIORITY_CAMPAIGNS.length,
     ui: /renderPriorityCampaigns\(s\.defaults\.priorityCampaignList,\s*s\.defaults\.priorityDefaultCampaigns\)/,
-    api: /priorityCampaignList:\s*PRIORITY_CAMPAIGNS/ }
+    api: /priorityCampaignList:\s*priorityList\b/ }
 ];
 for (const d of dynamic) {
   if (!d.ui.test(html)) problems.push(`${d.label} 没有前端渲染入口`);

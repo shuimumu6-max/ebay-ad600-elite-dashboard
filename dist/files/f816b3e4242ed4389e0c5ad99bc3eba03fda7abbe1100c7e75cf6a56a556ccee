@@ -1,0 +1,189 @@
+// 自动识别店铺配置：不需要手填店铺名 / PLP 活动 ID / PLG 活动 ID。
+//
+// 做什么（全程只读，不提交任何下载请求）：
+//   1. 连上已登录 eBay 卖家后台的浏览器，读卖家账号名；
+//   2. 打开报表中心 Download report 弹窗，扫「促销刊登 — 优先」和「促销刊登 — 常规」两种策略下的全部活动；
+//   3. 把结果写进安装目录的 my-shop.json（只填空白项，已有值不动）和 app/priority-campaigns.json。
+//
+// 用法：
+//   node app/auto-scan.mjs                 扫描并写入配置（给人看的中文输出）
+//   node app/auto-scan.mjs --quiet         同上，但只输出关键几行（安装器里用）
+//   node app/auto-scan.mjs --json          最后多打一行 JSON 结果（给程序读）
+//   node app/auto-scan.mjs --no-write      只扫描不写文件
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ensureBridge, sleep } from './cdp.mjs';
+import { openTab } from './pages.mjs';
+import { REPORTS_URL } from './config.mjs';
+import { scanCampaignList, readSellerName, closeDialog } from './campaign-scan.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(HERE);
+const CONFIG_PATH = join(ROOT, 'my-shop.json');
+const SNAPSHOT_PATH = join(HERE, 'priority-campaigns.json');
+
+const argv = process.argv.slice(2);
+const flag = name => argv.includes(`--${name}`);
+const QUIET = flag('quiet');
+const JSON_OUT = flag('json');
+const NO_WRITE = flag('no-write');
+
+const say = text => { if (!QUIET) console.log(text); };
+
+// 安装目录默认结构：数据 / 下载结果 放安装目录下，浏览器下载目录用系统 Downloads
+function defaultConfig(seller) {
+  const fwd = p => p.replace(/\\/g, '/');
+  return {
+    _说明: '这个文件由「自动扫描」生成；店铺名与活动都是扫描出来的，一般不用改。',
+    shopName: seller || '默认店铺',
+    sellerName: seller || '',
+    dataDir: fwd(join(ROOT, '数据')),
+    runsDir: fwd(join(ROOT, '下载结果')),
+    downloadsDir: fwd(join(homedir(), 'Downloads')),
+    dashboardUrl: '',
+    plpCampaigns: [],
+    plgCampaigns: [],
+    consolePort: 7788,
+    bridgePort: 9233,
+    chromeExe: ''
+  };
+}
+
+function readConfig() {
+  if (!existsSync(CONFIG_PATH)) return null;
+  try {
+    return JSON.parse(readFileSync(CONFIG_PATH, 'utf8').replace(/^\uFEFF/, ''));
+  } catch (error) {
+    console.warn(`[警告] my-shop.json 读不动（${error.message}），将重新生成一份`);
+    return null;
+  }
+}
+
+const isPlaceholder = value => {
+  const s = String(value ?? '').trim();
+  return !s || /请改成|改成你的|你的店铺|example|默认店铺/.test(s);
+};
+
+function writeJson(path, data) {
+  // 不用 Set-Content / ConvertTo-Json：它们会带 BOM，Node 的 JSON.parse 会直接报错
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf8');
+}
+
+async function main() {
+  await ensureBridge();
+
+  const page = await openTab('auto-scan', REPORTS_URL);
+  const result = { ok: false, seller: '', plpCampaigns: [], plgCampaigns: [], configPath: CONFIG_PATH };
+
+  try {
+    await page.navigate(REPORTS_URL, { settleMs: 2500 });
+
+    let seller = '';
+    try {
+      seller = await readSellerName(page);
+    } catch { /* 卖家名拿不到不致命，下面用活动归属兜底 */ }
+    reply('seller', seller);
+    say(`[识别] 卖家账号：${seller || '(没读到，稍后用活动列表推断)'}`);
+
+    // 优先促销刊登：物品刊登 / 关键词 / 搜索词 三类报表共用同一批活动
+    let plp = [];
+    try {
+      plp = await scanCampaignList(page, {
+        strategy: '促销刊登 — 优先',
+        type: '关键词',
+        log: line => say(`  [PLP] ${line}`)
+      });
+      say(`[识别] 优先促销刊登活动：${plp.length} 个`);
+    } catch (error) {
+      console.warn(`[警告] 优先促销刊登活动没扫到：${error.message}`);
+    }
+
+    // 常规促销刊登（PLG）
+    let plg = [];
+    try {
+      plg = await scanCampaignList(page, {
+        strategy: '促销刊登 — 常规',
+        type: '物品刊登',
+        log: line => say(`  [PLG] ${line}`)
+      });
+      say(`[识别] 常规促销刊登活动：${plg.length} 个`);
+    } catch (error) {
+      console.warn(`[警告] 常规促销刊登活动没扫到：${error.message}`);
+    }
+
+    if (!plp.length && !plg.length) {
+      throw new Error('两种策略都一个活动都没读到：请确认浏览器已登录 eBay 卖家后台，并且账号下有正在投放的广告活动');
+    }
+
+    result.seller = seller;
+    result.plpCampaigns = plp;
+    result.plgCampaigns = plg;
+
+    if (NO_WRITE) {
+      say('[跳过] --no-write：不写任何文件');
+    } else {
+      const config = readConfig() || defaultConfig(seller);
+      const before = JSON.stringify(config);
+
+      if (isPlaceholder(config.shopName) && seller) config.shopName = seller;
+      if (seller) config.sellerName = seller;
+      // 只填空白项：运营手动改过的活动选择不覆盖
+      if (!Array.isArray(config.plpCampaigns) || !config.plpCampaigns.length) {
+        config.plpCampaigns = plp.map(c => c.id);
+      }
+      if (!Array.isArray(config.plgCampaigns) || !config.plgCampaigns.length) {
+        config.plgCampaigns = plg.map(c => ({ id: c.id, name: c.name }));
+      }
+      if (!config.dataDir) config.dataDir = defaultConfig(seller).dataDir;
+      if (!config.runsDir) config.runsDir = defaultConfig(seller).runsDir;
+      if (!config.downloadsDir) config.downloadsDir = defaultConfig(seller).downloadsDir;
+
+      writeJson(CONFIG_PATH, config);
+      say(`[写入] ${CONFIG_PATH}${before === JSON.stringify(config) ? '（内容无变化）' : ''}`);
+
+      // 优先促销刊登活动池：控制台的多选框从这里取（带活动名，比裸 ID 好认）
+      const snapshot = {
+        shopName: config.shopName,
+        seller: seller || config.sellerName || '',
+        source: '报表中心 · Download report → 促销刊登（优先/常规）→ Campaigns 卡片自动扫描（只读）',
+        probedAt: new Date().toISOString(),
+        total: plp.length,
+        campaigns: plp
+      };
+      writeJson(SNAPSHOT_PATH, snapshot);
+      say(`[写入] ${SNAPSHOT_PATH}`);
+    }
+
+    result.ok = true;
+    say('');
+    say('自动识别完成，不需要再手填活动 ID：');
+    say(`  店铺名：${result.seller || '(沿用原值)'}`);
+    say(`  优先促销刊登活动：${plp.length} 个（${plp.slice(0, 3).map(c => c.name.slice(0, 24)).join(' / ')}${plp.length > 3 ? ' …' : ''}）`);
+    say(`  常规促销刊登（PLG）活动：${plg.length} 个`);
+    say('');
+    say('下一步：重新打开「报表控制台」，界面里就是这家店的活动了。');
+  } finally {
+    await closeDialog(page).catch(() => {});
+    await page.close().catch(() => {});
+    await sleep(300);
+  }
+
+  return result;
+}
+
+// 给上层程序（控制台 / 安装器）读的结构化结果
+function reply(kind, value) {
+  if (JSON_OUT) console.log(`@@${kind}:${JSON.stringify(value)}`);
+}
+
+main().then(result => {
+  if (JSON_OUT) console.log('@@result:' + JSON.stringify(result));
+  process.exit(result.ok ? 0 : 1);
+}).catch(error => {
+  console.error(`\n[失败] ${error.message}`);
+  console.error('排查：1) 浏览器是否已登录 eBay 卖家后台；2) chrome://inspect/#remote-debugging 的「Allow remote debugging」是否打开；3) 账号下是否真的有广告活动。');
+  if (JSON_OUT) console.log('@@result:' + JSON.stringify({ ok: false, error: error.message }));
+  process.exit(1);
+});
