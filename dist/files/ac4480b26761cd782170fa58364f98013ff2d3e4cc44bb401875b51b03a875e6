@@ -263,6 +263,9 @@
 
   /* ---------- 数据体检 ---------- */
   .scanbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .scan-range{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-3);white-space:nowrap}
+  .scan-range select{font:inherit;font-size:11.5px;padding:3px 6px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink-2);cursor:pointer}
+  .scan-empty{font-size:12px;line-height:1.7;color:var(--ink-2);background:var(--sunk);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px}
   .stable{margin-top:12px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
   .srow{display:grid;grid-template-columns:150px 214px 74px minmax(0,1fr);gap:10px;align-items:center;
     padding:7px 12px;border-bottom:1px solid #f3f5f9;font-size:12px}
@@ -654,11 +657,19 @@
         <div class="panel-h">
           <h2>看板数据体检</h2>
           <span class="panel-sub" id="scanSub">看正式目录里每类报表覆盖到哪天</span>
-          <button class="btn primary" id="btnGapFill" style="margin-left:auto" title="逐天串行：一天跑完停 90 秒再跑下一天，全部跑完自动归档并推看板" disabled>补齐缺口 + 更新看板</button>
+          <label class="scan-range" title="默认和「自动下载最近 2 周」同一个口径；数据攒久了再往上调，不必一上来就扫几个月">体检区间
+            <select id="scanDays">
+              <option value="14" selected>最近 2 周</option>
+              <option value="28">最近 4 周</option>
+              <option value="56">最近 8 周</option>
+              <option value="0">全部历史</option>
+            </select>
+          </label>
+          <button class="btn primary" id="btnGapFill" style="margin-left:8px" title="逐天串行：一天跑完停 90 秒再跑下一天，全部跑完自动归档并推看板" disabled>补齐缺口 + 更新看板</button>
           <button class="btn" id="btnScan" style="margin-left:8px">扫描缺少的报表</button>
         </div>
         <div class="panel-b">
-          <p class="hint" style="margin-top:0">看板数据就是从正式目录生成的，这里缺的看板上也没有。日更口径＝流量单日 + PLG 链接广告 + PLP 链接广告（物品刊登 / 关键词 / 搜索词，走 campaign 页区间汇总）。「补齐缺口 + 更新看板」只下缺的那几天：流量按天精确补、PLG 用能盖住缺口的最小预设（今天/昨天/本周/上周）、PLP 按缺口起止区间，跑完自动归档并推送看板。流量累计只用于对账、活动汇总报表不进看板，均不参与体检；在售商品名单同样不参与。统计到太平洋时间「昨天」为止：今天的数据还没出、不算缺；链接上架之前的空白天也不算缺。</p>
+          <p class="hint" style="margin-top:0">看板数据就是从正式目录生成的，这里缺的看板上也没有。日更口径＝流量单日 + PLG 链接广告 + PLP 链接广告（物品刊登 / 关键词 / 搜索词，走 campaign 页区间汇总）。「补齐缺口 + 更新看板」只下缺的那几天：流量按天精确补、PLG 用能盖住缺口的最小预设（今天/昨天/本周/上周）、PLP 按缺口起止区间，跑完自动归档并推送看板。流量累计只用于对账、活动汇总报表不进看板，均不参与体检；在售商品名单同样不参与。统计到太平洋时间「昨天」为止：今天的数据还没出、不算缺；链接上架之前的空白天也不算缺。区间默认「最近 2 周」，和首次下载同一口径——数据攒久了在右上角调成 4 周 / 8 周 / 全部历史即可，调大后「补齐缺口」也只补这个区间里的天。</p>
           <div id="scanBody"></div>
         </div>
       </section>
@@ -1638,6 +1649,7 @@ $('#btnCopy').addEventListener('click', async () => {
 
 /* ---------- 看板数据体检 ---------- */
 function fmtMd(iso){ return iso ? iso.slice(5).replace('-', '/') : '–'; }
+function daysBetween(a, b){ return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000); }
 function fmtRange(r){ return r.start === r.end ? fmtMd(r.start) : `${fmtMd(r.start)}~${fmtMd(r.end)}`; }
 function fmtWhen(iso){
   if (!iso) return '—';
@@ -1656,12 +1668,15 @@ function renderScan(r){
     if (row.nothingYet){
       badge = `<span class="badge err">全缺 ${row.missingDays} 天</span>`;
       cover = '还没有任何数据';
-    } else if (row.missingDays > 0){
-      badge = `<span class="badge warn">缺 ${row.missingDays} 天</span>`;
-      cover = `覆盖 ${row.coveredDays} 天 · 最新 ${fmtMd(row.last)}${row.lagDays ? `（滞后 ${row.lagDays} 天）` : ''}`;
     } else {
-      badge = '<span class="badge ok">齐全</span>';
-      cover = `覆盖 ${row.coveredDays} 天 · 最新 ${fmtMd(row.last)}`;
+      // 覆盖天数按「体检区间内」算：区间只有 14 天，写「覆盖 50 天」会让人以为区间是 50 天
+      const inWin = row.windowStart && row.windowEnd ? daysBetween(row.windowStart, row.windowEnd) + 1 : row.coveredDays;
+      const got = Math.max(0, inWin - row.missingDays);
+      const lag = Number.isFinite(row.lagDays) && row.lagDays > 0 ? `（滞后 ${row.lagDays} 天）` : '';
+      badge = row.missingDays > 0
+        ? `<span class="badge warn">缺 ${row.missingDays} 天</span>`
+        : '<span class="badge ok">齐全</span>';
+      cover = `覆盖 ${got}/${inWin} 天 · 最新 ${fmtMd(row.last)}${lag}`;
     }
     const chips = (row.missingRanges || []).map(x => `<span class="gapchip" data-key="${row.key}" data-s="${x.start}" data-e="${x.end}" title="点一下，直接填进上面的下载表单">${fmtRange(x)}${x.days > 1 ? ` (${x.days}天)` : ''}</span>`).join('');
     // PLP 三份报表收在同一个分组标题下，避免重复写三遍「PLP 链接广告」
@@ -1689,16 +1704,29 @@ function renderScan(r){
     syncHtml = '<span style="color:var(--ok);font-weight:600">线上看板与本地数据一致</span>';
   }
 
+  // 一份数据都没有（刚装好、还没跑首次下载）：把「全缺 14 天」说清楚，别让人以为算错了
+  const allEmpty = rows.length > 0 && rows.every(x => x.nothingYet);
+  const emptyHint = allEmpty
+    ? '<div class="scan-empty">正式目录里还没有任何报表。新手请先点页面最上面的「<b>自动下载最近 2 周</b>」，下完再回来看体检；下面的「全缺 N 天」只是说明这段时间一份都没有，不是算错。</div>'
+    : '';
+  const scope = r.fullHistory ? `全部历史，共 ${r.windowDays} 天` : `最近 ${r.windowDays} 天`;
+  const olderHint = r.hasOlder
+    ? `<br><span style="color:var(--ink-4)">更早还有数据（最早 ${fmtMd(r.oldestData)}，约 ${r.coveredBefore} 天）不在本次体检范围内：把上方「体检区间」调成 4 周 / 8 周 / 全部历史就能看到。</span>`
+    : '';
+
   $('#scanBody').innerHTML = `
+    ${emptyHint}
     <div class="stable">
       <div class="srow head"><span>报表</span><span>覆盖情况</span><span>状态</span><span>缺哪几天</span></div>
       ${body}
     </div>
     <div class="scan-foot">
-      统计区间 <b>${fmtMd(r.windowStart)} ~ ${fmtMd(r.windowEnd)}</b> · 扫了 ${r.scannedFiles} 份 CSV · 共缺 <b>${r.totalMissing}</b> 天　|　${syncHtml}<br>
+      统计区间 <b>${fmtMd(r.windowStart)} ~ ${fmtMd(r.windowEnd)}</b>（${scope}） · 扫了 ${r.scannedFiles} 份 CSV · 共缺 <b>${r.totalMissing}</b> 天　|　${syncHtml}${olderHint}<br>
       看板数据生成于 ${fmtWhen(s.localBundleAt)} · 线上 ${fmtWhen(s.onlineBundleAt)}
     </div>`;
-  $('#scanSub').textContent = r.totalMissing ? `共缺 ${r.totalMissing} 天数据` : '各类报表都不缺';
+  $('#scanSub').textContent = allEmpty
+    ? '还没有数据：先跑一次首次下载'
+    : (r.totalMissing ? `共缺 ${r.totalMissing} 天数据` : '各类报表都不缺');
   const fillBtn = $('#btnGapFill');
   if (fillBtn) fillBtn.disabled = !r.totalMissing || !!state.running;
 }
@@ -1709,7 +1737,10 @@ $('#btnGapFill').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = '补齐中…';
   try {
-    const res = await fetch('/api/gap-fill', { method: 'POST' });
+    const res = await fetch('/api/gap-fill', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: scanWindowDays() })
+    });
     const r = await res.json();
     if (!r.ok) { toast(r.error || '补齐没启动', true); return; }
     if (!r.started) { toast(r.message || '没有缺口', false); return; }
@@ -1726,11 +1757,17 @@ $('#btnGapFill').addEventListener('click', async () => {
   }
 });
 
+// 体检区间（0 = 全部历史）。默认 2 周，和后台上限同一套取值
+function scanWindowDays(){
+  const v = Number($('#scanDays')?.value);
+  return Number.isFinite(v) ? v : 14;
+}
+
 $('#btnScan').addEventListener('click', async () => {
   $('#btnScan').disabled = true;
   $('#scanBody').innerHTML = '<div class="empty">正在扫描正式目录…</div>';
   try{
-    const r = await (await fetch('/api/scan')).json();
+    const r = await (await fetch(`/api/scan?days=${scanWindowDays()}`)).json();
     renderScan(r);
     toast(r.totalMissing ? `有 ${r.totalMissing} 天数据缺失` : '各类报表数据齐全', !!r.totalMissing);
   } catch {
@@ -1740,6 +1777,9 @@ $('#btnScan').addEventListener('click', async () => {
     $('#btnScan').disabled = false;
   }
 });
+
+// 换区间立刻重扫：不用再点一次「扫描缺少的报表」
+$('#scanDays').addEventListener('change', () => { $('#btnScan').click(); });
 
 /* ---------- 点缺口标签，直接填进下载表单 ---------- */
 function pickSeg(id, value){

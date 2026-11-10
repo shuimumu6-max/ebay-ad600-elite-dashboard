@@ -1,9 +1,29 @@
 // 看板数据体检：扫正式目录里的 CSV，算出每类报表「哪天有、哪天缺」。
-// 规则：窗口结束取太平洋时间昨天（今天的数据还没出，不算缺）；窗口起点取该类最早有数据那天
-//       （= 链接上架之后），所以上架前的空白天不会被报成缺失。在售商品名单不参与。
+// 规则：
+//   1. 窗口结束固定取太平洋时间昨天（今天的数据还没出，不算缺）；
+//   2. 窗口起点 = max(该类最早有数据那天, 昨天回推 days 天)。
+//      取「最早有数据那天」是为了让链接上架前的空白天不算缺；
+//      再和 days 取大值，是为了新手默认只看最近 2 周（和首次下载口径一致），
+//      数据攒久了在界面上把区间调大即可，不必一上来就扫几个月。
+//   3. days = 0 表示全部历史（从该类第一天数据至今）。
+// 在售商品名单不参与体检。
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import { DATA_DIR, REPO_DIR } from './config.mjs';
+
+// 默认体检区间：最近 2 周，和「首次下载最近 2 周」保持同一个口径。
+export const SCAN_DEFAULT_DAYS = 14;
+// 界面可选区间（0 = 全部历史），服务端只在这些值里认，避免被随意传大数拖慢扫描
+export const SCAN_DAY_OPTIONS = [14, 28, 56, 0];
+export function clampScanDays(value, fallback = SCAN_DEFAULT_DAYS) {
+  // 注意 null / '' / undefined 都要走默认值：Number(null) 和 Number('') 都是 0，
+  // 而 0 在这里表示「全部历史」，不特判就会让「没传参数」变成「扫全量」。
+  if (value === null || value === undefined || String(value).trim() === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n === 0) return 0;
+  return Math.min(365, Math.max(1, Math.round(n)));
+}
 
 // ---------- 日期工具 ----------
 const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
@@ -200,6 +220,13 @@ export async function scanGaps(options = {}) {
   const dashboardUrl = options.dashboardUrl || null;
   const now = options.now || new Date();
   const windowEnd = addDays(pacificToday(now), -1);   // 排除今天
+  // 体检区间：默认最近 2 周（和首次下载同一口径），0 = 全部历史
+  const days = clampScanDays(options.days);
+  const fullHistory = days === 0;
+  // 区间最早一天（含）；fullHistory 时为 null，表示「谁有数据就从谁的第一天算」
+  const minStart = fullHistory ? null : addDays(windowEnd, -(days - 1));
+  // 一条数据都没有时也要有个区间可报，否则「全缺 N 天」没处取值
+  const emptyStart = addDays(windowEnd, -(SCAN_DEFAULT_DAYS - 1));
   // 线上状态和本地扫描并行，网络慢也不拖累结果
   const onlinePromise = dashboardUrl ? onlineBundleCreatedAt(dashboardUrl) : Promise.resolve(null);
 
@@ -225,15 +252,21 @@ export async function scanGaps(options = {}) {
 
   const rows = [];
   let totalMissing = 0;
+  // 每类报表自己的体检起点，取其中最早的一个当「统计区间」展示
+  let reportStart = null;
   for (const key of ORDER) {
     const g = groups[key];
     const sorted = [...g.dates].sort();
     const first = sorted[0] || null;
     const last = sorted[sorted.length - 1] || null;
-    const windowStart = first || anchor;
+    // 起点 = max(本条最早有数据那天, 区间最早一天)：
+    //   上架前的空白天不算缺（用 first），但也不会因此把窗口拉回几个月前（用 minStart）
+    const base = fullHistory ? (first || anchor || emptyStart) : (minStart || emptyStart);
+    const windowStart = first && first > base ? first : base;
+    if (!reportStart || windowStart < reportStart) reportStart = windowStart;
 
     let missing = [];
-    if (windowStart && windowEnd >= windowStart) {
+    if (windowEnd >= windowStart) {
       for (let t = toDay(windowStart); t <= toDay(windowEnd); t += 86400000) {
         const d = fromDay(t);
         if (!g.dates.has(d)) missing.push(d);
@@ -249,7 +282,10 @@ export async function scanGaps(options = {}) {
       files: g.files,
       coveredDays: g.dates.size,
       first, last,
-      missingDays: nothingYet ? daySpan(windowStart, windowEnd) + 1 : missing.length,
+      windowStart, windowEnd,
+      // 区间外更早还有多少天数据（>0 说明体检没覆盖全部历史）
+      coveredBefore: first ? [...g.dates].filter(d => d < windowStart).length : 0,
+      missingDays: missing.length,
       missingRanges: nothingYet ? [] : toRanges(missing),
       lagDays: last ? daySpan(last, windowEnd) : null,
       nothingYet
@@ -265,11 +301,20 @@ export async function scanGaps(options = {}) {
   // 容差 60 秒：生成 data.js 时也会读文件，紧挨着的毫秒差不算「新数据没进看板」
   const localNotRegenerated = !!(localAt && csvNewest > new Date(localAt).getTime() + 60000);
 
+  const windowStart = reportStart || emptyStart;
+  const oldestData = anchor;
   return {
     ok: true,
     dataDir: root,
-    windowStart: anchor,
+    days,
+    fullHistory,
+    windowStart,
     windowEnd,
+    windowDays: daySpan(windowStart, windowEnd) + 1,
+    oldestData,
+    // 体检没覆盖到的更早数据（区间调大或选「全部历史」才看得到）
+    coveredBefore: oldestData ? daySpan(oldestData, windowStart) : 0,
+    hasOlder: !!(oldestData && oldestData < windowStart),
     scannedFiles: paths.length,
     totalMissing,
     rows,
@@ -285,6 +330,10 @@ export async function scanGaps(options = {}) {
 }
 
 if (process.argv[1] && /scan-gaps\.mjs$/.test(process.argv[1])) {
-  const out = await scanGaps({ dashboardUrl: process.argv[2] || null });
+  // 用法：node app/scan-gaps.mjs [看板地址] [--days=14|28|56|0]
+  const dayArg = process.argv.find(a => /^--days=/.test(a));
+  const url = process.argv.slice(2).find(a => !a.startsWith('--')) || null;
+  const out = await scanGaps({ dashboardUrl: url, days: dayArg ? dayArg.split('=')[1] : SCAN_DEFAULT_DAYS });
+  console.log(`统计区间 ${out.windowStart} ~ ${out.windowEnd}（${out.windowDays} 天，${out.fullHistory ? '全部历史' : '最近 ' + out.days + ' 天'}）共缺 ${out.totalMissing} 天`);
   console.log(JSON.stringify(out, null, 2));
 }

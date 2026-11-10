@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureEnv, bridgeHealth, startBridgeDaemon, openInspectPage, findChrome } from '../app/ensure-env.mjs';
 import { yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS } from '../app/config.mjs';
 import { dataDirState, dashboardMode } from '../app/publish.mjs';
-import { scanGaps, pacificToday } from '../app/scan-gaps.mjs';
+import { scanGaps, pacificToday, clampScanDays } from '../app/scan-gaps.mjs';
 import { catalogSnapshot } from '../app/reports.mjs';
 import { SHOP, shopSummary, configFilePath, saveConfigPatch } from '../app/shop-config.mjs';
 import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, GAP_DEFAULT_SEC } from './gap-plan.mjs';
@@ -869,8 +869,12 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/gap-fill' && req.method === 'POST') {
       if (child || seq || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
       if (!(await requireBrowser(res))) return;
+      // 补齐范围和界面上「体检区间」保持一致：看到的是最近 2 周，补的也只补这 2 周，
+      // 不会因为你选了个短区间，后台反而去补几个月的窟窿。
+      const form = await readBody(req).catch(() => ({}));
+      const scanDays = clampScanDays(form.days);
       let scanned;
-      try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL }); }
+      try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL, days: scanDays }); }
       catch (error) { return send(res, 500, { ok: false, error: `扫描失败：${error.message}` }); }
       const byKey = Object.fromEntries(scanned.rows.map(r => [r.key, r]));
       const daysOf = key => (byKey[key]?.missingRanges || []).flatMap(r => dayList(r.start, r.end));
@@ -898,7 +902,6 @@ const server = http.createServer(async (req, res) => {
 
       const allDays = [...new Set([...trafficDays, ...plpDays])].sort();
       // 每天之间停 1~2 分钟（默认 90 秒）：同一天/相邻天连续提交容易被 eBay 回「We couldn't process your download」
-      const form = await readBody(req).catch(() => ({}));
       const gapSec = clampGapSec(form.gapSec);
       const { steps } = planGapFill({
         trafficDays, plgDays, plpDays, plgPreset,
@@ -907,6 +910,7 @@ const server = http.createServer(async (req, res) => {
       startSequence(steps, '一键补齐缺口', gapSec * 1000, { thenArchive: true });
       return send(res, 200, {
         ok: true, started: true, gapSec,
+        scanDays, windowStart: scanned.windowStart, windowEnd: scanned.windowEnd,
         days: allDays,
         steps: steps.map(s => ({ day: s.day, args: s.args })),
         plan: {
@@ -970,8 +974,10 @@ const server = http.createServer(async (req, res) => {
 
     // 看板数据体检：正式目录里每类报表哪天有、哪天缺（今天与上架前不算缺）
     if (path === '/api/scan') {
-      const report = await scanGaps({ dashboardUrl: `${DASHBOARD_URL}data.js` });
-      say(`[控制台] 体检完成：${report.rows.length} 类报表，共缺 ${report.totalMissing} 天`);
+      const scanDays = clampScanDays(url.searchParams.get('days'));
+      const report = await scanGaps({ dashboardUrl: `${DASHBOARD_URL}data.js`, days: scanDays });
+      say(`[控制台] 体检完成：${report.rows.length} 类报表，区间 ${report.windowStart} ~ ${report.windowEnd}`
+        + `（${report.windowDays} 天），共缺 ${report.totalMissing} 天`);
       return send(res, 200, report);
     }
 
