@@ -109,14 +109,17 @@ function headFields(line, n) {
 //   流量单日（Traffic 日度）、PLG 链接广告（促销刊登·常规）、
 //   PLP 链接广告三份（Listing / Keyword / Search Query，来自「优先促销刊登」）。
 // 流量累计只用于对账，不进看板，所以不参与体检；活动汇总报表（campaign report）也不进看板。
+// optional=true：只做「降级提醒」——看板上对应的板块可以空着，不算缺口、不参与补齐。
+// 关键词 / 搜索词默认就不下载了（用户 2026-11-10 定），需要时在「优先促刊」里单独勾。
 const FILE_KIND = {
   trafficDaily: { key: 'trafficDaily', label: '流量单日', note: 'Traffic · 日度' },
+  activeList: { key: 'activeList', label: '在售商品名单', note: 'Active listings · 快照', snapshot: true },
   plg: { key: 'plg', label: 'PLG 链接广告', note: '促销刊登 · 常规' },
   plpListing: { key: 'plpListing', label: '物品刊登', note: 'Listing report', group: 'PLP 链接广告' },
-  plpKeyword: { key: 'plpKeyword', label: '关键词', note: 'Keyword report', group: 'PLP 链接广告' },
-  plpSearch: { key: 'plpSearch', label: '搜索词', note: 'Search Query report', group: 'PLP 链接广告' }
+  plpKeyword: { key: 'plpKeyword', label: '关键词', note: 'Keyword report', group: 'PLP 链接广告', optional: true },
+  plpSearch: { key: 'plpSearch', label: '搜索词', note: 'Search Query report', group: 'PLP 链接广告', optional: true }
 };
-const ORDER = ['trafficDaily', 'plg', 'plpListing', 'plpKeyword', 'plpSearch'];
+const ORDER = ['trafficDaily', 'activeList', 'plg', 'plpListing', 'plpKeyword', 'plpSearch'];
 
 function listCsv(root) {
   const out = [];
@@ -141,8 +144,15 @@ function inspectFile(path) {
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const head = text.slice(0, 20000);
 
-  // 在售名单：不参与体检
-  if (/Item number/i.test(head) && /Available quantity/i.test(head)) return null;
+  // 在售名单：快照类，没有「哪天缺」的概念，只看最新一份有多旧
+  // 文件名里带日期：eBay-all-active-listings-report-2026-11-04-....csv
+  if (/Item number/i.test(head) && /Available quantity/i.test(head)) {
+    if (/inactive|unsold|ended/i.test(path)) return null;   // 非在售 / 预定名单不进体检
+    const md = /(\d{4}-\d{2}-\d{2})/.exec(path.split(/[\\/]/).pop() || '');
+    const day = md ? md[1] : null;
+    if (!day) return null;
+    return { kind: 'activeList', dates: new Set([day]), start: day, end: day };
+  }
 
   const lines = text.split(/\r?\n/);
 
@@ -258,6 +268,8 @@ export async function scanGaps(options = {}) {
   let reportStart = null;
   for (const key of ORDER) {
     const g = groups[key];
+    const snapshot = !!g.snapshot;       // 名录类：没有「哪天缺」，只看有多旧
+    const optional = !!g.optional;       // 关键词 / 搜索词：默认不下载，只提醒
     const sorted = [...g.dates].sort();
     const first = sorted[0] || null;
     const last = sorted[sorted.length - 1] || null;
@@ -265,31 +277,34 @@ export async function scanGaps(options = {}) {
     //   上架前的空白天不算缺（用 first），但也不会因此把窗口拉回几个月前（用 minStart）
     const base = fullHistory ? (first || anchor || emptyStart) : (minStart || emptyStart);
     const windowStart = first && first > base ? first : base;
-    if (!reportStart || windowStart < reportStart) reportStart = windowStart;
+    if (!snapshot && (!reportStart || windowStart < reportStart)) reportStart = windowStart;
 
     let missing = [];
-    if (windowEnd >= windowStart) {
+    if (!snapshot && windowEnd >= windowStart) {
       for (let t = toDay(windowStart); t <= toDay(windowEnd); t += 86400000) {
         const d = fromDay(t);
         if (!g.dates.has(d)) missing.push(d);
       }
     }
 
-    // 该类型还没有任何数据时，只报一个总数，不列几百天
     const nothingYet = !first;
-    if (!nothingYet) totalMissing += missing.length;
-    else nothingYetDays += missing.length;
+    // 只把「必须有的」算进缺口：可选类不拖累「共缺」，快照类不看天数
+    if (!snapshot && !optional) {
+      if (!nothingYet) totalMissing += missing.length;
+      else nothingYetDays += missing.length;
+    }
 
     rows.push({
       key, label: g.label, note: g.note || '', group: g.group || '',
+      optional, snapshot,
       files: g.files,
       coveredDays: g.dates.size,
       first, last,
       windowStart, windowEnd,
       // 区间外更早还有多少天数据（>0 说明体检没覆盖全部历史）
       coveredBefore: first ? [...g.dates].filter(d => d < windowStart).length : 0,
-      missingDays: missing.length,
-      missingRanges: nothingYet ? [] : toRanges(missing),
+      missingDays: snapshot ? 0 : missing.length,
+      missingRanges: (nothingYet || snapshot) ? [] : toRanges(missing),
       lagDays: last ? daySpan(last, windowEnd) : null,
       nothingYet
     });
@@ -322,7 +337,7 @@ export async function scanGaps(options = {}) {
     totalMissing,
     nothingYetDays,
     // 五类都还没数据（全新安装）：体检中心要能一键从零开始，而不是干看着「全缺」
-    allEmpty: rows.every(r => r.nothingYet),
+    allEmpty: rows.filter(r => !r.optional).every(r => r.nothingYet),
     rows,
     sync: {
       localBundleAt: localAt,

@@ -1,6 +1,6 @@
 {
-  "version": "v202611101133",
-  "createdAt": "2026-11-10 11:33:54",
+  "version": "v202611101139",
+  "createdAt": "2026-11-10 11:39:12",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -60,8 +60,8 @@
     },
     {
       "path": "app/config.mjs",
-      "hash": "ee705e11ec5532453ca8f94c84c7c0c4c0324b2854361149bab6e09e059e9db6",
-      "size": 7957
+      "hash": "12749af13cde2a2f15578005333e2cc93928566bc6233b05af146d5dcdc531bd",
+      "size": 8079
     },
     {
       "path": "app/dashboard-server.mjs",
@@ -155,8 +155,8 @@
     },
     {
       "path": "app/scan-gaps.mjs",
-      "hash": "1de1faf29cce69fbff720a9964682927e18b8160abdfb55247ea5cef0612eb6a",
-      "size": 14868
+      "hash": "4220f9d67c0daf3ec4e8392e97f198105a77ae58b4a488177a0d12e44925b7b8",
+      "size": 16087
     },
     {
       "path": "app/shop-config.mjs",
@@ -165,13 +165,13 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "00427b4cf44008f3db5650d998cd92672bfcf4a83c7673ac7b2942faac304717",
-      "size": 115325
+      "hash": "2056d7eb726b49db3017e7f8b8b2c64c9257fe9677d930c958714c90c8279023",
+      "size": 116771
     },
     {
       "path": "ui/server.mjs",
-      "hash": "8e7a1b9d9d797152aa879903b2c59fb8e699370a2a85d4800b5738050f4363b0",
-      "size": 55947
+      "hash": "49de05b260e81de880ecd415460e744782ab5c8984797d2786d5b89751673d96",
+      "size": 56140
     },
     {
       "path": "ui/gap-plan.mjs",

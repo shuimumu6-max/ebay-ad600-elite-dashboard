@@ -150,7 +150,8 @@ function firstRunPlan(days = 14) {
       '--dates', `${start}..${end}`, '--date', end,
       '--active-type', 'active',
       '--plg-unit', 'DAILY', '--plg-range', 'LASTWEEK',
-      '--priority-types', 'listing,keyword,campaign,search',
+      // 默认只下物品列表：关键词 / 搜索词会拖慢首次初始化，看板上留空即可（需要时单独下）
+      '--priority-types', 'listing',
       '--priority-unit', 'DAILY', '--priority-range', 'LASTWEEK']
   };
   const step2 = {
@@ -158,7 +159,7 @@ function firstRunPlan(days = 14) {
     title: '广告本周（PLG + 优先促销刊登 4 类，按日）',
     args: [...base, '--only', 'plg,priority', '--date', end,
       '--plg-unit', 'DAILY', '--plg-range', 'CURRENTWEEK',
-      '--priority-types', 'listing,keyword,campaign,search',
+      '--priority-types', 'listing',
       '--priority-unit', 'DAILY', '--priority-range', 'CURRENTWEEK']
   };
   const queues = [
@@ -317,7 +318,7 @@ function defaultForm() {
     activeTypes: Object.entries(ACTIVE_TYPES).map(([key, v]) => ({ key, label: v.label })),
     orderTypes: ORDER_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp })),
     orderRanges: ORDER_RANGES,
-    priorityTypes: PRIORITY_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp })),
+    priorityTypes: PRIORITY_TYPES.map(t => ({ key: t.key, label: t.label, mvp: t.mvp, defaultOn: t.defaultOn !== false })),
     priorityCampaignList: priorityList,
     priorityDefaultCampaigns: priorityDefault,
     outDir: OUT_DIR
@@ -945,7 +946,8 @@ const server = http.createServer(async (req, res) => {
       }
       // PLP 走 campaign 页通道，必须知道具体活动；活动留空（= 后台全部）时这一路补不了，
       // 直接跳过 PLP、只补流量和 PLG，不让用户卡在一个他没法填的配置项上。
-      const plpDaysRaw = [...new Set([...daysOf('plpListing'), ...daysOf('plpKeyword'), ...daysOf('plpSearch')])].sort();
+      // 只补物品列表（Listing）：关键词 / 搜索词默认不下载，体检里只是「仅提醒」，不参与补齐
+      const plpDaysRaw = [...new Set(daysOf('plpListing'))].sort();
       const plpDays = priorityDefault.length ? plpDaysRaw : [];
       if (!priorityDefault.length && plpDaysRaw.length) {
         say(`[控制台] 跳过 PLP 补齐：当前没指定活动（${plpDaysRaw.length} 天缺口）。PLP 报表需要具体活动，需要补就在「优先促刊」里勾几个活动。`);
