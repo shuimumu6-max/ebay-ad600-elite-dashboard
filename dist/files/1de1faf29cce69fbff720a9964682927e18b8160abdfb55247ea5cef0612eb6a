@@ -252,6 +252,8 @@ export async function scanGaps(options = {}) {
 
   const rows = [];
   let totalMissing = 0;
+  // 「一类数据都没有」的日子单独数：它们也是缺口，但性质不同（要从零下，不是补几天）
+  let nothingYetDays = 0;
   // 每类报表自己的体检起点，取其中最早的一个当「统计区间」展示
   let reportStart = null;
   for (const key of ORDER) {
@@ -276,6 +278,7 @@ export async function scanGaps(options = {}) {
     // 该类型还没有任何数据时，只报一个总数，不列几百天
     const nothingYet = !first;
     if (!nothingYet) totalMissing += missing.length;
+    else nothingYetDays += missing.length;
 
     rows.push({
       key, label: g.label, note: g.note || '', group: g.group || '',
@@ -317,6 +320,9 @@ export async function scanGaps(options = {}) {
     hasOlder: !!(oldestData && oldestData < windowStart),
     scannedFiles: paths.length,
     totalMissing,
+    nothingYetDays,
+    // 五类都还没数据（全新安装）：体检中心要能一键从零开始，而不是干看着「全缺」
+    allEmpty: rows.every(r => r.nothingYet),
     rows,
     sync: {
       localBundleAt: localAt,

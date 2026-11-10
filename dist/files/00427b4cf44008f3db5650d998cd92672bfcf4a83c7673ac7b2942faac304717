@@ -404,12 +404,13 @@
 
   <div id="viewDownload">
 
-  <!-- 首次使用引导：只在下载结果里还没有 CSV 时出现，点一次就有 2 周数据 -->
+  <!-- 首次使用引导：正式目录（看板数据源）还没有 CSV 时出现，点一次就有 2 周数据 -->
   <div class="firstrun" id="firstRun" hidden>
     <div class="fr-body">
       <h3>第一次用？点一下，自动把最近 2 周的数据下下来</h3>
       <p>会先自动识别你的店铺（只读浏览器里的登录账号，不用填任何东西），然后依次下载：流量报表（逐日 14 份）、在售商品名单、PLG 链接广告与优先促销刊登（本周 + 上周——eBay 的广告「按日」数据只给这两周）。大概 10 分钟，全程自动，可以最小化窗口，但别关控制台。</p>
       <p class="fr-hint">两周刚好能对比「上周 vs 本周」。下完会自动归档，打开看板就能看到数据。eBay 对流量报表有频率限制，偶尔会中途说「先歇一会儿」——已经下好的不会重复，过 1 小时点右侧「补齐缺口 + 更新看板」接着补就行。</p>
+      <p class="fr-hint" id="frPending" hidden></p>
       <p class="fr-hint" id="frConnectTip" hidden><b>现在还不能下载：</b>右上角显示「需要拨一次开关」——先点那里的「去开开关」，在浏览器里把 <b>Allow remote debugging</b> 拨到开，等顶部变成「已连接」，这个按钮就能点了。</p>
     </div>
     <div class="fr-actions">
@@ -1389,9 +1390,18 @@ async function refreshState(){
       dashboardMode = s.dashboardMode;
       applyDashboardMode();
     }
-    // 首次使用引导：还没有任何 CSV 时出现；点过「不用」或正在跑就收起
+    // 首次使用引导：正式目录还没有数据时出现；点过「不用」或正在跑就收起
     const fr = $('#firstRun');
     if (fr) fr.hidden = !s.firstRun?.needed || !!s.running || sessionStorage.getItem('firstRunSkip') === '1';
+    if (fr && !fr.hidden){
+      // 下载结果里已经有上次跑出来的报表：提示先归档，别重复下载
+      const pend = Number(s.firstRun?.pendingRuns || 0);
+      const pendEl = $('#frPending');
+      if (pendEl){
+        pendEl.hidden = !pend;
+        if (pend) pendEl.innerHTML = `下载结果里已经有 <b>${pend}</b> 份报表还没归档：点右边「补齐缺口 + 更新看板」会先把它们归档并更新看板，不用重下。`;
+      }
+    }
     if (s.dashboard) $('#linkDash').href = dashboardMode === 'local' ? '#' : s.dashboard;
     if (s.dataState) renderDataState(s.dataState);
     $('#dotRun').className = 'dot ' + (s.running ? 'busy' : 'ok');
@@ -1707,7 +1717,7 @@ function renderScan(r){
   // 一份数据都没有（刚装好、还没跑首次下载）：把「全缺 14 天」说清楚，别让人以为算错了
   const allEmpty = rows.length > 0 && rows.every(x => x.nothingYet);
   const emptyHint = allEmpty
-    ? '<div class="scan-empty">正式目录里还没有任何报表。新手请先点页面最上面的「<b>自动下载最近 2 周</b>」，下完再回来看体检；下面的「全缺 N 天」只是说明这段时间一份都没有，不是算错。</div>'
+    ? '<div class="scan-empty">正式目录里还没有任何报表。点右边「<b>补齐缺口 + 更新看板</b>」会按首次初始化下载最近 2 周（流量逐日 + 在售名单 + 广告），跑完自动归档并更新看板；下载结果里若已有报表，会先归档那一批，不重复下。</div>'
     : '';
   const scope = r.fullHistory ? `全部历史，共 ${r.windowDays} 天` : `最近 ${r.windowDays} 天`;
   const olderHint = r.hasOlder
@@ -1724,11 +1734,12 @@ function renderScan(r){
       统计区间 <b>${fmtMd(r.windowStart)} ~ ${fmtMd(r.windowEnd)}</b>（${scope}） · 扫了 ${r.scannedFiles} 份 CSV · 共缺 <b>${r.totalMissing}</b> 天　|　${syncHtml}${olderHint}<br>
       看板数据生成于 ${fmtWhen(s.localBundleAt)} · 线上 ${fmtWhen(s.onlineBundleAt)}
     </div>`;
+  const gapTotal = (r.totalMissing || 0) + (r.nothingYetDays || 0);
   $('#scanSub').textContent = allEmpty
-    ? '还没有数据：先跑一次首次下载'
-    : (r.totalMissing ? `共缺 ${r.totalMissing} 天数据` : '各类报表都不缺');
+    ? `还没有数据（${r.windowDays} 天全缺）：点右边补齐即可开始`
+    : (gapTotal ? `共缺 ${gapTotal} 天数据` : '各类报表都不缺');
   const fillBtn = $('#btnGapFill');
-  if (fillBtn) fillBtn.disabled = !r.totalMissing || !!state.running;
+  if (fillBtn) fillBtn.disabled = !((r.totalMissing || 0) + (r.nothingYetDays || 0)) || !!state.running;
 }
 
 // 一键补齐：只下缺的那些天 → 归档 → 更新看板。PLP 走 campaign 页（区间精确），PLG 走报表中心预设。
@@ -1744,11 +1755,22 @@ $('#btnGapFill').addEventListener('click', async () => {
     const r = await res.json();
     if (!r.ok) { toast(r.error || '补齐没启动', true); return; }
     if (!r.started) { toast(r.message || '没有缺口', false); return; }
+    if (r.mode === 'first-run') {
+      toast(r.message || `已按首次初始化开始下载最近 ${r.days} 天`, false);
+      appendLog(`[控制台] ${r.message || '首次初始化已启动'}`);
+      return;
+    }
+    if (r.mode === 'archive') {
+      toast(r.message || '已开始归档并更新看板', false);
+      appendLog(`[控制台] ${r.message || '开始归档下载结果'}`);
+      return;
+    }
     const p = r.plan || {};
     const days = (r.steps || []).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s.day)).length;
     toast(`已开始逐天补齐：${days} 天，每天之间停 ${r.gapSec || 90} 秒`);
     appendLog(`[控制台] 一键补齐已启动：逐天串行，每天之间停 ${r.gapSec || 90} 秒，全部跑完自动归档并更新看板`);
-    if (p.plgPreset) appendLog(`[控制台] PLG 缺口 ${p.plgDays?.[0]} ~ ${p.plgDays?.slice(-1)[0]}，按预设 ${p.plgPreset} 单独跑一次`);
+    if (p.plgPreset) appendLog(`[控制台] PLG 缺口 ${p.plgDays?.[0]} ~ ${p.plgDays?.slice(-1)[0]}，按预设 ${p.plgPreset} 单独跑`);
+    if (p.plgUnfillable?.length) appendLog(`[控制台] PLG 有 ${p.plgUnfillable.length} 天超出 eBay 可选范围（最早只到上周），补不了`);
   } catch {
     toast('连不上本地服务', true);
   } finally {
@@ -1769,7 +1791,8 @@ $('#btnScan').addEventListener('click', async () => {
   try{
     const r = await (await fetch(`/api/scan?days=${scanWindowDays()}`)).json();
     renderScan(r);
-    toast(r.totalMissing ? `有 ${r.totalMissing} 天数据缺失` : '各类报表数据齐全', !!r.totalMissing);
+    const gapTotal = (r.totalMissing || 0) + (r.nothingYetDays || 0);
+    toast(gapTotal ? `有 ${gapTotal} 天数据缺失` : '各类报表数据齐全', !!gapTotal);
   } catch {
     $('#scanBody').innerHTML = '<div class="empty">扫描失败：连不上本地服务</div>';
     toast('扫描失败', true);

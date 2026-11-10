@@ -3,15 +3,15 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, isAbsolute } from 'node:path';
+import { basename, dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureEnv, bridgeHealth, startBridgeDaemon, openInspectPage, findChrome } from '../app/ensure-env.mjs';
-import { yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS } from '../app/config.mjs';
+import { DATA_DIR, yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS } from '../app/config.mjs';
 import { dataDirState, dashboardMode } from '../app/publish.mjs';
 import { scanGaps, pacificToday, clampScanDays } from '../app/scan-gaps.mjs';
 import { catalogSnapshot } from '../app/reports.mjs';
 import { SHOP, shopSummary, configFilePath, saveConfigPatch } from '../app/shop-config.mjs';
-import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, GAP_DEFAULT_SEC } from './gap-plan.mjs';
+import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, groupPlgByPreset, GAP_DEFAULT_SEC } from './gap-plan.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = join(here, '..', 'app');
@@ -170,20 +170,21 @@ function firstRunPlan(days = 14) {
 }
 
 // 下载结果目录里有没有 CSV：新用户装完第一次打开时用来判断「要不要引导初始化」
-function runsCsvCount() {
+function countCsv(dir) {
   let count = 0;
-  const walk = dir => {
+  const walk = d => {
     if (count > 500) return;
     let entries = [];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (entry.isDirectory()) walk(join(dir, entry.name));
+      if (entry.isDirectory()) walk(join(d, entry.name));
       else if (entry.name.toLowerCase().endsWith('.csv')) count++;
     }
   };
-  if (existsSync(OUT_DIR)) walk(OUT_DIR);
+  if (dir && existsSync(dir)) walk(dir);
   return count;
 }
+const runsCsvCount = () => countCsv(OUT_DIR);
 
 // ---------- 环境体检 ----------
 // 只问常驻桥（毫秒级），不再每次做 8 秒的 WS 握手探测；
@@ -195,9 +196,11 @@ async function envState() {
     lastDaemonTry = Date.now();
     startBridgeDaemon();
   }
-  // 有没有下载过 CSV：15 秒最多扫一次目录，避免每次轮询都遍历几千个文件
+  // 首次引导看的是「正式目录」（看板的数据源），不是「下载结果」：
+  // 之前用下载结果判断，一开下载卡片就消失，用户回头找不到「自动下载最近 2 周」了。
+  // 15 秒最多扫一次目录，避免每次轮询都遍历几千个文件。
   if (runsCsvSeen === null || (!runsCsvSeen && Date.now() - runsCsvCheckedAt > 15000)) {
-    runsCsvSeen = runsCsvCount() > 0;
+    runsCsvSeen = countCsv(DATA_DIR) > 0;
     runsCsvCheckedAt = Date.now();
   }
   const connected = !!h?.connected;
@@ -246,7 +249,13 @@ async function envState() {
     dashboardMode: dashboardMode(),
     dataState: dataDirState(),
     // 新用户第一次打开：下载结果目录里还没有任何 CSV，就在页面上引导「自动下载最近 2 周」
-    firstRun: { needed: !runsCsvSeen, days: 14, outDir: OUT_DIR },
+    firstRun: {
+      needed: !runsCsvSeen,
+      days: 14,
+      outDir: OUT_DIR,
+      // 正式目录空、但下载结果里已有报表 → 不用重下，先归档那批就行
+      pendingRuns: !runsCsvSeen ? runsCsvCount() : 0
+    },
     shop: {
       name: shopMeta.shopName,
       seller: shopMeta.sellerName,
@@ -877,9 +886,63 @@ const server = http.createServer(async (req, res) => {
       try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL, days: scanDays }); }
       catch (error) { return send(res, 500, { ok: false, error: `扫描失败：${error.message}` }); }
       const byKey = Object.fromEntries(scanned.rows.map(r => [r.key, r]));
-      const daysOf = key => (byKey[key]?.missingRanges || []).flatMap(r => dayList(r.start, r.end));
+      const winStart = scanned.windowStart;
+      const winEnd = scanned.windowEnd;
+      // dryRun：只回「打算怎么补」，不真的下载（自检与 AI 安装说明用，避免误跑十几分钟）
+      const dryRun = !!form.dryRun;
+      const reply = (payload) => {
+        if (!dryRun) return send(res, 200, payload);
+        return send(res, 200, {
+          ok: true, dryRun: true, started: false,
+          mode: payload.mode || (payload.started ? 'gap' : 'none'),
+          message: payload.message || null,
+          scanDays, windowStart: winStart, windowEnd: winEnd,
+          days: payload.days || [], start: payload.start, end: payload.end,
+          steps: (payload.steps || []).map(x => ({ day: x.day, title: x.title || null }))
+        });
+      };
+
+      // 情形一：一条数据都没有（全新安装 / 换电脑）→ 等价于「首次初始化」。
+      // 下载结果里已经有上次跑出来的报表时先归档那批，别让人白下一遍。
+      if (scanned.allEmpty) {
+        const pending = newestRunDir();
+        const pendingCsv = pending ? countCsv(pending) : 0;
+        if (pendingCsv > 0) {
+          say(`[控制台] 正式目录还没有数据，但下载结果里有现成的（${basename(pending)}，${pendingCsv} 份 CSV）：先归档它并更新看板`);
+          if (!dryRun) startSequence(tailSteps([pending]), '归档 + 更新看板', 0);
+          return reply({
+            ok: true, started: true, mode: 'archive',
+            scanDays, windowStart: winStart, windowEnd: winEnd,
+            message: `下载结果里有 ${pendingCsv} 份现成报表，已开始归档并更新看板；回来看还缺就再点一次`
+          });
+        }
+        const days = !scanDays || scanDays > 90 ? 14 : Math.max(7, scanDays);
+        const plan = firstRunPlan(days);
+        say(`[控制台] 体检发现正式目录一条数据都没有：按首次初始化下载最近 ${days} 天（流量逐日 + 在售名单 + 广告上周/本周），跑完自动归档并更新看板`);
+        try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
+        if (!dryRun) startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0, { thenArchive: true });
+        return reply({
+          ok: true, started: true, mode: 'first-run', days, start: plan.start, end: plan.end,
+          scanDays, windowStart: winStart, windowEnd: winEnd,
+          message: `还没有任何数据，已按首次初始化开始下载最近 ${days} 天，跑完自动归档并更新看板`
+        });
+      }
+
+      // 情形二：有数据但存在缺口 → 逐天补齐（某类从零开始的话，整个区间都要下）
+      const daysOf = key => {
+        const r = byKey[key];
+        if (!r) return [];
+        if (r.nothingYet) return dayList(r.windowStart, r.windowEnd);
+        return (r.missingRanges || []).flatMap(x => dayList(x.start, x.end));
+      };
       const trafficDays = daysOf('trafficDaily');
       const plgDays = daysOf('plg');
+      // PLG 按日只有 今天/昨天/本周/上周：缺口跨两周就拆成两步，超出上周的日子只能跳过并说明
+      const { groups: plgGroups, unfillable: plgUnfillable } = groupPlgByPreset(plgDays, pacificToday());
+      const plgFillable = plgDays.filter(d => !plgUnfillable.includes(d));
+      if (plgUnfillable.length) {
+        say(`[控制台] PLG 有 ${plgUnfillable.length} 天（${plgUnfillable[0]} ~ ${plgUnfillable[plgUnfillable.length - 1]}）超出 eBay「按日」可选范围（最早只到上周），这几天补不了，先补能补的`);
+      }
       // PLP 走 campaign 页通道，必须知道具体活动；活动留空（= 后台全部）时这一路补不了，
       // 直接跳过 PLP、只补流量和 PLG，不让用户卡在一个他没法填的配置项上。
       const plpDaysRaw = [...new Set([...daysOf('plpListing'), ...daysOf('plpKeyword'), ...daysOf('plpSearch')])].sort();
@@ -888,15 +951,12 @@ const server = http.createServer(async (req, res) => {
         say(`[控制台] 跳过 PLP 补齐：当前没指定活动（${plpDaysRaw.length} 天缺口）。PLP 报表需要具体活动，需要补就在「优先促刊」里勾几个活动。`);
       }
 
-      if (!trafficDays.length && !plgDays.length && !plpDays.length) {
-        return send(res, 200, { ok: true, started: false, message: '没有缺口，直接更新看板就行' });
-      }
-      const plgPreset = plgDays.length ? presetFor(plgDays) : null;
-      if (plgDays.length && !plgPreset) {
-        return send(res, 422, {
-          ok: false,
-          error: `PLG 缺口 ${plgDays[0]} ~ ${plgDays[plgDays.length - 1]} 超出「按日」粒度可选范围`
-            + `（今天 / 昨天 / 本周 / 上周），eBay 选不到就只能等或手动处理`
+      if (!trafficDays.length && !plgGroups.length && !plpDays.length) {
+        return reply({
+          ok: true, started: false,
+          message: plgUnfillable.length
+            ? `只剩 ${plgUnfillable.length} 天 PLG 超出 eBay 可选范围，补不了；可以直接「只更新看板」`
+            : '没有缺口，直接更新看板就行'
         });
       }
 
@@ -904,17 +964,21 @@ const server = http.createServer(async (req, res) => {
       // 每天之间停 1~2 分钟（默认 90 秒）：同一天/相邻天连续提交容易被 eBay 回「We couldn't process your download」
       const gapSec = clampGapSec(form.gapSec);
       const { steps } = planGapFill({
-        trafficDays, plgDays, plpDays, plgPreset,
+        trafficDays, plgDays: plgFillable, plpDays, plgGroups,
         outDir: OUT_DIR, campaigns: priorityDefault, gapSec
       });
-      startSequence(steps, '一键补齐缺口', gapSec * 1000, { thenArchive: true });
-      return send(res, 200, {
+      if (!dryRun) startSequence(steps, '一键补齐缺口', gapSec * 1000, { thenArchive: true });
+      return reply({
         ok: true, started: true, gapSec,
-        scanDays, windowStart: scanned.windowStart, windowEnd: scanned.windowEnd,
+        scanDays, windowStart: winStart, windowEnd: winEnd,
         days: allDays,
         steps: steps.map(s => ({ day: s.day, args: s.args })),
         plan: {
-          trafficDays, plgDays, plgPreset, plpDays,
+          trafficDays,
+          plgDays: plgFillable,
+          plgUnfillable,
+          plgPreset: plgGroups.length === 1 ? plgGroups[0].preset : (plgGroups.map(g => g.preset).join(' + ') || null),
+          plpDays,
           plpRange: plpDays.length ? [plpDays[0], plpDays[plpDays.length - 1]] : null
         }
       });
