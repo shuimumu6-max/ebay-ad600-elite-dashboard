@@ -1280,6 +1280,14 @@ async function refreshState(){
       txt.textContent = '已连接';
       fix.hidden = true;
       txt.title = '常驻连接一直保持，下载不会再要求你点允许';
+    } else if (b.awaitingApproval){
+      // 桥已经在连了，Chrome 挂着等用户点一次「允许」。这时候说「正在重连…」等于骗人，
+      // 用户会一直干等；必须明确告诉他现在该做什么。
+      dot.className = 'dot bad';
+      txt.textContent = '等你在浏览器点「允许」';
+      fix.hidden = false;
+      fix.textContent = '打开授权页';
+      txt.title = b.hint || 'Chrome 正在等你点一次「允许」';
     } else if (b.needsAuth){
       dot.className = 'dot bad';
       txt.textContent = '需要拨一次开关';
@@ -1343,7 +1351,7 @@ async function refreshState(){
 
 $('#btnFix').addEventListener('click', async () => {
   const r = await (await fetch('/api/fix-env', { method:'POST' })).json();
-  if (r.ok) toast('已打开开关页面：把「Allow remote debugging for this browser instance」拨到开，回到这里就会自动连上');
+  if (r.ok) toast('已打开开关页面：开关是关的就拨到开，有「允许」提示就点允许；回到这里会自动连上');
   else toast(r.error || '打开失败：请手动访问 chrome://inspect/#remote-debugging', true);
 });
 

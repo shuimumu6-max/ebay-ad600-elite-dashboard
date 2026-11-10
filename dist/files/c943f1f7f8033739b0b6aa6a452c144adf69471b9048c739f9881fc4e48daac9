@@ -145,10 +145,25 @@ async function attemptConnect() {
   socket = ws;
   let settled = false;
 
+  // 握手超时：Chrome 会把「等你点允许」的连接挂住，既不 open 也不 error。
+  // 没有超时的话桥就永久停在 waiting-auth，连重试都不会发生 ——
+  // 用户看到的就是「一直在重连，点了也没反应」。超时后主动放弃这条连接，交给退避重试。
+  const openTimer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    waitingAuth = false;
+    try { ws.__manual = true; ws.close(); } catch { /* 忽略 */ }
+    socket = null;
+    reconnectTries += 1;
+    log('连接浏览器超时（Chrome 多半在等你点「允许」）。稍后自动重试，也可以打开 chrome://inspect/#remote-debugging 点一次允许。');
+    scheduleReconnect(10000);
+  }, 25000);
+
   ws.addEventListener('message', onMessage);
 
   ws.addEventListener('open', () => {
     settled = true;
+    clearTimeout(openTimer);
     connected = true;
     everConnected = true;
     waitingAuth = false;
@@ -162,6 +177,7 @@ async function attemptConnect() {
     // 端口没开 / 开关已关闭，都会走到这里
     if (settled) return;
     settled = true;
+    clearTimeout(openTimer);
     ws.__manual = true;   // 紧随其后的 close 事件不必再排一次重连，避免重连计数翻倍
     waitingAuth = false;
     connected = false;
@@ -246,7 +262,11 @@ const server = createServer(async (req, res) => {
       return reply(200, {
         connected, everConnected, port: PORT, reconnectTries,
         phase: connected ? 'connected' : (waitingAuth ? 'waiting-auth' : 'reconnecting'),
-        needsAuth: !connected && !waitingAuth,
+        // needsAuth 的含义是「必须去浏览器里点一次才能连上」。waiting-auth 同样是在等
+        // 用户点「允许」，不能算成"不需要操作"——否则界面只会显示「正在重连…」，
+        // 连个按钮都没有，用户只能干等。
+        needsAuth: !connected,
+        awaitingApproval: !connected && waitingAuth,
         pid: process.pid,
         uptimeSec: Math.round(process.uptime()),
         lastConnectedAt: lastConnectedAt || null,
@@ -256,7 +276,7 @@ const server = createServer(async (req, res) => {
         hint: connected
           ? null
           : waitingAuth
-            ? '浏览器正在等待授权：请在弹窗或 chrome://inspect 页面点一次「允许」'
+            ? 'Chrome 正在等你点「允许」：看浏览器里有没有弹出授权提示，或打开 chrome://inspect/#remote-debugging 点一次'
             : '浏览器调试端口未开放：打开开关后桥会自动连上，无需重启任何东西',
         downloadDir: DOWNLOAD_DIR,
         lastEvent: events.at(-1) || null

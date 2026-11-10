@@ -223,9 +223,13 @@ async function envState() {
       online: !!h,
       phase: h?.phase || (h ? 'reconnecting' : 'offline'),
       needsAuth: !!h?.needsAuth,
+      // true 表示「已经发起连接、Chrome 正在等用户点允许」，
+      // 和「开关没开」是两种不同的处境，界面要给不同的话。
+      awaitingApproval: !!h?.awaitingApproval,
       uptimeSec: h?.uptimeSec || 0,
       reconnectTries: h?.reconnectTries || 0,
-      hint: h?.hint || '常驻桥未启动'
+      // 已连接时不能回退到「常驻桥未启动」——桥连着却提示未启动，用户会以为坏了。
+      hint: connected ? null : (h?.hint || (h ? '正在重连浏览器…' : '常驻桥未启动'))
     },
     running: !!child || !!seq || !!par,
     mode: runInfo?.mode || null,

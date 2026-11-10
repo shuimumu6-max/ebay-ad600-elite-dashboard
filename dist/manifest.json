@@ -1,6 +1,6 @@
 {
-  "version": "v202611100036",
-  "createdAt": "2026-11-10 00:36:05",
+  "version": "v202611100114",
+  "createdAt": "2026-11-10 01:14:46",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -25,8 +25,8 @@
     },
     {
       "path": "app/cdp-bridge.mjs",
-      "hash": "53ebc68c8ed1c307970adf42c2d0d7381b6d1ff4ce48e2a18ac42337edf4fc7d",
-      "size": 14315
+      "hash": "c943f1f7f8033739b0b6aa6a452c144adf69471b9048c739f9881fc4e48daac9",
+      "size": 15497
     },
     {
       "path": "app/cdp-endpoint.mjs",
@@ -165,13 +165,13 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "8dfe9ca52a791792b947d6a1343e8b51cf21dc1f24c6444dc43e8ac005fe5249",
-      "size": 108354
+      "hash": "2185ca85e6451c3ea8a7db9eb0ab36aa119dd9bfa59b03ad664e98b725a8be4d",
+      "size": 108828
     },
     {
       "path": "ui/server.mjs",
-      "hash": "c0bd10047e271f695c214759e6534a0f224ec009bfb0f4a9425d1ad8e1f5d7bf",
-      "size": 49283
+      "hash": "6944b6d42f8381d33245a21434c87af6ea3662a60c342cdb2372bd4cb3d7a162",
+      "size": 49678
     },
     {
       "path": "ui/gap-plan.mjs",
