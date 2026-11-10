@@ -89,7 +89,7 @@
   <header>
     <h1>eBay 报表工具包</h1>
     <p class="lead">在你自己电脑上批量下载 eBay 后台报表，再用本地看板看数据。不用装环境、不用连数据库、数据不出本机。</p>
-    <div class="meta">最新版本 <b>v202611100239</b> · 发布于 2026-11-10 02:39:22 · 单店铺版（下载器 + 本地看板）</div>
+    <div class="meta">最新版本 <b>v202611100245</b> · 发布于 2026-11-10 02:45:10 · 单店铺版（下载器 + 本地看板）</div>
     <div class="chips">
       <span class="chip">Windows 10 / 11</span>
       <span class="chip">需要 Chrome 或 Edge 并已登录 eBay 后台</span>
@@ -177,6 +177,16 @@
 
     <details><summary>控制台打开了但下载不动 / 提示调试端口不可用？</summary>
       <p>回到第 2 步：确认 <code>chrome://inspect/#remote-debugging</code> 的开关是开的，并且当前浏览器里至少有一个已登录 eBay 后台的标签页。改完在控制台点重新体检。</p></details>
+
+    <details><summary>今天用得好好的，第二天打开又让我拨一次开关？</summary>
+      <p>不是装坏了。那个「Allow remote debugging」是 Chrome 自己的安全授权，<b>Chrome 完全退出（关掉所有窗口、或电脑重启）后会被收回</b>，需要再拨一次。只要 Chrome 一直在后台没被完全关掉，就不用重复拨。<br>
+      判断方法：控制台顶部显示「需要点一次允许」就是这一种；显示「连接正常」就什么都不用做。</p></details>
+
+    <details><summary>杀毒软件或 Windows 弹窗说程序有风险，能点吗？</summary>
+      <p>包里的 <code>bin\node.exe</code> 是 Node.js 官方运行时（原样搬运，没有改动），第一次运行时 Windows SmartScreen 会因为「没有数字签名」提示未知发布者，选「更多信息 → 仍要运行」即可。若公司电脑装了杀软把文件直接删掉，请让管理员把整个「eBay报表工具包」文件夹加进白名单，再解压一次。</p></details>
+
+    <details><summary>同事直接发给我一个压缩包，不是从本页装的，怎么用？</summary>
+      <p>解压到桌面（包里已经带运行时，<b>不需要再双击 installer.cmd</b>）→ 按第 2 步拨一次调试开关 → 双击文件夹里的「报表控制台.cmd」→ 点「自动下载最近 2 周」。之后想更新，双击「检查更新.cmd」走本页的更新源即可。</p></details>
 
     <details><summary>换电脑、或者一个运营管多个店铺怎么办？</summary>
       <p>一套文件夹只对应一个店铺。多店铺就再装一份到别的目录（装第二次时会自动换一个没被占用的端口），不用填配置，装完各自在右上角改个名字区分就行；两套互不影响，数据也不混。</p></details>
