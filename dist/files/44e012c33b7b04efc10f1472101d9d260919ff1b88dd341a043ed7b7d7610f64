@@ -28,10 +28,14 @@ const manifest = await fetch(manifestUrl, { headers: { 'cache-control': 'no-cach
 
 if (!manifest?.version || !Array.isArray(manifest.files)) fail('更新清单格式不对，联系发布者。');
 console.log(`更新源：${BASE}`);
-console.log(`最新版本：${manifest.version}（发布于 ${manifest.createdAt}）`);
+console.log(`最新版本：${manifest.version}（发布于 ${manifest.createdAt} 北京时间）`);
 console.log(`清单包含 ${manifest.files.length} 个文件，开始比对本地…\n`);
 
-const timestamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+// 备份目录名也用北京时间：资源管理器里看到的 03-10 不该是 UTC
+const timestamp = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Shanghai', hourCycle: 'h23',
+  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+}).format(new Date()).replace(' ', '_').replace(/:/g, '-');
 const backupRoot = join(ROOT, `备份-更新前-${timestamp}`);
 const changed = [];
 let same = 0;
