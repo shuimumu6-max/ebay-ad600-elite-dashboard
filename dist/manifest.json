@@ -1,6 +1,6 @@
 {
-  "version": "v202611100114",
-  "createdAt": "2026-11-10 01:14:46",
+  "version": "v202611100213",
+  "createdAt": "2026-11-10 02:13:39",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -15,8 +15,8 @@
     },
     {
       "path": "app/bridge-daemon.mjs",
-      "hash": "b44f30dddbd3f45bf44bb0d8453bad42ec1a11b6476d0d82d900e1c8a7b656a9",
-      "size": 2875
+      "hash": "efb5d57fd77c9a0cbbbdb602fcc7c3c1be6158b3caf463e7d95be8a7a7c49f25",
+      "size": 3301
     },
     {
       "path": "app/campaign-scan.mjs",
@@ -25,8 +25,8 @@
     },
     {
       "path": "app/cdp-bridge.mjs",
-      "hash": "c943f1f7f8033739b0b6aa6a452c144adf69471b9048c739f9881fc4e48daac9",
-      "size": 15497
+      "hash": "52227cd4144f8a4fae6f11a0d9521d27f8855c6235650f74e7deaf5a87492c46",
+      "size": 16731
     },
     {
       "path": "app/cdp-endpoint.mjs",
@@ -70,8 +70,8 @@
     },
     {
       "path": "app/download.mjs",
-      "hash": "2009cdb3b2e498489980c27310ad4ab1ee27c2c3d13ee67cae600d104f3cae54",
-      "size": 100358
+      "hash": "7a52362f6e95b3fa24cad1119d271d41916f8c2d778d4d6dfa5f89ee09e3bccc",
+      "size": 100500
     },
     {
       "path": "app/engine.mjs",
@@ -110,8 +110,8 @@
     },
     {
       "path": "app/open-dashboard.mjs",
-      "hash": "be11d07fca6a4a1c297c83cf09df28581f10511ac8a184085a1aa081e105941b",
-      "size": 4461
+      "hash": "40c1adf73257f7fdc8fc0497006d7012acd17d98961abb19f2a674deafe46edb",
+      "size": 4460
     },
     {
       "path": "app/pages.mjs",
@@ -165,13 +165,13 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "2185ca85e6451c3ea8a7db9eb0ab36aa119dd9bfa59b03ad664e98b725a8be4d",
-      "size": 108828
+      "hash": "e53a84a33f19e621f49d00aacf5af683ab79ab0251e6541305aee2f56f76bbfb",
+      "size": 109117
     },
     {
       "path": "ui/server.mjs",
-      "hash": "6944b6d42f8381d33245a21434c87af6ea3662a60c342cdb2372bd4cb3d7a162",
-      "size": 49678
+      "hash": "d26a128eeca838889ecf62af9b74184a5322672105e66e7369efa32dcadf2824",
+      "size": 49912
     },
     {
       "path": "ui/gap-plan.mjs",

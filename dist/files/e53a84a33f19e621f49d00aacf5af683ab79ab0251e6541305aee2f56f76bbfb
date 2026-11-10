@@ -401,15 +401,15 @@
 
   <div id="viewDownload">
 
-  <!-- 首次使用引导：只在下载结果里还没有 CSV 时出现，点一次就有 30 天数据 -->
+  <!-- 首次使用引导：只在下载结果里还没有 CSV 时出现，点一次就有 2 周数据 -->
   <div class="firstrun" id="firstRun" hidden>
     <div class="fr-body">
-      <h3>第一次用？点一下，自动把最近 30 天的数据下下来</h3>
-      <p>会先自动识别你的店铺（只读浏览器里的登录账号，不用填任何东西），然后依次下载：流量报表（逐日 30 份）、在售商品名单、PLG 链接广告与优先促销刊登（本周 + 上周——eBay 的广告「按日」数据只给这两周）。大概 20~30 分钟，全程自动，可以最小化窗口，但别关控制台。</p>
-      <p class="fr-hint">下完这些会自动归档，打开看板就能看到数据。eBay 对流量报表有频率限制，偶尔会中途说「先歇一会儿」——已经下好的不会重复，过 1 小时点右侧「补齐缺口 + 更新看板」接着补就行。</p>
+      <h3>第一次用？点一下，自动把最近 2 周的数据下下来</h3>
+      <p>会先自动识别你的店铺（只读浏览器里的登录账号，不用填任何东西），然后依次下载：流量报表（逐日 14 份）、在售商品名单、PLG 链接广告与优先促销刊登（本周 + 上周——eBay 的广告「按日」数据只给这两周）。大概 10 分钟，全程自动，可以最小化窗口，但别关控制台。</p>
+      <p class="fr-hint">两周刚好能对比「上周 vs 本周」。下完会自动归档，打开看板就能看到数据。eBay 对流量报表有频率限制，偶尔会中途说「先歇一会儿」——已经下好的不会重复，过 1 小时点右侧「补齐缺口 + 更新看板」接着补就行。</p>
     </div>
     <div class="fr-actions">
-      <button class="btn primary" id="btnFirstRun">自动下载最近 30 天</button>
+      <button class="btn primary" id="btnFirstRun">自动下载最近 2 周</button>
       <button class="btn" id="btnFirstRunSkip">不用，我自己选</button>
     </div>
   </div>
@@ -981,22 +981,22 @@ $('#prRefresh').addEventListener('click', async () => {
   }
 });
 
-/* ---------- 首次使用：一键下最近 30 天，让看板一打开就有数据 ---------- */
+/* ---------- 首次使用：一键下最近 2 周，让看板一打开就有数据（也够做周度对比） ---------- */
 $('#btnFirstRun').addEventListener('click', async () => {
   const btn = $('#btnFirstRun');
   btn.disabled = true;
   btn.textContent = '正在启动…';
   try {
     const r = await (await fetch('/api/first-run', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ days: 30 })
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ days: 14 })
     })).json();
     if (!r.ok) throw new Error(r.error || '启动失败');
     $('#firstRun').hidden = true;
-    toast('已开始下载最近 30 天数据，进度看下方日志（约 20~30 分钟）');
+    toast('已开始下载最近 2 周数据，进度看下方日志（约 10 分钟）');
   } catch (error) {
     toast(error.message, true);
     btn.disabled = false;
-    btn.textContent = '自动下载最近 30 天';
+    btn.textContent = '自动下载最近 2 周';
   }
 });
 $('#btnFirstRunSkip').addEventListener('click', () => {
@@ -1290,9 +1290,11 @@ async function refreshState(){
       txt.title = b.hint || 'Chrome 正在等你点一次「允许」';
     } else if (b.needsAuth){
       dot.className = 'dot bad';
-      txt.textContent = '需要拨一次开关';
+      // 开关本来开着，再说「去拨开关」会让人来回拨同一颗已开的开关。
+      // 端口开着说明只差 Chrome 确认这一步。
+      txt.textContent = b.portOpen ? '点一次「允许」' : '需要拨一次开关';
       fix.hidden = false;
-      fix.textContent = '去开开关';
+      fix.textContent = b.portOpen ? '打开授权页' : '去开开关';
       txt.title = b.hint || '浏览器重启后调试开关会自动关闭，拨一次即可';
     } else {
       dot.className = 'dot wait';

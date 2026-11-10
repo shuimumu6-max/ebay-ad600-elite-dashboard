@@ -1121,17 +1121,16 @@ async function runTrafficBatch(dates) {
       if (throttled) {
         blockedStreak += 1;
         console.log(`[限速] ${day} 没下下来（连续第 ${blockedStreak} 次）—— eBay 短时间内被我们要太多次了，不是你操作错了`);
-        if (blockedStreak >= 2) {
-          stoppedEarly = dates.length - index;
-          console.log('');
-          console.log(`[停止] 剩下的 ${stoppedEarly} 天先不下了 —— 继续点只会让它更久不理我们。`);
-          console.log('       已经下好的报表都在，不会重复。过 1~2 小时再点「补齐缺口 + 更新看板」，只补缺的那几天。');
-          console.log('');
-          errors.push({ task: 'traffic_batch', message: `eBay 短时间限速，剩余 ${stoppedEarly} 天改为稍后补齐` });
-          break;
-        }
-        // 被拦一次：等 45 秒再试下一天，给风控一点冷却时间
-        await sleep(45000);
+        // 一天里已经重试过 2 次都是「点了没反应」，就不要再试下一天了：
+        // eBay 的限速是账号级的，换个日期照样不理；继续试只会让人白等十几分钟。
+        // 直接停、把结论说清楚，用户过 1 小时再点「补齐缺口」就行。
+        stoppedEarly = dates.length - index;
+        console.log('');
+        console.log(`[停止] 剩下的 ${stoppedEarly} 天先不下了 —— 继续点只会让它更久不理我们。`);
+        console.log('       已经下好的报表都在，不会重复。过 1~2 小时再点「补齐缺口 + 更新看板」，只补缺的那几天。');
+        console.log('');
+        errors.push({ task: 'traffic_batch', message: `eBay 短时间限速，剩余 ${stoppedEarly} 天改为稍后补齐` });
+        break;
       } else {
         console.log(`[失败] Traffic ${day}: ${error.message}`);
       }

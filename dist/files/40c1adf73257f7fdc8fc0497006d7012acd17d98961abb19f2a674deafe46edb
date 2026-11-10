@@ -88,7 +88,7 @@ if (port) {
       console.log(`看板已就绪：已自动加载 ${data.count} 份报表（${(data.totalBytes / 1048576).toFixed(1)} MB），不用手动选文件。`);
     } else {
       console.log('看板已就绪，但「数据」目录里还没有报表。');
-      console.log('先双击「报表控制台.cmd」→ 点「自动下载最近 30 天」，跑完再回来打开看板。');
+      console.log('先双击「报表控制台.cmd」→ 点「自动下载最近 2 周」，跑完再回来打开看板。');
     }
   } catch { /* 打印不出来不影响打开 */ }
   openBrowser(`http://127.0.0.1:${port}/`);

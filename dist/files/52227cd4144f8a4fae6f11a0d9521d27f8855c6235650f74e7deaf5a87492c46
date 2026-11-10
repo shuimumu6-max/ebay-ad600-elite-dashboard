@@ -183,13 +183,20 @@ async function attemptConnect() {
     connected = false;
     socket = null;
     reconnectTries += 1;
-    const backoff = [5000, 5000, 10000, 20000, 30000, 60000][Math.min(reconnectTries - 1, 5)];
-    const now = Date.now();
-    if (!quiet || now - lastLogAt > 120000) {
-      lastLogAt = now;
-      log(`第 ${reconnectTries} 次连接失败：端口未开放（需要把远程调试开关打开）。${backoff / 1000} 秒后重试。`);
-    }
-    scheduleReconnect(backoff);
+    // 端口开着却握手失败：多半是用户正在拨开关，几秒内就可能变成可用。
+    // 这时候按 60 秒退避会让用户「拨完还要干等一分钟」，所以固定 8 秒重试。
+    // 端口关着（开关还没拨）才用长退避，避免空转。
+    portOpen(endpoint.port).then(up => {
+      const backoff = up ? 8000 : [5000, 5000, 10000, 20000, 30000, 60000][Math.min(reconnectTries - 1, 5)];
+      const now = Date.now();
+      if (!quiet || now - lastLogAt > 120000 || up) {
+        lastLogAt = now;
+        log(up
+          ? `第 ${reconnectTries} 次连接失败：端口是开的但 Chrome 没接受（授权没过）。${backoff / 1000} 秒后重试。`
+          : `第 ${reconnectTries} 次连接失败：端口未开放（需要把远程调试开关打开）。${backoff / 1000} 秒后重试。`);
+      }
+      scheduleReconnect(backoff);
+    });
   });
 
   ws.addEventListener('close', () => {
@@ -259,6 +266,10 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === '/health') {
       const endpoint = resolveCdpUrl();
+      // 「端口根本没开」和「端口开着但 Chrome 没接受这次连接」是两种完全不同的处境：
+      // 前者要让用户去拨开关，后者开关已经开了、要让他把开关关掉再拨一次（或点「允许」）。
+      // 混成一句「端口未开放」会让用户反复去拨一个本来就开着的开关，越弄越乱。
+      const portUp = connected ? true : await portOpen(endpoint.port);
       return reply(200, {
         connected, everConnected, port: PORT, reconnectTries,
         phase: connected ? 'connected' : (waitingAuth ? 'waiting-auth' : 'reconnecting'),
@@ -272,12 +283,15 @@ const server = createServer(async (req, res) => {
         lastConnectedAt: lastConnectedAt || null,
         lastClosedAt: lastClosedAt || null,
         endpointPort: endpoint.port,
+        endpointPortOpen: portUp,
         endpointFrom: endpoint.from,
         hint: connected
           ? null
           : waitingAuth
             ? 'Chrome 正在等你点「允许」：看浏览器里有没有弹出授权提示，或打开 chrome://inspect/#remote-debugging 点一次'
-            : '浏览器调试端口未开放：打开开关后桥会自动连上，无需重启任何东西',
+            : portUp
+              ? '调试端口是开的，但 Chrome 没接受这次连接：到 chrome://inspect/#remote-debugging 把开关关掉再拨开一次（或在弹出的提示里点「允许」）'
+              : '浏览器调试开关是关的：打开 chrome://inspect/#remote-debugging，把 Allow remote debugging 拨到开',
         downloadDir: DOWNLOAD_DIR,
         lastEvent: events.at(-1) || null
       });

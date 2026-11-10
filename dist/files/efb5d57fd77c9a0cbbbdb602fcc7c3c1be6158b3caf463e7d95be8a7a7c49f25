@@ -43,7 +43,14 @@ let quickFails = 0;
 for (;;) {
   const startedAt = Date.now();
   log('启动桥进程…');
-  const child = spawn(process.execPath, [BRIDGE], { cwd: here, stdio: 'ignore', windowsHide: true });
+  const child = spawn(process.execPath, [BRIDGE], {
+    cwd: here, stdio: 'ignore', windowsHide: true,
+    // 必须 detached：Windows 上未 detached 的子进程会被绑进父进程的 Job，
+    // 父进程一退出（关控制台、守护被结束）桥就跟着死。桥一死，重新连 Chrome
+    // 就要用户再去 chrome://inspect 点一次「允许」——这是最招人烦的问题。
+    // 桥是常驻服务，必须完全脱离父进程，只由本守护在它真死时重启。
+    detached: true
+  });
   child.on('error', error => log('桥启动失败：' + error.message));
 
   const code = await new Promise(resolve => child.on('exit', resolve));

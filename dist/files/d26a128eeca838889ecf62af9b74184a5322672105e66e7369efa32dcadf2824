@@ -121,10 +121,12 @@ function runSellerScan() {
   });
 }
 
-// ---------- 首次初始化：一次把能拿到的历史数据都下下来，看板一打开就有内容 ----------
+// ---------- 首次初始化：一次把够用的历史数据下下来，看板一打开就有内容 ----------
 // 口径（2026-11-09 实测修正）：eBay 报表中心「按日」粒度只给 今天/昨天/本周/上周，
 // 所以**广告数据最多只能按日回溯两周**（上月/自定义必须用 SUMMARY 汇总，没有逐日行）。
-// 因此：流量逐日 N 天（能拿满 30 天）；PLG 和优先促刊各下「上周 + 本周」两份按日数据。
+// 因此：流量逐日 N 天、PLG 和优先促刊各下「上周 + 本周」两份按日数据。
+// days 默认 14（两周）：实测连续下到第 16~17 份流量就会被 eBay 限速拦下，
+// 两周刚好覆盖「上周 vs 本周」做周度对比，又在安全窗口内能一次跑完。
 function shiftDays(iso, days) {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -132,51 +134,38 @@ function shiftDays(iso, days) {
 }
 
 // 返回两路队列：流量·在售 一路，广告 一路（广告内部必须串行：PLG 与优先促刊行名相同）
-function firstRunPlan(days = 30) {
+function firstRunPlan(days = 14) {
   const end = yesterdayPacific();
   const start = shiftDays(end, -(days - 1));
   const base = ['run-download.mjs', '--out', OUT_DIR, '--max-tabs', '10'];
-  const traffic = {
-    day: `Traffic ${start}~${end}`,
-    title: `流量报表（${start} ~ ${end}，逐日 ${days} 份）`,
-    // 只跑「逐日」：`--only traffic` 会同时开一条累计报表任务，两条 traffic 请求并行更容易被 eBay 限速。
-    // 看板用的是逐日数据；累计报表要的话在控制台单独下载一份就行。
-    args: [...base, '--only', 'trafficDaily', '--dates', `${start}..${end}`, '--date', end]
-  };
-  const active = {
-    day: '在售名单',
-    title: '在售商品名单（1 份，用于产品/机型归属）',
-    args: [...base, '--only', 'active', '--date', end, '--active-type', 'active']
-  };
-  const plgLast = {
-    day: 'PLG 上周',
-    title: 'PLG 链接广告（上周，按日）',
-    args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'LASTWEEK']
-  };
-  const plgThis = {
-    day: 'PLG 本周',
-    title: 'PLG 链接广告（本周，按日）',
-    args: [...base, '--only', 'plg', '--date', end, '--plg-unit', 'DAILY', '--plg-range', 'CURRENTWEEK']
-  };
-  const prLast = {
-    day: '优先促刊 上周',
-    title: '优先促销刊登（上周，按日：物品刊登 / 关键词 / 活动 / 搜索词）',
-    args: [...base, '--only', 'priority', '--date', end,
+  // 并行下载：一次调用里同时下「流量 + 在售名单 + 广告」，download.mjs 内部是 Promise.all，
+  // 各入口各开自己的标签页（流量走 performance 页，广告/名单走报表中心队列），互不抢。
+  // 不能拆成两个进程并行 —— 桥的下载目录是全局设置，两个进程会互相把下载目录改到自己那边，
+  // 文件落进对方目录就认领不到（实测 7 天流量只成功 3 天，就是这么丢的）。
+  const step1 = {
+    day: '流量·名单·广告上周',
+    title: `流量（逐日 ${days} 份）+ 在售名单 + 广告上周（多入口并行）`,
+    // 只跑「逐日」：`--only traffic` 会同时开一条累计报表任务，两条 traffic 请求并行更容易被限速。
+    args: [...base, '--only', 'trafficDaily,active,plg,priority',
+      '--dates', `${start}..${end}`, '--date', end,
+      '--active-type', 'active',
+      '--plg-unit', 'DAILY', '--plg-range', 'LASTWEEK',
       '--priority-types', 'listing,keyword,campaign,search',
       '--priority-unit', 'DAILY', '--priority-range', 'LASTWEEK']
   };
-  const prThis = {
-    day: '优先促刊 本周',
-    title: '优先促销刊登（本周，按日：物品刊登 / 关键词 / 活动 / 搜索词）',
-    args: [...base, '--only', 'priority', '--date', end,
+  const step2 = {
+    day: '广告本周',
+    title: '广告本周（PLG + 优先促销刊登 4 类，按日）',
+    args: [...base, '--only', 'plg,priority', '--date', end,
+      '--plg-unit', 'DAILY', '--plg-range', 'CURRENTWEEK',
       '--priority-types', 'listing,keyword,campaign,search',
       '--priority-unit', 'DAILY', '--priority-range', 'CURRENTWEEK']
   };
   const queues = [
-    { label: '流量', steps: [traffic, active] },
-    { label: '广告', steps: [plgLast, plgThis, prLast, prThis] }
+    { label: '本轮（并行）', steps: [step1] },
+    { label: '本周广告', steps: [step2] }
   ];
-  const steps = queues.flatMap(q => q.steps);
+  const steps = [step1, step2];
   return { steps, queues, start, end, days };
 }
 
@@ -226,6 +215,9 @@ async function envState() {
       // true 表示「已经发起连接、Chrome 正在等用户点允许」，
       // 和「开关没开」是两种不同的处境，界面要给不同的话。
       awaitingApproval: !!h?.awaitingApproval,
+      // true 表示调试端口其实已经开着（只是 Chrome 没接受这次连接）。
+      // 界面据此把话说准，别让用户去拨一个本来就开着的开关。
+      portOpen: !!h?.endpointPortOpen,
       uptimeSec: h?.uptimeSec || 0,
       reconnectTries: h?.reconnectTries || 0,
       // 已连接时不能回退到「常驻桥未启动」——桥连着却提示未启动，用户会以为坏了。
@@ -239,8 +231,8 @@ async function envState() {
     // 'online' = 维护者本机（有看板仓库，能推线上）；'local' = 发给运营的包（数据只留本机）
     dashboardMode: dashboardMode(),
     dataState: dataDirState(),
-    // 新用户第一次打开：下载结果目录里还没有任何 CSV，就在页面上引导「自动下载最近 30 天」
-    firstRun: { needed: !runsCsvSeen, days: 30, outDir: OUT_DIR },
+    // 新用户第一次打开：下载结果目录里还没有任何 CSV，就在页面上引导「自动下载最近 2 周」
+    firstRun: { needed: !runsCsvSeen, days: 14, outDir: OUT_DIR },
     shop: {
       name: shopMeta.shopName,
       seller: shopMeta.sellerName,
@@ -592,7 +584,7 @@ function stopSequence() {
 }
 
 // ---------- 两路并行（首次初始化用） ----------
-// 收益：30 天的流量报表是最慢的一段（逐日 30 份、串行提交），把广告那几份放到另一路同时跑，
+// 收益：2 周的流量报表是最慢的一段（逐日 14 份、串行提交），把广告那几份放到另一路同时跑，
 // 总时长就从「流量 + 广告」降到「流量」。
 function startParallel(label, queues) {
   buffer = [];
@@ -793,12 +785,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // 首次初始化：一键下载最近 30 天（Traffic 逐日 + PLG 本月/上月 + 优先促刊 4 类 + 在售名单）。
+    // 首次初始化：一键下载最近 2 周（Traffic 逐日 + PLG 上周/本周 + 优先促刊 4 类 + 在售名单）。
     // 目的是让新装的人打开看板就有数据，不用先研究「该下哪些报表、什么粒度」。
     if (path === '/api/first-run' && req.method === 'POST') {
       if (child || seq || scanChild || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
       const body = await readBody(req).catch(() => ({}));
-      const days = Math.min(90, Math.max(7, Number(body.days) || 30));
+      // 默认 14 天：实测连下到第 16~17 份会被 eBay 限速，两周既够做周度对比又能一次跑完。
+      const days = Math.min(90, Math.max(7, Number(body.days) || 14));
       const plan = firstRunPlan(days);
       if (body.dryRun) {
         return send(res, 200, {
@@ -815,7 +808,7 @@ const server = http.createServer(async (req, res) => {
           error: '浏览器还没连上：先点页面顶部的「去开开关」，把 Allow remote debugging 拨开，再点下载'
         });
       }
-      say(`[控制台] 首次初始化：流量 ${days} 天 + 广告（本周/上周）；全程只读下载，不改动任何已有数据`);
+      say(`[控制台] 首次初始化：流量 ${days} 天 + 在售名单 + 广告（上周/本周），多入口并行下载；全程只读，不改动任何已有数据`);
       // 先把店铺名读出来（只读，几秒），读不到也不拦着下载
       try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
       // 一步一步来：实测两路并行时，两个进程抢同一个浏览器窗口和同一个下载目录，
