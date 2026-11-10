@@ -272,9 +272,10 @@
   .srow:last-child{border-bottom:0}
   .srow.head{background:var(--sunk);font-size:10.5px;color:var(--ink-4);font-weight:600;letter-spacing:.06em}
   .srow .sl{font-weight:600;color:var(--ink);display:flex;flex-direction:column;align-items:flex-start;gap:1px;line-height:1.35}
-  .srow .sl-note{font-size:10px;font-weight:400;color:var(--ink-4);letter-spacing:.1px;white-space:nowrap}
-  .srow.grp{background:var(--sunk);padding:6px 12px}
-  .srow.grp .sl-note{font-size:10.5px;color:var(--ink-3);font-weight:500}
+  .srow .sl-note{font-size:10px;font-weight:400;color:var(--ink-4);letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .srow.grp{background:var(--sunk);padding:6px 12px;grid-template-columns:minmax(0,1fr)}
+  .srow.grp .sl{flex-direction:row;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .srow.grp .sl-note{font-size:10.5px;color:var(--ink-3);font-weight:500;overflow:visible;text-overflow:clip;max-width:none}
   .srow.sub .sl{padding-left:13px}
   .srow.sub .sl-name{font-weight:500;color:var(--ink-2)}
   .srow .sm{color:var(--ink-3);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1682,9 +1683,9 @@ function renderScan(r){
       cover = `覆盖 ${got}/${inWin} 天 · 最新 ${fmtMd(row.last)}${lag}`;
     }
     const chips = (row.missingRanges || []).map(x => `<span class="gapchip" data-key="${row.key}" data-s="${x.start}" data-e="${x.end}" title="点一下，直接填进上面的下载表单">${fmtRange(x)}${x.days > 1 ? ` (${x.days}天)` : ''}</span>`).join('');
-    // PLP 三份报表收在同一个分组标题下，避免重复写三遍「PLP 链接广告」
+    // PLP 三份报表收在同一个分组标题下，避免重复写三遍「PLP 链接广告」（整行铺满，文字不重叠）
     const head = row.group && row.group !== lastGroup
-      ? `<div class="srow grp"><div class="sl"><span class="sl-name">${row.group}</span><span class="sl-note">优先促销刊登 · 物品刊登必下，关键词/搜索词仅提醒</span></div><div class="sm">Listing / Keyword / Search Query</div><div></div><div></div></div>`
+      ? `<div class="srow grp"><div class="sl"><span class="sl-name">${row.group}</span><span class="sl-note">优先促销刊登 · 物品刊登必下，关键词/搜索词仅提醒</span><span class="sl-note">Listing / Keyword / Search Query</span></div></div>`
       : '';
     if (row.group) lastGroup = row.group;
     return head + `<div class="srow${row.group ? ' sub' : ''}">
