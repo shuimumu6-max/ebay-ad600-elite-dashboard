@@ -1,0 +1,187 @@
+// 自动分类：把正式目录「90-待处理」里的报表按**内容**识别类型，移进对应目录。
+// 为什么按内容不按文件名：eBay 导出的文件名和实际报表类型经常对不上（同一类报表也可能叫 orders-...），
+// 以报表中心行名/表头为准才不会错放。
+// 用法：
+//   node app/classify.mjs                  # 分类正式目录的 90-待处理
+//   node app/classify.mjs --dry-run        # 只说要移哪些，不动文件
+//   node app/classify.mjs --json           # 机器可读结果（自动化/自检用）
+//   node app/classify.mjs --data <目录> --pending <目录>   # 指定目录（自检用）
+// 只移动、不删除；目标已有同内容文件时原地保留并在结果里说明。
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DATA_DIR, PENDING_DIR, FOLDERS } from './config.mjs';
+import { inspectCsv, sha256File } from './inspect.mjs';
+
+const argv = process.argv.slice(2);
+const value = (name, fallback = '') => {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
+};
+const flag = name => argv.includes(`--${name}`);
+
+// 目标目录：先按目录名关键词找已有目录（各店铺历史命名不同：01-Traffic日度 / 01-Traffic单日 都算对），
+// 找不到才用 FOLDERS 里的标准名新建。
+const TARGETS = [
+  { key: 'trafficDaily', kind: 'trafficDaily', test: r => /traffic/i.test(r) && /(日度|单日)/.test(r) && !/累计/.test(r) },
+  { key: 'trafficRange', kind: 'trafficRange', test: r => /traffic/i.test(r) && /累计/.test(r) },
+  { key: 'plg', kind: 'plg', test: r => /plg|promoted.?listing/i.test(r) && !/plp|优先/.test(r) },
+  { key: 'plpKeyword', kind: 'plpKeyword', test: r => /plp|优先/i.test(r) && /关键词|keyword/i.test(r) },
+  { key: 'plpSearch', kind: 'plpSearch', test: r => /plp|优先/i.test(r) && /搜索词|search/i.test(r) },
+  { key: 'plpListing', kind: 'plpListing', test: r => /plp|优先/i.test(r) && /链接|listing|物品/i.test(r) },
+  { key: 'active', kind: 'active', test: r => /在售/.test(r) && !/非在售|预定/.test(r) }
+];
+
+// kind（来自 inspect.mjs 的内容识别）+ 文件名 → { key, reason }
+// 注意：非在售 / 预定名单的表头和「在售名单」几乎一样，必须靠文件名挡掉，
+// 否则会把它们当成在售快照混进 07 目录（会让看板的 SKU 映射出错）。
+function classifyOf(info, name) {
+  if (info.kind === 'active' && /inactive|unsold|scheduled|ended/i.test(name)) {
+    return { key: null, reason: '非在售/预定名单，不进在售目录' };
+  }
+  switch (info.kind) {
+    case 'traffic': {
+      const days = [...new Set(info.dates || [])].filter(Boolean);
+      return { key: days.length >= 2 ? 'trafficRange' : 'trafficDaily' };
+    }
+    case 'plg': return { key: 'plg' };
+    // PLP 有两族来源：报表中心（priority*）与 campaign 页（listing/keyword/search），都要进 04/05/06
+    case 'priorityKeyword':
+    case 'keyword': return { key: 'plpKeyword' };
+    case 'prioritySearch':
+    case 'search': return { key: 'plpSearch' };
+    case 'priorityListing':
+    case 'listing': return { key: 'plpListing' };
+    case 'active': return { key: 'active' };
+    case 'orders': return { key: null, reason: '订单报表，看板不读' };
+    case 'priorityCampaign': return { key: null, reason: '优先促刊活动报表，看板不读' };
+    case 'empty': return { key: null, reason: '空报表（0 条记录）' };
+    default: return { key: null, reason: '未识别类型，留在待处理等人工处理' };
+  }
+}
+
+function listDirs(root) {
+  try {
+    return readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
+  } catch { return []; }
+}
+
+function resolveDir(dataDir, key) {
+  const dirs = listDirs(dataDir);
+  const rule = TARGETS.find(t => t.key === key);
+  const hit = rule ? dirs.find(name => rule.test(name) && !/待处理|待核验|不参与/.test(name)) : null;
+  if (hit) return join(dataDir, hit);
+  // 没有现成目录就按标准名建（FOLDERS 里的名字只是默认值，不写死业务含义）
+  const fallback = FOLDERS[key];
+  if (!fallback) return null;
+  const target = join(dataDir, fallback);
+  mkdirSync(target, { recursive: true });
+  return target;
+}
+
+function walkCsv(dir, out = []) {
+  let entries = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (/已分类|_inbox/.test(entry.name)) continue;
+      walkCsv(join(dir, entry.name), out);
+    } else if (extname(entry.name).toLowerCase() === '.csv') {
+      out.push(join(dir, entry.name));
+    }
+  }
+  return out;
+}
+
+function uniqueTarget(targetDir, name, hash) {
+  const ext = extname(name) || '.csv';
+  const stem = basename(name, ext);
+  let candidate = join(targetDir, name);
+  let version = 2;
+  while (existsSync(candidate)) {
+    if (sha256File(candidate) === hash) return { path: candidate, duplicate: true };
+    candidate = join(targetDir, `${stem}-v${version}${ext}`);
+    version++;
+  }
+  return { path: candidate, duplicate: false };
+}
+
+export function classifyPending(options = {}) {
+  const dataDir = options.dataDir || DATA_DIR;
+  const pendingDir = options.pendingDir || PENDING_DIR;
+  const dryRun = Boolean(options.dryRun);
+  const result = { moved: [], duplicates: [], skipped: [], missingDirs: [], dryRun };
+  if (!existsSync(pendingDir)) return result;
+
+  for (const path of walkCsv(pendingDir)) {
+    const name = basename(path);
+    let info;
+    try { info = inspectCsv(path); } catch { info = null; }
+    const { key, reason } = info ? classifyOf(info, name) : { key: null, reason: '读不出来' };
+    if (!key) {
+      result.skipped.push({ name, reason: reason || (info ? info.label : '读不出来') });
+      continue;
+    }
+    const targetDir = resolveDir(dataDir, key);
+    if (!targetDir) {
+      result.missingDirs.push({ name, key });
+      result.skipped.push({ name, reason: `没有可用的目标目录（${key}）` });
+      continue;
+    }
+    let hash = '';
+    try { hash = sha256File(path); } catch { }
+    const { path: target, duplicate } = uniqueTarget(targetDir, name, hash);
+    if (duplicate) {
+      result.duplicates.push({ name, target });
+      continue;
+    }
+    if (!dryRun) {
+      try { renameSync(path, target); } catch (error) {
+        // 跨盘/被占用时不硬来：保持原文件不动，交给下一次或人工处理
+        result.skipped.push({ name, reason: `移动失败：${error.message}` });
+        continue;
+      }
+    }
+    result.moved.push({ name, kind: info.kind, dir: basename(targetDir), target });
+  }
+  recordLog(dataDir, result, dryRun);
+  return result;
+}
+
+// 留一份当天整理记录，方便事后核对「哪天把哪份文件移去了哪」
+function recordLog(dataDir, result, dryRun) {
+  if (dryRun || (!result.moved.length && !result.duplicates.length)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const path = join(dataDir, `整理记录-${today}.json`);
+  let log = { date: today, batches: [] };
+  try { log = JSON.parse(readFileSync(path, 'utf8')); } catch { }
+  log.batches = log.batches || [];
+  log.batches.push({
+    at: new Date().toISOString(),
+    moved: result.moved.map(item => ({ from: `90-待处理/${item.name}`, to: `${item.dir}/${basename(item.target)}` })),
+    duplicates: result.duplicates.map(item => item.name)
+  });
+  try { writeFileSync(path, JSON.stringify(log, null, 2), 'utf8'); } catch { }
+}
+
+if (fileURLToPath(import.meta.url) === resolveArgvPath(process.argv[1])) {
+  const dataDir = value('data') ? value('data') : '';
+  const pendingDir = value('pending') ? value('pending') : '';
+  const result = classifyPending({ dataDir: dataDir || undefined, pendingDir: pendingDir || undefined, dryRun: flag('dry-run') || flag('dryRun') });
+  if (flag('json')) {
+    console.log(JSON.stringify(result));
+  } else {
+    const head = result.dryRun ? '[分类] 预览（不移动文件）' : '[分类] 整理 90-待处理';
+    console.log(`${head}：移动 ${result.moved.length} 份，同内容已存在 ${result.duplicates.length} 份，跳过 ${result.skipped.length} 份`);
+    result.moved.forEach(item => console.log(`       归档：${item.name} → ${item.dir}/`));
+    result.duplicates.forEach(item => console.log(`       已有同内容：${item.name}（留在 90-待处理）`));
+    result.skipped.slice(0, 8).forEach(item => console.log(`       跳过：${item.name}（${item.reason}）`));
+    if (result.skipped.length > 8) console.log(`       跳过：另有 ${result.skipped.length - 8} 份同类`);
+    if (!result.moved.length && !result.duplicates.length && !result.skipped.length) console.log('       90-待处理 是空的，不用整理');
+    process.exitCode = 0;
+  }
+}
+
+function resolveArgvPath(argPath) {
+  try { return resolve(argPath || ''); } catch { return ''; }
+}

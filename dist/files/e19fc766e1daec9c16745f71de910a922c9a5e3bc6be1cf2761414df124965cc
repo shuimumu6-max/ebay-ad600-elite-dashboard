@@ -1,0 +1,100 @@
+// 分类自检：用临时目录 + 各类假报表，验证「按内容识别 → 进对目录」，并验证幂等与不删文件。
+// 跑法：node app/check-classify.mjs
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { classifyPending } from './classify.mjs';
+
+let pass = 0, fail = 0;
+const ok = (name, cond, extra = '') => {
+  if (cond) { pass++; console.log(`  PASS  ${name}`); }
+  else { fail++; console.log(`  FAIL  ${name}${extra ? ` — ${extra}` : ''}`); }
+};
+
+const root = mkdtempSync(join(tmpdir(), 'classify-check-'));
+const dataDir = join(root, '数据');
+const pending = join(dataDir, '90-待处理');
+mkdirSync(pending, { recursive: true });
+// 目标目录用真实数据目录的命名（日度/累计 与 FOLDERS 的 单日 不同，验证按关键词匹配）
+['01-Traffic日度', '02-Traffic累计', '03-PLG日度', '04-PLP关键词', '05-PLP搜索词', '06-PLP链接', '07-在售商品名单'].forEach(d => mkdirSync(join(dataDir, d)));
+
+const traffic = (d1, d2) => `\uFEFFListings traffic report\n"Report for ${d1} to ${d2}"\n\nListing title,eBay item ID,Total impressions,Quantity sold\n"TOPDON AD600",11345672243,100,2\n`;
+const trafficDaily = traffic('Nov 9, 2026', 'Nov 9, 2026');
+const trafficRange = traffic('Nov 2, 2026', 'Nov 9, 2026');
+const plg = 'Campaign name,Campaign ID,Item ID,Date,Title,Promoted Listings Impressions (via eBay Placements),Total Promoted Listings Clicks\nc1,111,11345672243,2026-11-09,TOPDON,10,1\n';
+const plpKeyword = 'Campaign name,Ad Group Id,Date,Seller Keyword,Impressions,Clicks\nc1,1,2026-11-09,obd scanner,10,1\n';
+const plpSearch = 'Campaign name,Ad Group Id,Date,Search Query,Impressions,Clicks\nc1,1,2026-11-09,car scanner,10,1\n';
+const plpListing = 'Campaign name,Ad Group Id,Date,Targeting strategy,Impressions,Clicks\nc1,1,2026-11-09,MANUAL,10,1\n';
+const active = 'Item number,Title,Custom label (SKU),Available quantity\n11345672243,TOPDON AD600,TD52110512,5\n';
+const inactive = active;   // 表头与在售名单几乎一样，只靠文件名区分
+const orders = 'Sales Record Number,Buyer Username,Item Number\n1,buyer,11345672243\n';
+// campaign 页导出的 PLP：表头以 Start date,End date 开头（报表中心那族是 Campaign name 开头 → priority*）
+const campKeyword = 'Start date,End date,Campaign name,Campaign ID,Targeting strategy,Ad Group Id,Seller Keyword,Impressions,Clicks\n02-Nov-26,08-Nov-26,c1,111,MANUAL,1,topdon ad600,5,0\n';
+const campListing = 'Start date,End date,Campaign name,Campaign ID,Targeting strategy,Ad Group Id,Item ID,Impressions,Clicks\n02-Nov-26,08-Nov-26,c1,111,MANUAL,1,11345672243,5,0\n';
+const campSearch = 'Start date,End date,Campaign name,Campaign ID,Targeting strategy,Ad Group Id,Search Query,Impressions,Clicks\n02-Nov-26,08-Nov-26,c1,111,MANUAL,1,obd scanner,5,0\n';
+
+const files = {
+  'a-traffic-daily.csv': trafficDaily,
+  'b-traffic-range.csv': trafficRange,
+  'c-plg.csv': plg,
+  'd-plp-keyword.csv': plpKeyword,
+  'e-plp-search.csv': plpSearch,
+  'f-plp-listing.csv': plpListing,
+  'g-active.csv': active,
+  'h-orders.csv': orders,
+  'i-inactive.csv': inactive,
+  'j-scheduled.csv': inactive,
+  'k-camp-keyword.csv': campKeyword,
+  'l-camp-listing.csv': campListing,
+  'm-camp-search.csv': campSearch
+};
+for (const [name, body] of Object.entries(files)) writeFileSync(join(pending, name), body, 'utf8');
+
+console.log('分类规则');
+const dry = classifyPending({ dataDir, pendingDir: pending, dryRun: true });
+ok('干跑不移文件（13 份仍全在待处理）', readdirSync(pending).length === 13, `实际 ${readdirSync(pending).length}`);
+ok('干跑识别出 10 份可归档（订单/非在售/预定不分流）', dry.moved.length === 10 && dry.skipped.length === 3, `moved=${dry.moved.length} skipped=${dry.skipped.length}`);
+
+const r1 = classifyPending({ dataDir, pendingDir: pending });
+const inDir = d => readdirSync(join(dataDir, d));
+ok('单日流量 → 01-Traffic日度', inDir('01-Traffic日度').includes('a-traffic-daily.csv'));
+ok('区间流量 → 02-Traffic累计', inDir('02-Traffic累计').includes('b-traffic-range.csv'));
+ok('PLG → 03-PLG日度', inDir('03-PLG日度').includes('c-plg.csv'));
+ok('优先促刊关键词 → 04-PLP关键词', inDir('04-PLP关键词').includes('d-plp-keyword.csv'));
+ok('优先促刊搜索词 → 05-PLP搜索词', inDir('05-PLP搜索词').includes('e-plp-search.csv'));
+ok('优先促刊物品刊登 → 06-PLP链接', inDir('06-PLP链接').includes('f-plp-listing.csv'));
+ok('在售名单 → 07-在售商品名单', inDir('07-在售商品名单').includes('g-active.csv'));
+ok('campaign 页 PLP 关键词 → 04-PLP关键词', inDir('04-PLP关键词').includes('k-camp-keyword.csv'));
+ok('campaign 页 PLP 物品刊登 → 06-PLP链接', inDir('06-PLP链接').includes('l-camp-listing.csv'));
+ok('campaign 页 PLP 搜索词 → 05-PLP搜索词', inDir('05-PLP搜索词').includes('m-camp-search.csv'));
+ok('订单报表不被分流（留在 90-待处理）', readdirSync(pending).includes('h-orders.csv'));
+ok('非在售名单不进 07（表头同在售，靠文件名挡）', readdirSync(pending).includes('i-inactive.csv') && !inDir('07-在售商品名单').includes('i-inactive.csv'));
+ok('预定名单不进 07', readdirSync(pending).includes('j-scheduled.csv') && !inDir('07-在售商品名单').includes('j-scheduled.csv'));
+ok('文件是移动不是复制（待处理只剩 3 份非看板类）', readdirSync(pending).filter(n => n.endsWith('.csv')).length === 3, readdirSync(pending).join(','));
+
+console.log('幂等与重复');
+const r2 = classifyPending({ dataDir, pendingDir: pending });
+ok('重复跑没有新移动', r2.moved.length === 0, `moved=${r2.moved.length}`);
+writeFileSync(join(pending, 'a-traffic-daily.csv'), trafficDaily, 'utf8');
+const r3 = classifyPending({ dataDir, pendingDir: pending });
+ok('同内容再进来原地保留、不覆盖', r3.duplicates.length === 1 && readdirSync(pending).includes('a-traffic-daily.csv'));
+ok('目标目录文件没被删', existsSync(join(dataDir, '01-Traffic日度', 'a-traffic-daily.csv')));
+writeFileSync(join(pending, 'a-traffic-daily.csv'), trafficDaily.replace('100,2', '99,3'), 'utf8');
+const r4 = classifyPending({ dataDir, pendingDir: pending });
+const daily = readdirSync(join(dataDir, '01-Traffic日度'));
+ok('同名不同内容自动加 -v2，两份都在', r4.moved.length === 1 && daily.some(n => /-v2\.csv$/.test(n)) && daily.includes('a-traffic-daily.csv'), daily.join(','));
+
+console.log('记录与目录兜底');
+ok('写了当天整理记录', existsSync(join(dataDir, `整理记录-${new Date().toISOString().slice(0, 10)}.json`)));
+const log = JSON.parse(readFileSync(join(dataDir, `整理记录-${new Date().toISOString().slice(0, 10)}.json`), 'utf8'));
+ok('记录里有移动明细', (log.batches || []).some(b => (b.moved || []).length > 0));
+
+const emptyData = join(root, '空店铺');
+mkdirSync(join(emptyData, '90-待处理'), { recursive: true });
+writeFileSync(join(emptyData, '90-待处理', 'x.csv'), trafficDaily, 'utf8');
+const r5 = classifyPending({ dataDir: emptyData, pendingDir: join(emptyData, '90-待处理') });
+ok('新店铺没有分类目录时按标准名自动建', existsSync(join(emptyData, '01-Traffic单日', 'x.csv')), readdirSync(emptyData).join(','));
+
+rmSync(root, { recursive: true, force: true });
+console.log(`\n${fail ? 'FAIL' : 'PASS'} 共 ${pass + fail} 项：通过 ${pass}，失败 ${fail}`);
+process.exitCode = fail ? 1 : 0;

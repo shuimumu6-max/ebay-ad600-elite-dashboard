@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyFiles, publishDashboard, dataDirState } from './publish.mjs';
+import { classifyPending } from './classify.mjs';
 import { RUNS_DIR } from './config.mjs';
 
 const argv = process.argv.slice(2);
@@ -84,10 +85,20 @@ try {
   writeFileSync(summaryPath, JSON.stringify(summary, null, 2), 'utf8');
 } catch { /* 写不进去不影响归档本身 */ }
 
+// 归档后立刻按内容分类：90-待处理 只是中转站，文件该进 01-Traffic日度 / 03-PLG日度 这些目录
+// （扫描器与看板都是递归读整个数据目录，分类只影响目录是否整齐，不影响取数）
+if (!flag('no-classify')) {
+  const sorted = classifyPending();
+  console.log(`[分类] 移入分类目录 ${sorted.moved.length} 份${sorted.duplicates.length ? `，同内容已存在 ${sorted.duplicates.length} 份` : ''}${sorted.skipped.length ? `，留在待处理 ${sorted.skipped.length} 份` : ''}`);
+  for (const item of sorted.moved) console.log(`       归档：${item.name} → ${item.dir}/`);
+  for (const item of sorted.skipped.slice(0, 5)) console.log(`       留在待处理：${item.name}（${item.reason}）`);
+}
+
 if (flag('no-publish')) {
   console.log(`[发布] 已按 --no-publish 跳过，正式目录：${JSON.stringify(dataDirState())}`);
   process.exit(0);
 }
+
 
 console.log('[发布] 重新生成看板数据并推送 GitHub Pages…');
 const result = publishDashboard();
