@@ -129,7 +129,7 @@ try {
   Line '接下来只有两步，都不用填任何东西：' 'White'
   Line '  ① 用 Chrome / Edge 登录 eBay 卖家后台，打开 chrome://inspect/#remote-debugging'
   Line '     → 把 Allow remote debugging 拨到开（只需一次）。'
-  Line '  ② 双击「报表控制台.cmd」，在页面最上面点「自动下载最近 30 天」。'
+  Line '  ② 双击「报表控制台.cmd」，在页面最上面点「自动下载最近 2 周」。'
   Line '     跑完打开看板就有数据了。'
   Line ''
   Line ' 店铺名、活动 ID 都不用填：店铺名在界面右上角随时能改名，活动留空就是后台全部活动。' 'White'
