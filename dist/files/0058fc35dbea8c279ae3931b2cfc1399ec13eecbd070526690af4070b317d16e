@@ -1,4 +1,4 @@
-// 一键下载入口（供桌面 .cmd 调用）：固定输出目录，自动串联 下载 → 分类 → 可选归档/更新看板。
+// 一键下载入口（供桌面 .cmd 调用）：固定输出目录，自动串联 下载 → 分类 → 可选归档（看板自动读数据目录）。
 // 用法：quick-download.mjs [--full] [2026-11-05] [--dates 2026-11-01..2026-11-05] [--only ...]
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';

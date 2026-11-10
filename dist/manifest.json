@@ -1,12 +1,12 @@
 {
-  "version": "v202611101436",
-  "createdAt": "2026-11-10 14:36:20",
+  "version": "v202611101510",
+  "createdAt": "2026-11-10 15:10:55",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
       "path": "app/archive-publish.mjs",
-      "hash": "c8f005b889021b53d96b72631cf878efbe9bff1cf1f2e4a1cf27cd67fa27e16c",
-      "size": 4509
+      "hash": "fa400bdce965643ce6c166b6a5f42f6c8a2c440ea9cb2a034973b1bf005b746a",
+      "size": 4569
     },
     {
       "path": "app/auto-scan.mjs",
@@ -75,8 +75,8 @@
     },
     {
       "path": "app/download.mjs",
-      "hash": "2ad8b8e99dba1027a249e0eb020ec370dea59f6f8702eb577bb4767ab8862ef1",
-      "size": 104095
+      "hash": "e29101afa0a5719ea77e21cb4b68f640021a5a8481503f10ff9fe12d518c1a6a",
+      "size": 104113
     },
     {
       "path": "app/engine.mjs",
@@ -145,8 +145,8 @@
     },
     {
       "path": "app/quick-download.mjs",
-      "hash": "81474396334757ea1419f06d3a244a4593199b7579fe3153ad81dc8f9553b13b",
-      "size": 1963
+      "hash": "0058fc35dbea8c279ae3931b2cfc1399ec13eecbd070526690af4070b317d16e",
+      "size": 1983
     },
     {
       "path": "app/reports.mjs",
@@ -170,13 +170,13 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "9cddd179abb0056623d24753bcfdae59b7386f7dae8b49b2dad90eba0170aa00",
-      "size": 115507
+      "hash": "b755d577ce82693d7fc00516aac9a2ace782694eb9a37477343538a23e7c1a09",
+      "size": 115797
     },
     {
       "path": "ui/server.mjs",
-      "hash": "d76ef6b0d070de7f211cd6c920c54b31f685338f6e4a5da03263b9613d745551",
-      "size": 55865
+      "hash": "36f2152bb25d8820b467bb98429a22d24b7ee16eda3a6f0af167fa4fe313d194",
+      "size": 55953
     },
     {
       "path": "ui/gap-plan.mjs",

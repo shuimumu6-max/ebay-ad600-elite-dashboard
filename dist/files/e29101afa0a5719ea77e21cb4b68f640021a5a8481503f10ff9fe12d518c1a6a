@@ -1147,7 +1147,7 @@ async function runTrafficBatch(dates) {
         stoppedEarly = dates.length - index;
         console.log('');
         console.log(`[停止] 剩下的 ${stoppedEarly} 天先不下了 —— 继续点只会让它更久不理我们。`);
-        console.log('       已经下好的报表都在，不会重复。过 1~2 小时再点「补齐缺口 + 更新看板」，只补缺的那几天。');
+        console.log('       已经下好的报表都在，不会重复。过 1~2 小时再点「补齐缺口」，只补缺的那几天（归档完看板自动生效）。');
         console.log('');
         errors.push({ task: 'traffic_batch', message: `eBay 短时间限速，剩余 ${stoppedEarly} 天改为稍后补齐` });
         break;

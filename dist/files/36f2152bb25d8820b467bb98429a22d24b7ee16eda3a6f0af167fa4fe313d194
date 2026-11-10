@@ -361,7 +361,7 @@ function lastSummary() {
   return readSummary(runInfo.runDir);
 }
 
-// 最近的运行目录（带 结果.json 的），给「补做归档 + 更新看板」下拉框用
+// 最近的运行目录（带 结果.json 的），给「补做归档」下拉框用
 function recentRuns(limit = 20) {
   if (!existsSync(OUT_DIR)) return [];
   const out = [];
@@ -863,7 +863,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // 一键补齐：扫描正式目录的缺口 → 只下载缺的那些 → 归档 → 更新看板
+    // 一键补齐：扫描正式目录的缺口 → 只下载缺的那些 → 归档（看板自动读数据目录，归档完即生效）
     // 口径（2026-11-08 定）：看板日更 = 流量单日 + PLG 链接广告 + PLP 链接广告（走 campaign 页）
     if (path === '/api/gap-fill' && req.method === 'POST') {
       if (child || seq || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
@@ -898,22 +898,22 @@ const server = http.createServer(async (req, res) => {
         const pending = newestRunDir();
         const pendingCsv = pending ? countCsv(pending) : 0;
         if (pendingCsv > 0) {
-          say(`[控制台] 正式目录还没有数据，但下载结果里有现成的（${basename(pending)}，${pendingCsv} 份 CSV）：先归档它并更新看板`);
+          say(`[控制台] 正式目录还没有数据，但下载结果里有现成的（${basename(pending)}，${pendingCsv} 份 CSV）：先归档，归档完看板就能看到`);
           if (!dryRun) startSequence(tailSteps([pending]), '归档未处理的下载结果', 0);
           return reply({
             ok: true, started: true, mode: 'archive',
             scanRange, windowStart: winStart, windowEnd: winEnd,
-            message: `下载结果里有 ${pendingCsv} 份现成报表，已开始归档并更新看板；回来看还缺就再点一次`
+            message: `下载结果里有 ${pendingCsv} 份现成报表，已开始归档（归档完看板自动生效）；回来看还缺就再点一次`
           });
         }
         const plan = firstRunPlan();
-        say(`[控制台] 体检发现正式目录一条数据都没有：按首次初始化下载「上周 + 本周」（${plan.start} ~ ${plan.end}，流量逐日 + 在售名单 + 广告），跑完自动归档并更新看板`);
+        say(`[控制台] 体检发现正式目录一条数据都没有：按首次初始化下载「上周 + 本周」（${plan.start} ~ ${plan.end}，流量逐日 + 在售名单 + 广告），跑完自动归档（归档完看板自动生效）`);
         try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
         if (!dryRun) startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0, { thenArchive: true });
         return reply({
           ok: true, started: true, mode: 'first-run', days: plan.days, start: plan.start, end: plan.end,
           scanRange, windowStart: winStart, windowEnd: winEnd,
-          message: `还没有任何数据，已按首次初始化开始下载「上周 + 本周」（${plan.start} ~ ${plan.end}），跑完自动归档并更新看板`
+          message: `还没有任何数据，已按首次初始化开始下载「上周 + 本周」（${plan.start} ~ ${plan.end}），跑完自动归档（归档完看板自动生效）`
         });
       }
 
@@ -945,8 +945,8 @@ const server = http.createServer(async (req, res) => {
         return reply({
           ok: true, started: false,
           message: plgUnfillable.length
-            ? `只剩 ${plgUnfillable.length} 天 PLG 超出 eBay 可选范围，补不了；可以直接「只更新看板」`
-            : '没有缺口，直接更新看板就行'
+            ? `只剩 ${plgUnfillable.length} 天 PLG 超出 eBay 可选范围，补不了；数据已齐，打开看板就能看`
+            : '没有缺口，数据已齐，打开看板就能看'
         });
       }
 
@@ -1001,7 +1001,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
 
-    // 最近几次运行：给「补做归档 + 更新看板」用
+    // 最近几次运行：给「补做归档」用
     if (path === '/api/runs') return send(res, 200, { ok: true, runs: recentRuns() });
 
     // 对已完成的运行补做归档：不重新下载，直接按 结果.json 把有效文件补进正式目录（不发布）
