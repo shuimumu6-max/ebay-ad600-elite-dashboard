@@ -99,6 +99,19 @@ export function inspectCsv(path, hint = null) {
     if (blankHeader >= 0) { kind = 'empty'; label = '空报表（0 条记录）'; headerIndex = blankHeader; }
   }
 
+  // campaign 页的另一种空报表：整份文件只有一句 eBay 免责声明，连表头都没有
+  // （实测 2026-11-10：某活动某天 0 曝光，Search-query 只回 95 字节这一行）。
+  // 它不是错误页，属于「该活动这段时间确实没数据」，不能丢进待核验。
+  if (kind === 'unknown' && !isHtml && text.length < 500) {
+    const body = lines.filter(line => line.trim());
+    const onlyDisclaimer = body.length > 0 && body.every(line => /^"?Some details for vehicle listings/i.test(line.trim()));
+    if (onlyDisclaimer) {
+      kind = 'empty';
+      label = '空报表（0 条记录）';
+      headerIndex = lines.indexOf(body[0]);
+    }
+  }
+
   // 订单 / 优先促刊没有稳定表头特征：按任务类型兜底，取第一条像表头的行
   if (kind === 'unknown' && hint && HINT_LABEL[hint] && !isHtml) {
     // 订单/广告文件头上有说明句和整行空值，要定位真正那一行表头，否则行数会算错
@@ -159,6 +172,8 @@ export function inspectCsv(path, hint = null) {
 // 按脚本任务口径复核日期；不合格的返回原因
 export function checkExpected(info, task, date, rangeStart, plpStart = date, opts = {}) {
   if (!info.valid) return `结构不合格：${info.isHtml ? 'HTML/错误页' : ''} 缺字段 ${info.missingHeader.join(',') || '无'}，行数 ${info.rowCount}`;
+  // 0 条记录的空报表没有统计区间可核，结构合格就算通过（eBay 确实会给空报表）
+  if (info.empty) return null;
   const dates = info.dates || [];
   if (task === 'trafficDaily' && info.period !== `${date} ~ ${date}`) return `区间不是单日 ${date}：${info.period}`;
   if (task === 'trafficRange' && info.period !== `${rangeStart} ~ ${date}`) return `累计区间不符：${info.period}，期望 ${rangeStart} ~ ${date}`;

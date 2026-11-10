@@ -1310,8 +1310,10 @@ async function refreshState(){
       syncPlgRange();
       syncOrderRange();
       syncPriorityRange();
-      syncRangeOptions('#plgRange', segVal('segUnit'));
-      syncRangeOptions('#priorityRange', segVal('segPriorityUnit'));
+      // segVal 是 collectOptions 里的局部函数，这里必须用全局的 segValue，
+      // 否则整段状态渲染会抛 ReferenceError 被 catch 吞掉（店铺名/引导/体检全都不显示）
+      syncRangeOptions('#plgRange', segValue('segUnit'));
+      syncRangeOptions('#priorityRange', segValue('segPriorityUnit'));
       updateSubLabels();
     }
     if (s.outDir && !$('#outDir').value) $('#outDir').placeholder = s.outDir;
@@ -1327,8 +1329,16 @@ async function refreshState(){
     if (s.dataState) renderDataState(s.dataState);
     $('#dotRun').className = 'dot ' + (s.running ? 'busy' : 'ok');
     $('#txtRun').textContent = s.running ? '下载中…' : '空闲';
+    // 刷新页面 / 另开一个控制台窗口时，把「正在跑」同步到按钮与进度条；
+    // 否则按钮还是「开始下载」能再点一次（服务端会回 409），进度条也不动。
+    if (!!s.running !== !!state.running) setRunning(!!s.running);
     if (!state.running && s.last) renderSummary(s.last);
-  } catch {}
+  } catch (error){
+    // 以前这里是空 catch：渲染一抛错，界面就停在「已连接 + 我的店铺」这种半截状态，
+    // 控制台里一点痕迹都没有。至少留个可查的痕迹，别再吞掉。
+    window.__stateErr = (error && (error.stack || error.message)) || String(error);
+    console.warn('[控制台] 状态刷新失败：', error);
+  }
 }
 
 $('#btnFix').addEventListener('click', async () => {

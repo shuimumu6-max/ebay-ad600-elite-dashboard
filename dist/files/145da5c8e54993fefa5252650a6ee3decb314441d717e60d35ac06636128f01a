@@ -177,16 +177,25 @@ const ORDER_COLUMNS = [
 ];
 
 const ORDER_TYPES_DEF = [
-  { key: 'all', label: '全部订单', type: 'ALL_ORDERS' },
-  { key: 'unpaid', label: '尚未付款', type: 'AWAITING_PAYMENT' },
-  { key: 'unshipped', label: '尚未发货', type: 'AWAITING_SHIPMENT' },
-  { key: 'overdue', label: '尚未发货 · 已逾期', type: 'AWAITING_SHIPMENT_OVERDUE' },
-  { key: 'due24h', label: '尚未发货 · 24h 内', type: 'AWAITING_SHIPMENT_DUE_24H' },
-  { key: 'express', label: '尚未快递发货', type: 'AWAITING_EXPEDITED_SHIPMENT' },
-  { key: 'paidShipped', label: '已付款并发货', type: 'PAID_SHIPPED' },
-  { key: 'paidNoFeedback', label: '已付款 · 未评价', type: 'PAID_WAITING_TO_GIVE_FEEDBACK' },
-  { key: 'shippedNoFeedback', label: '已发货 · 未评价', type: 'SHIPPED_WAITING_TO_GIVE_FEEDBACK' }
+  // rowName 是报表中心「已请求报表」列表里那一行的真实标题（2026-11-10 实采）。
+  // 九种订单之前共用 /orders/ 通配，只要队列里有别人遗留的订单请求先完成，
+  // 就会被当成自己的结果领走（静默拿到别的类型）；这里逐种写死，并锚定到 11 位请求号。
+  { key: 'all', label: '全部订单', type: 'ALL_ORDERS', rowName: 'Orders All orders' },
+  { key: 'unpaid', label: '尚未付款', type: 'AWAITING_PAYMENT', rowName: 'Orders Awaiting payment' },
+  { key: 'unshipped', label: '尚未发货', type: 'AWAITING_SHIPMENT', rowName: 'Orders Awaiting shipment' },
+  { key: 'overdue', label: '尚未发货 · 已逾期', type: 'AWAITING_SHIPMENT_OVERDUE', rowName: 'Orders Awaiting shipment - overdue' },
+  { key: 'due24h', label: '尚未发货 · 24h 内', type: 'AWAITING_SHIPMENT_DUE_24H', rowName: 'Orders Awaiting shipment — ship within 24 hours' },
+  { key: 'express', label: '尚未快递发货', type: 'AWAITING_EXPEDITED_SHIPMENT', rowName: 'Orders Awaiting expedited shipment' },
+  { key: 'paidShipped', label: '已付款并发货', type: 'PAID_SHIPPED', rowName: 'Orders Paid and shipped' },
+  { key: 'paidNoFeedback', label: '已付款 · 未评价', type: 'PAID_WAITING_TO_GIVE_FEEDBACK', rowName: 'Orders Paid - awaiting your feedback' },
+  { key: 'shippedNoFeedback', label: '已发货 · 未评价', type: 'SHIPPED_WAITING_TO_GIVE_FEEDBACK', rowName: 'Orders Shipped - awaiting your feedback' }
 ];
+
+// 行名 → 精确行匹配串：必须从行首开始、且后面紧跟 11 位请求号。
+// 不加锚点会出前缀撞车：「Orders Awaiting shipment」是
+// 「Orders Awaiting shipment - overdue」的前缀，先命中哪条全看列表顺序。
+// 保持字符串形态（不是 RegExp）：catalogSnapshot 会原样发给前端，RegExp 序列化成 {}。
+const orderRowPattern = name => `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\d{11}`;
 
 const orders = ORDER_TYPES_DEF.map(t => ({
   id: `orders.${t.key}`,
@@ -202,7 +211,8 @@ const orders = ORDER_TYPES_DEF.map(t => ({
   timeUnit: false,
   rangeKind: 'orders',
   folder: '10-订单报表',
-  rowMatch: 'orders',
+  rowMatch: orderRowPattern(t.rowName),
+  rowName: t.rowName,
   fileStem: 'eBay-orders-report',
   implemented: true,   // 9 种订单类型已逐个实测落盘
   columnsTitle: 'Summary of Order reports columns',

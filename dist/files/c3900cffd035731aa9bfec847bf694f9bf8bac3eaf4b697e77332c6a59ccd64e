@@ -56,13 +56,20 @@ async function run() {
     await page.navigate(URL, { timeoutMs: 25000, settleMs: 1800 });
     await sleep(3500);   // 等 /api/state 回来并渲染
     const r = await page.eval(READ);
+    // 活动数量按接口实际值判：活动 ID / 默认勾选都是每个店铺自己的，
+    // 写死数字换个店铺就误报（2026-11-10 修）。
+    let api = {};
+    try { api = await (await fetch(URL + 'api/state')).json(); } catch { /* 忽略 */ }
+    const expectedCampaigns = api.shop?.priorityCount ?? null;
+    const expectedChecked = Array.isArray(api.defaults?.priorityDefaultCampaigns)
+      ? api.defaults.priorityDefaultCampaigns.length : null;
     console.log(JSON.stringify(r, null, 2));
     const fail = [];
     if (r.runtimeErrors.length) fail.push('运行时报错：' + r.runtimeErrors.join(' | '));
     if (r.plpCard) fail.push('PLP 卡片仍在');
     if (r.priorityTypeChips !== 4) fail.push('优先促刊类型 chips 不是 4');
-    if (r.campaignOptions !== 31) fail.push('活动选项不是 31');
-    if (r.campaignChecked !== 3) fail.push('默认勾选不是 3');
+    if (expectedCampaigns && r.campaignOptions !== expectedCampaigns) fail.push(`活动选项不是 ${expectedCampaigns}（实际 ${r.campaignOptions}）`);
+    if (expectedChecked !== null && r.campaignChecked !== expectedChecked) fail.push(`默认勾选不是 ${expectedChecked}（实际 ${r.campaignChecked}）`);
     if (r.campaignHasIdInLabel) fail.push('有活动只显示 ID');
     if (r.fieldGroups !== 5) fail.push('字段字典分组不是 5');
     if (r.headerSub) fail.push('顶栏副标题应已删除，实际仍有：' + r.headerSub);

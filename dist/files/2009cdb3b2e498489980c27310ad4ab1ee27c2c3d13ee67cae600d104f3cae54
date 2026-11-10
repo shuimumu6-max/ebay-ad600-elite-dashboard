@@ -57,7 +57,7 @@ if (flag('help')) {
   --plg-unit      PLG 链接广告时间粒度：DAILY（默认）或 SUMMARY
   --plg-range     PLG 日期范围：TODAY/YESTERDAY/CURRENTWEEK/LASTWEEK/CURRENTMONTH/PREVIOUSMONTH/LAST90D/CUSTOM
   --plg-custom-start / --plg-custom-end  --plg-range CUSTOM 时的起止日
-  --plg-campaigns 只跑指定活动，逗号分隔（如 165777897019），默认全部活动
+  --plg-campaigns 只跑指定活动，逗号分隔（活动 ID 各店铺不同，从控制台活动列表里看），默认全部活动
   --campaigns     只跑指定 campaign（PLP 用，逗号分隔，默认配置里那三个）
   --plp-serial    PLP 三个 campaign 改为逐个跑（排查问题时用，默认并发更快）
   --apply         把校验通过的 CSV 复制进正式目录 90-待处理
@@ -71,10 +71,17 @@ if (flag('help')) {
 const date = value('date', yesterdayPacific());
 const rangeStart = value('range-start', monthStart(date));
 const rangeEnd = value('range-end', date);
+// 参数类错误不走 stack trace：控制台会把 stdout 原样显示给用户，
+// 一屏 at async ... 只会让人以为程序崩了。统一打一行中文并把退出码置 1。
+const abort = message => {
+  console.error(`[错误] ${message}`);
+  process.exit(1);
+};
+
 if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(rangeStart) || !/^\d{4}-\d{2}-\d{2}$/.test(rangeEnd)) {
-  throw new Error('日期格式必须为 YYYY-MM-DD');
+  abort('日期格式必须为 YYYY-MM-DD');
 }
-if (rangeEnd < rangeStart) throw new Error(`累计结束日 ${rangeEnd} 早于起始日 ${rangeStart}`);
+if (rangeEnd < rangeStart) abort(`累计结束日 ${rangeEnd} 早于起始日 ${rangeStart}`);
 const latest = flag('latest');
 // 默认保留所有任务标签页：关掉后再开容易触发 Chrome 重新授权
 const keepWindows = flag('keep');   // 默认关掉本轮任务标签页；--keep 才保留（调试用）
@@ -209,6 +216,14 @@ const runActive = only.has('active');
 const runOrders = only.has('orders');
 const runPriority = only.has('priority');
 const runPlp = only.has('plp');
+
+// PLP 走 campaign 页，必须知道具体活动 ID；配空了会「0 个任务、退出码 0」，
+// 用户以为下过了其实什么也没下（2026-11-10 实测踩到）。没有活动就直接明确失败。
+if (runPlp && !plpTasks.length) {
+  abort('PLP 报表要在 campaign 页按活动生成，当前没有可用活动：'
+    + '先在控制台「优先促刊 → 活动范围」点「刷新活动列表」扫出本店活动（各店铺活动 ID 不同），'
+    + '或在 my-shop.json 的 plpCampaigns 里填本店活动 ID，或用 --campaigns <活动ID>,<活动ID> 指定');
+}
 
 // ---------- 运行目录 ----------
 const stamp = new Date().toLocaleString('sv-SE', { hour12: false }).replace(' ', '_').replace(/:/g, '-');
@@ -1282,13 +1297,22 @@ async function pickCustomRange(page, startIso, endIso) {
 // 不能用固定的关键词那条定义（行名不同会导致等不到已完成的行）。
 function reqDef(kind, priorityDef) {
   if (kind === 'orders') {
-    // 九种订单共用一个 kind，标签要跟本次选的类型走（行名统一是「Orders xxx」）
+    // 九种订单共用一个 kind，标签要跟本次选的类型走。
+    // 行名必须逐种精确匹配（Orders Awaiting shipment 是 - overdue 的前缀），
+    // 用通配会把队列里别人遗留的订单请求当成自己的结果领走。
     return {
       label: orderTypeDef.label,
-      rowMatch: RC_REQUESTS.orders.rowMatch,
+      rowMatch: orderTypeDef.rowMatch || RC_REQUESTS.orders.rowMatch,
       steps: RC_REQUESTS.orders.steps,
       reportId: orderTypeDef.reportId
     };
+  }
+  if (kind === 'active') {
+    // 名单三种（在售 / 非在售 / 预定）行名完全不同，标签和行名都要跟着所选类型走。
+    // 之前这里直接返回 RC_REQUESTS.active（固定「全部在售」），选非在售/预定时
+    // 提交是对的，但等待时拿「all active listings」去比对，永远匹配不到 → 必然超时。
+    const at = ACTIVE_TYPES[activeType];
+    return { ...RC_REQUESTS.active, label: at.label, rowMatch: at.rowMatch };
   }
   if (kind !== 'priority') return RC_REQUESTS[kind];
   // 多类型时每个任务带自己的定义：行名、Type、是否有 Campaigns 卡片都不同
@@ -1497,15 +1521,25 @@ async function runReportCenter(kind, priorityDef) {
       let round = 0;
       let lastRefresh = Date.now();
       let failedRow = null;
+      let lastFresh = [];
+      let diagShown = false;
       // 报表中心列表不会自己刷新（2026-11-08 实测），所以按 refreshEveryMs 软刷新；
       // 同时把「新行 = Failed」当成硬失败立刻报错，不再空等整段超时。
       while (Date.now() < deadline && !row) {
         round++;
         const rows = await page.eval(RC_ROWS).catch(() => []);
         const fresh = rows.filter(r => !knownRefs.has(r.ref));
+        lastFresh = fresh;
         failedRow = fresh.find(r => r.status === 'Failed' && def.rowMatch.test(r.text)) || null;
         if (failedRow) break;
         row = fresh.filter(r => r.status === 'Completed').find(r => def.rowMatch.test(r.text)) || null;
+        // 等了一分钟还没命中，而列表里确实冒出了别的请求行：把真实行名打出来。
+        // 只报「超时未发现新请求」那种话会让人以为 eBay 没生成，实际多半是行名对不上。
+        if (!row && fresh.length && !diagShown && Date.now() - submittedAt > 60000) {
+          diagShown = true;
+          console.log(`[诊断] 新出现 ${fresh.length} 条请求，但行名都不匹配「${def.rowMatch.source}」：`);
+          for (const r of fresh.slice(0, 6)) console.log(`         · [${r.status}] ${r.text.slice(0, 90)}`);
+        }
         // 兜底：行名与预期不符时，若这一轮只新出现一条广告类请求，且唯一，就认它
         if (!row && def.looseMatch && Date.now() > lenientAt) {
           const loose = fresh.filter(r => r.status === 'Completed' && def.looseMatch.test(r.text));
@@ -1525,7 +1559,12 @@ async function runReportCenter(kind, priorityDef) {
       if (failedRow) {
         throw new Error(`eBay 侧生成失败（状态 Failed，ref=${failedRow.ref}）：换日期范围或过一会儿再试`);
       }
-      if (!row) throw new Error(`等待生成超时（${Math.round(RC_POLL.timeoutMs / 1000)} 秒），未发现新完成的请求`);
+      if (!row) {
+        const seen = lastFresh.length
+          ? `；这一轮新出现的行：${lastFresh.slice(0, 4).map(r => `[${r.status}] ${r.text.slice(0, 50)}`).join(' / ')}`
+          : '；这一轮没有任何新请求行（eBay 可能没收到提交，或被限速）';
+        throw new Error(`等待生成超时（${Math.round(RC_POLL.timeoutMs / 1000)} 秒），未发现匹配「${def.rowMatch.source}」的完成请求${seen}`);
+      }
       timings[`${kind}Generate`] = { ms: Date.now() - submittedAt, ok: true, round };
 
       const out = await downloadReportRow(page, kind, row.ref, label, kind);
@@ -1679,7 +1718,12 @@ async function runPlpCampaignOnce(task) {
       const fresh = grabbed.files;
       if (!fresh.length) { warnings.push(`campaign ${id} Download now 后未等到文件`); await sleep(PLP_POLL.intervalMs); continue; }
       const recorded = recordFiles('plp', fresh, { campaignId: id });
-      const kinds = new Set(recorded.map(r => r.kind));
+      // 空报表（0 条记录）在 CSV 里认不出类型，按文件名回推它属于哪一类，
+      // 否则会误报「只拿到 keyword,listing,unknown」——其实三份都拿到了。
+      const plpKindOf = name => (/search-?query/i.test(name) ? 'search'
+        : /keyword/i.test(name) ? 'keyword'
+        : /listing/i.test(name) ? 'listing' : null);
+      const kinds = new Set(recorded.map(r => (r.kind === 'empty' ? (plpKindOf(r.name) || 'empty') : r.kind)));
       if (!plpTypes.every(k => kinds.has(k))) {
         warnings.push(`campaign ${tag} 只拿到 ${recorded.length} 份：${[...kinds].join(',')}（期望 ${plpTypes.join(',')}）`);
       }

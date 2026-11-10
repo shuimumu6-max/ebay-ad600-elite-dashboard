@@ -1,6 +1,6 @@
 {
-  "version": "v20",
-  "createdAt": "2026-11-09 17:11:37",
+  "version": "v202611100036",
+  "createdAt": "2026-11-10 00:36:05",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -45,8 +45,8 @@
     },
     {
       "path": "app/check-gap-plan.mjs",
-      "hash": "33759b038a3ac5238090dc82f7ea2f56925f58153361bc50f166cf8918cca878",
-      "size": 5513
+      "hash": "71b0bcc0a77a7ffdfd40b7de4827391d0e55e587767f2b8b1cb93d09b62d45fb",
+      "size": 5592
     },
     {
       "path": "app/check-options.mjs",
@@ -55,13 +55,13 @@
     },
     {
       "path": "app/check-ui.mjs",
-      "hash": "d3a4752c797f47b715fa3f42d7457942abbd4118b6d79e6248aa7b9f3f76c9ec",
-      "size": 4753
+      "hash": "c3900cffd035731aa9bfec847bf694f9bf8bac3eaf4b697e77332c6a59ccd64e",
+      "size": 5406
     },
     {
       "path": "app/config.mjs",
-      "hash": "b2abffeb82afd7d9e7743e3dbb14cd70e25ff342fe1b034f519abf35c387cd76",
-      "size": 7892
+      "hash": "ee705e11ec5532453ca8f94c84c7c0c4c0324b2854361149bab6e09e059e9db6",
+      "size": 7957
     },
     {
       "path": "app/dashboard-server.mjs",
@@ -70,8 +70,8 @@
     },
     {
       "path": "app/download.mjs",
-      "hash": "cd8e807f32335523e13fcffaae0abcfd8143743cf586c5d8ce30ef9fda222906",
-      "size": 97324
+      "hash": "2009cdb3b2e498489980c27310ad4ab1ee27c2c3d13ee67cae600d104f3cae54",
+      "size": 100358
     },
     {
       "path": "app/engine.mjs",
@@ -95,8 +95,8 @@
     },
     {
       "path": "app/inspect.mjs",
-      "hash": "5f77149e296fe7504245b375a0ab3e7d719bc46686a7329d2b0ee4d776b7bdd9",
-      "size": 10310
+      "hash": "eea16b2a63a4618b2f90d83a36ead54e0a2acd94eaea9437bf1991b64a2436b3",
+      "size": 11159
     },
     {
       "path": "app/launch-env.mjs",
@@ -145,8 +145,8 @@
     },
     {
       "path": "app/reports.mjs",
-      "hash": "0442a52c2f7fc34a3c85048b937e307bb7c7af45e1df70d53407078fdfbcb412",
-      "size": 31956
+      "hash": "145da5c8e54993fefa5252650a6ee3decb314441d717e60d35ac06636128f01a",
+      "size": 33207
     },
     {
       "path": "app/run-download.mjs",
@@ -165,8 +165,8 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "e618acec999517b8e6f527a2c6e056559f2c1dd50a5621c9955c1c592853be72",
-      "size": 107489
+      "hash": "8dfe9ca52a791792b947d6a1343e8b51cf21dc1f24c6444dc43e8ac005fe5249",
+      "size": 108354
     },
     {
       "path": "ui/server.mjs",

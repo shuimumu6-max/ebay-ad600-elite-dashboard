@@ -119,6 +119,8 @@ export const ORDER_TYPES = orderReports.map(r => ({
   label: r.label,
   type: r.type,
   reportId: r.id,
+  rowMatch: new RegExp(r.rowMatch, 'i'),
+  rowName: r.rowName,
   mvp: r.implemented !== false
 }));
 

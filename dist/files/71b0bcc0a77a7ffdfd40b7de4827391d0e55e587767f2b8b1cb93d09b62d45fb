@@ -2,8 +2,9 @@
 // 用法：node app/check-gap-plan.mjs
 import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, GAP_DEFAULT_SEC } from '../ui/gap-plan.mjs';
 
-const OUT = 'C:/Users/XPTTOP20/Desktop/测试下载';
-const IDS = ['165542388019', '165349120019', '165210337019'];
+// 只用占位值：这个脚本会随分发包发到别的店铺，不能带本店的路径和活动 ID
+const OUT = '<下载结果目录>';
+const IDS = ['<活动A>', '<活动B>', '<活动C>'];
 let fail = 0;
 const ok = (name, cond, extra = '') => {
   if (cond) console.log(`  PASS  ${name}`);
