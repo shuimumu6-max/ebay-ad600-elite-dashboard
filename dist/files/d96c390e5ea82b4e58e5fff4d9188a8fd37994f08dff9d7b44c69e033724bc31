@@ -73,5 +73,5 @@ if (!changed.length) {
 } else {
   console.log(`✔ 更新完成：${changed.length} 个文件有变化（${same} 个一致跳过）。`);
   if (existsSync(backupRoot)) console.log(`旧文件已备份到：${backupRoot}`);
-  console.log('重新运行下载/控制台即可使用新版本。');
+  console.log('请把正在开着的「报表控制台」窗口关掉，再双击「报表控制台.cmd」重新打开（只关网页不算）。');
 }

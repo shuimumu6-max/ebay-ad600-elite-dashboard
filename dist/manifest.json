@@ -1,6 +1,6 @@
 {
-  "version": "v202611100245",
-  "createdAt": "2026-11-10 02:45:10",
+  "version": "v202611100310",
+  "createdAt": "2026-11-10 03:10:55",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -25,8 +25,8 @@
     },
     {
       "path": "app/cdp-bridge.mjs",
-      "hash": "52227cd4144f8a4fae6f11a0d9521d27f8855c6235650f74e7deaf5a87492c46",
-      "size": 16731
+      "hash": "365759c6de8df9a02849ce170d9af6c5ea2161df899825a0fcc8e57bca066c32",
+      "size": 18028
     },
     {
       "path": "app/cdp-endpoint.mjs",
@@ -105,8 +105,8 @@
     },
     {
       "path": "app/online-update.mjs",
-      "hash": "344ee1715dffa48deb24f9fe1496073fcc58faf0da888c3ee091d0952fda708e",
-      "size": 4263
+      "hash": "d96c390e5ea82b4e58e5fff4d9188a8fd37994f08dff9d7b44c69e033724bc31",
+      "size": 4341
     },
     {
       "path": "app/open-dashboard.mjs",
@@ -165,13 +165,13 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "e53a84a33f19e621f49d00aacf5af683ab79ab0251e6541305aee2f56f76bbfb",
-      "size": 109117
+      "hash": "8ab08b92fca66b7adf939f8e835883e98d6c1bce3f7a82a1b7a756c168db00f4",
+      "size": 110968
     },
     {
       "path": "ui/server.mjs",
-      "hash": "d26a128eeca838889ecf62af9b74184a5322672105e66e7369efa32dcadf2824",
-      "size": 49912
+      "hash": "e7bdaeaa71e6826f2506b9ea0e1f03a76c7589aa3be62bde952933b4fefeda8f",
+      "size": 51465
     },
     {
       "path": "ui/gap-plan.mjs",
@@ -215,13 +215,13 @@
     },
     {
       "path": "在线更新.mjs",
-      "hash": "344ee1715dffa48deb24f9fe1496073fcc58faf0da888c3ee091d0952fda708e",
-      "size": 4263
+      "hash": "d96c390e5ea82b4e58e5fff4d9188a8fd37994f08dff9d7b44c69e033724bc31",
+      "size": 4341
     },
     {
       "path": "update.mjs",
-      "hash": "344ee1715dffa48deb24f9fe1496073fcc58faf0da888c3ee091d0952fda708e",
-      "size": 4263
+      "hash": "d96c390e5ea82b4e58e5fff4d9188a8fd37994f08dff9d7b44c69e033724bc31",
+      "size": 4341
     }
   ],
   "runtime": {
