@@ -1,6 +1,6 @@
 {
-  "version": "v202611101416",
-  "createdAt": "2026-11-10 14:16:22",
+  "version": "v202611101436",
+  "createdAt": "2026-11-10 14:36:20",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -45,13 +45,13 @@
     },
     {
       "path": "app/check-gap-plan.mjs",
-      "hash": "da1f4bb49e334abd5597b753062376205ba747932327b1c30eeb770ba197e345",
-      "size": 8027
+      "hash": "f0fcf4fe4f42735c35ae95e638b463a222f7f140733ddc973f0464111f83ab9e",
+      "size": 7784
     },
     {
       "path": "app/check-options.mjs",
-      "hash": "05a091903f49f00a585caf16c5899998381419658b528b4f217e8f1f55879adf",
-      "size": 8299
+      "hash": "751bd58e32a48908ce1cd8f184b34bb35694f78e0a00814ea95ccf41c3604dd5",
+      "size": 8288
     },
     {
       "path": "app/check-scan-window.mjs",
@@ -170,18 +170,18 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "de3915dc7b60f334cbb0808b1e4bf97824b09d15e39e58614677a1d6ce66a419",
-      "size": 117411
+      "hash": "9cddd179abb0056623d24753bcfdae59b7386f7dae8b49b2dad90eba0170aa00",
+      "size": 115507
     },
     {
       "path": "ui/server.mjs",
-      "hash": "8bb3025ffcecac8eb1a917d091ef3ac0a5336cac14626f71355b9e0831acb445",
-      "size": 56093
+      "hash": "d76ef6b0d070de7f211cd6c920c54b31f685338f6e4a5da03263b9613d745551",
+      "size": 55865
     },
     {
       "path": "ui/gap-plan.mjs",
-      "hash": "341a716a0aa144a134c841bb2f622517f05e81177be485d331e48b0020d291d0",
-      "size": 8412
+      "hash": "30ebeb25d115e4b252b513345235cc51e286c35063173fa9fd8bc8a6a74fe114",
+      "size": 8513
     },
     {
       "path": "一键下载.cmd",
@@ -212,6 +212,11 @@
       "path": "新店铺配置示例.json",
       "hash": "19e9fb43c35660497d889e1ce4fedfce896882e76cb7374290d63c3672abb0e7",
       "size": 1533
+    },
+    {
+      "path": "看板更新提示词.md",
+      "hash": "6f7236b2356c6834ae3afbccb20c14475a32c0b2ea596183b7dbbd48bea6b039",
+      "size": 2961
     },
     {
       "path": "看板/ebay-shop-dashboard.html",

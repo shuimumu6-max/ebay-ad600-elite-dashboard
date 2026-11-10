@@ -126,15 +126,14 @@ console.log('— 没有缺口 —');
   ok('不产生任何步骤', steps.length === 0);
 }
 
-console.log('— 跑完补归档 + 推看板 —');
+console.log('— 跑完补归档（不发布） —');
 {
   const dirs = ['C:/x/测试下载/2026-11-08_10-00-00', 'C:/x/测试下载/2026-11-08_10-05-00'];
   const tail = tailSteps(dirs);
-  ok('每个运行目录一步归档 + 最后推看板', tail.length === 3, `实际 ${tail.length}`);
-  ok('归档不推看板（--no-publish）', tail.slice(0, 2).every(s => s.args.includes('--no-publish')));
+  ok('每个运行目录一步归档，没有推看板步骤', tail.length === 2, `实际 ${tail.length}`);
+  ok('归档不发布（--no-publish）', tail.every(s => s.args.includes('--no-publish')));
   ok('归档步骤零等待', tail.every(s => s.gapMs === 0));
-  ok('最后一件事是 publish-only', tail[2].args[0] === 'publish-only.mjs' && tail[2].mode === 'publish');
-  ok('下载失败（无目录）时也推一次看板', tailSteps([]).length === 1);
+  ok('下载失败（无目录）时没有归档步骤', tailSteps([]).length === 0);
 }
 
 console.log('— 步间等待：下载之间等、归档不等 —');
@@ -142,12 +141,10 @@ console.log('— 步间等待：下载之间等、归档不等 —');
   const step1 = { day: '流量 3 天', gapMs: 8000 };
   const step2 = { day: 'PLG LASTWEEK', gapMs: 8000 };
   const arch = { day: '归档 1/2', gapMs: 0 };
-  const pub = { day: '更新看板', gapMs: 0 };
   ok('下载 → 下载：等 8 秒', waitBeforeStep(step1, step2, 8000) === 8000);
   ok('下载 → 归档：不等', waitBeforeStep(step2, arch, 8000) === 0);
   ok('归档 → 归档：不等', waitBeforeStep(arch, arch, 8000) === 0);
-  ok('归档 → 推看板：不等', waitBeforeStep(arch, pub, 8000) === 0);
-  ok('没有下一步：不等', waitBeforeStep(pub, undefined, 8000) === 0);
+  ok('没有下一步：不等', waitBeforeStep(arch, undefined, 8000) === 0);
   ok('当前步没写间隔时用兜底值', waitBeforeStep({ day: 'x' }, step2, 6000) === 6000);
 }
 

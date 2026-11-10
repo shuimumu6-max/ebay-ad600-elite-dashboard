@@ -156,13 +156,13 @@ export function waitBeforeStep(current, next, fallbackMs = 0) {
 
 // 下载跑完后，把「逐个归档 → 推看板」补到队尾（运行目录是跑完才知道的）
 export function tailSteps(runDirs = []) {
-  const tail = runDirs.map((dir, k) => ({
+  // 只归档，不发布：控制台没有「更新看板」能力——看板是模板，本机看板自动读数据目录，
+  // 归档完刷新页面就能看到；运营想定制看板走「看板更新提示词.md」让 AI 改。
+  return runDirs.map((dir, k) => ({
     day: `归档 ${k + 1}/${runDirs.length}`,
     title: `归档 ${k + 1}/${runDirs.length}（${String(dir).split(/[\\/]/).filter(Boolean).pop()}）`,
     mode: 'publish',
     args: ['archive-publish.mjs', '--run', dir, '--no-publish'],
     gapMs: 0
   }));
-  tail.push({ day: '更新看板', title: '更新看板', mode: 'publish', args: ['publish-only.mjs'], gapMs: 0 });
-  return tail;
 }

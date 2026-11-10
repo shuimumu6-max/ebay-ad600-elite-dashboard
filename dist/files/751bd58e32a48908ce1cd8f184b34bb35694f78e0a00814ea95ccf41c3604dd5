@@ -98,7 +98,7 @@ lines.push(check('名单类型', Object.keys(ACTIVE_TYPES), segVals('segActive')
 lines.push(check('流量模式', ['daily', 'range', 'both', 'batch'], segVals('segTraffic')));
 lines.push(check('PLG 时间粒度', ['DAILY', 'SUMMARY'], segVals('segUnit')));
 lines.push(check('优先促刊时间粒度', ['DAILY', 'SUMMARY'], segVals('segPriorityUnit')));
-lines.push(check('同步方式', ['local', 'apply', 'publish'], segVals('segSync')));
+lines.push(check('同步方式', ['local', 'apply'], segVals('segSync')));
 lines.push(check('并行标签页 1–10', Array.from({ length: 10 }, (_, i) => String(i + 1)), selectVals('maxTabs')));
 
 // 动态渲染的四组：HTML 里只是空容器，完整列表来自「服务端常量 → /api/state → 前端渲染」。

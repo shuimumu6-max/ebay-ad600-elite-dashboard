@@ -410,7 +410,7 @@
     <div class="fr-body">
       <h3>第一次用？点一下，自动把「上周 + 本周」的数据下下来</h3>
       <p>会先自动识别你的店铺（只读浏览器里的登录账号，不用填任何东西），然后依次下载：流量报表（逐日 14 份）、在售商品名单、PLG 链接广告与优先促销刊登（本周 + 上周——eBay 的广告「按日」数据只给这两周）。大概 10 分钟，全程自动，可以最小化窗口，但别关控制台。</p>
-      <p class="fr-hint">两周刚好能对比「上周 vs 本周」。下完会自动归档，打开看板就能看到数据。eBay 对流量报表有频率限制，偶尔会中途说「先歇一会儿」——已经下好的不会重复，过 1 小时点右侧「补齐缺口 + 更新看板」接着补就行。</p>
+      <p class="fr-hint">两周刚好能对比「上周 vs 本周」。下完会自动归档，打开看板就能看到数据。eBay 对流量报表有频率限制，偶尔会中途说「先歇一会儿」——已经下好的不会重复，过 1 小时点右侧「补齐缺口」接着补就行。</p>
       <p class="fr-hint" id="frPending" hidden></p>
       <p class="fr-hint" id="frConnectTip" hidden><b>现在还不能下载：</b>右上角显示「需要拨一次开关」——先点那里的「去开开关」，在浏览器里把 <b>Allow remote debugging</b> 拨到开，等顶部变成「已连接」，这个按钮就能点了。</p>
     </div>
@@ -667,11 +667,11 @@
               <option value="0">全部历史</option>
             </select>
           </label>
-          <button class="btn primary" id="btnGapFill" style="margin-left:8px" title="流量逐日 + PLP 区间 + PLG 按预设，合并成 2~3 个下载步骤，跑完自动归档并推看板" disabled>补齐缺口 + 更新看板</button>
+          <button class="btn primary" id="btnGapFill" style="margin-left:8px" title="流量逐日 + PLP 区间 + PLG 按预设，合并成尽量少的下载步骤，跑完自动归档；看板自动读取数据目录，归档完打开就能看到" disabled>补齐缺口</button>
           <button class="btn" id="btnScan" style="margin-left:8px">扫描缺少的报表</button>
         </div>
         <div class="panel-b">
-          <p class="hint" style="margin-top:0">看板数据就是从正式目录生成的，这里缺的看板上也没有。日更口径＝流量单日 + PLG 链接广告 + PLP 物品列表（走 campaign 页区间汇总）+ 在售商品名单（快照，只看最新一份有多旧）。关键词 / 搜索词默认不下载，看板上这两个板块可以留空——这里只做「仅提醒」，不算缺口、也不会被补齐。「补齐缺口 + 更新看板」合并成尽量少的下载步骤：流量逐日一个进程跑完、PLP 按缺口起止一个区间请求、PLG 按预设（上周 / 本周）各一步，跑完自动归档并推送看板。流量累计只用于对账、活动汇总报表不进看板，均不参与体检；在售商品名单同样不参与。统计到太平洋时间「昨天」为止：今天的数据还没出、不算缺；链接上架之前的空白天也不算缺。区间默认「上周 + 本周」（上周一 ~ 昨天）：广告报表的按日口径只有今天/昨天/本周/上周，卡在周界上正好两份预设盖住，周报看板也对齐——数据攒久了在右上角调成 4 周 / 8 周 / 全部历史即可，调大后「补齐缺口」也只补这个区间里的天。</p>
+          <p class="hint" style="margin-top:0">看板数据就是从正式目录（数据\）读的，这里缺的看板上也没有。日更口径＝流量单日 + PLG 链接广告 + PLP 物品列表（走 campaign 页区间汇总）+ 在售商品名单（快照，只看最新一份有多旧）。关键词 / 搜索词默认不下载，看板上这两个板块可以留空——这里只做「仅提醒」，不算缺口、也不会被补齐。「补齐缺口」合并成尽量少的下载步骤：流量逐日一个进程跑完、PLP 按缺口起止一个区间请求、PLG 按预设（上周 / 本周）各一步，跑完自动归档——看板自动读取数据目录，归档完打开就能看到。流量累计只用于对账、活动汇总报表不进看板，均不参与体检；在售商品名单同样不参与。统计到太平洋时间「昨天」为止：今天的数据还没出、不算缺；链接上架之前的空白天也不算缺。区间默认「上周 + 本周」（上周一 ~ 昨天）：广告报表的按日口径只有今天/昨天/本周/上周，卡在周界上正好两份预设盖住，周报看板也对齐——数据攒久了在右上角调成 4 周 / 8 周 / 全部历史即可，调大后「补齐缺口」也只补这个区间里的天。</p>
           <div id="scanBody"></div>
         </div>
       </section>
@@ -716,7 +716,7 @@
             <div class="chips mt8">
               <label class="chip"><input type="checkbox" id="keepTabs"> 结束后保留标签页（调试用）</label>
             </div>
-            <p class="hint">后台其余参数都在对应卡片里：日期范围、时间粒度、报表类型、活动、批量日期、归档 / 推送。PLP campaign 页通道已下线，统一走「优先促销刊登」。</p>
+            <p class="hint">后台其余参数都在对应卡片里：日期范围、时间粒度、报表类型、活动、批量日期、归档。PLP campaign 页通道已下线，统一走「优先促销刊登」。</p>
           </div>
 
           <div class="sect">
@@ -724,25 +724,24 @@
             <div class="seg" id="segSync">
               <button data-v="local" class="on">只下载</button>
               <button data-v="apply">下载 + 归档</button>
-              <button data-v="publish">+ 更新看板</button>
             </div>
-            <p class="hint" id="hintSync">默认只落到结果目录并自动分类，不动正式数据、不推送看板。</p>
+            <p class="hint" id="hintSync">默认只落到结果目录并自动分类，不动正式数据。</p>
           </div>
 
           <div class="sect">
             <div class="sect-t">单独操作</div>
-            <label class="hint" for="runPick" style="display:block;margin:0 0 6px">补做归档 / 更新看板：选一次已跑完的运行，不用重新下载</label>
+            <label class="hint" for="runPick" style="display:block;margin:0 0 6px">补做归档：选一次已跑完的运行，不用重新下载</label>
             <select class="inp" id="runPick"></select>
             <div class="run-top mt8">
-              <button class="btn" id="btnArchivePublish" style="flex:1">归档 + 更新看板</button>
-              <button class="btn" id="btnPublish" style="flex:1">只更新看板</button>
+              <button class="btn" id="btnArchivePublish" style="flex:1">归档所选运行</button>
+              <button class="btn" id="btnPublish" style="flex:1">打开看板</button>
             </div>
             <div class="run-top mt8">
               <button class="btn" id="btnOpen" style="flex:1">打开结果文件夹</button>
               <button class="btn" id="btnCopy" style="flex:1">复制命令</button>
             </div>
             <p class="hint" id="dataState">正式数据目录：检查中…</p>
-            <p class="hint">「归档 + 更新看板」会把所选运行里的有效文件补进正式目录 90-待处理，再重新生成看板并推送；「只更新看板」不碰文件，只用已归档的数据重算。</p>
+            <p class="hint">「归档所选运行」把所选运行里的有效文件补进正式目录 90-待处理（看板自动读取该目录，归档完打开就能看到）；「打开看板」随时可点，与本机看板服务配合使用。</p>
           </div>
         </div>
       </section>
@@ -1037,13 +1036,11 @@ function applyDashboardMode(){
   }
   const btnPub = $('#btnPublish');
   if (btnPub){
-    btnPub.textContent = local ? '打开看板' : '只更新看板';
-    btnPub.title = local
-      ? '数据已经在 数据 目录，点这里打开看板（报表会自动加载）'
-      : '用正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages';
+    btnPub.textContent = '打开看板';
+    btnPub.title = '数据在 数据 目录，点这里打开看板（报表会自动加载，不用手动选文件）';
   }
   const pub = $('#btnArchivePublish');
-  if (pub) pub.textContent = local ? '归档 + 打开看板' : '归档 + 更新看板';
+  if (pub) pub.textContent = '归档所选运行';
 }
 async function openLocalDashboard(){
   const r = await (await fetch('/api/open-dashboard', { method: 'POST' })).json();
@@ -1170,31 +1167,20 @@ function syncChips(sel){
 }
 // 活动多选下拉自己维护选中态；PLG 活动在 renderPlgCampaigns 里初始化
 
-// 数据联动：只下载 / 归档 / 归档+更新看板
+// 数据联动：只下载 / 下载+归档
 const segValue = id => document.querySelector('#' + id + ' button.on')?.dataset.v;
 seg($('#segSync'), v => {
   const local = dashboardMode === 'local';
   const map = {
     local: '默认只落到结果目录并自动分类，不动正式数据。',
-    apply: '下载后把校验通过的文件复制进正式目录 90-待处理。',
-    publish: local
-      ? '下载 → 归档到本机 数据/90-待处理 → 跑完打开看板（数据不上传任何服务器）。'
-      : '下载 → 归档正式目录 → 重新生成看板数据 → 推送 GitHub Pages。'
+    apply: '下载后把校验通过的文件复制进正式目录 90-待处理；看板自动读取该目录，归档完打开就能看到。'
   };
   $('#hintSync').textContent = map[v];
 });
-// 只更新看板（不下载）：本地模式没有线上看板可推，直接打开本机看板
-$('#btnPublish').addEventListener('click', async () => {
-  if (dashboardMode === 'local') return openLocalDashboard();
-  if (!confirm('用正式目录里已归档的数据重新生成看板并推送到线上？')) return;
-  $('#btnPublish').disabled = true;
-  const r = await (await fetch('/api/publish', { method: 'POST' })).json();
-  if (!r.ok){ $('#btnPublish').disabled = false; return toast(r.error || '启动失败', true); }
-  clearLog(); setRunning(true);
-  $('#runHint').textContent = '正在更新看板并推送…';
-});
+// 打开看板：本机看板自动读数据目录，没有「发布」动作
+$('#btnPublish').addEventListener('click', () => openLocalDashboard());
 
-/* ---------- 补做：归档 + 更新看板（对已完成的运行，不用重新下载） ---------- */
+/* ---------- 补做归档（对已完成的运行，不用重新下载；看板自动读数据目录） ---------- */
 async function loadRuns(keepValue){
   const box = $('#runPick');
   try {
@@ -1219,17 +1205,14 @@ $('#btnArchivePublish').addEventListener('click', async () => {
   const runDir = $('#runPick').value;
   const label = $('#runPick').selectedOptions[0]?.textContent || '';
   if (!runDir) return toast('先选一次运行', true);
-  const local = dashboardMode === 'local';
-  if (!confirm(local
-    ? `把这次运行的文件归档到本机 数据/90-待处理，然后打开看板？\n\n${label}`
-    : `把这次运行的文件归档进正式目录，然后重新生成看板并推送线上？\n\n${label}`)) return;
+  if (!confirm(`把这次运行的文件归档进正式目录 90-待处理？（看板会自动读到新数据）\n\n${label}`)) return;
   $('#btnArchivePublish').disabled = true;
   const r = await (await fetch('/api/archive-publish', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runDir })
   })).json();
   if (!r.ok){ $('#btnArchivePublish').disabled = false; return toast(r.error || '启动失败', true); }
   clearLog(); setRunning(true);
-  $('#runHint').textContent = local ? '正在归档并准备看板…' : '正在归档并更新看板…';
+  $('#runHint').textContent = '正在归档…';
 });
 loadRuns();
 
@@ -1283,8 +1266,7 @@ function collect(){
     priorityCampaigns: prChecked(),
     keepTabs: $('#keepTabs').checked,
     outDir: $('#outDir').value.trim(),
-    apply: sync === 'apply' || sync === 'publish',
-    publish: sync === 'publish'
+    apply: sync === 'apply'
   };
 }
 
@@ -1404,7 +1386,7 @@ async function refreshState(){
       const pendEl = $('#frPending');
       if (pendEl){
         pendEl.hidden = !pend;
-        if (pend) pendEl.innerHTML = `下载结果里已经有 <b>${pend}</b> 份报表还没归档：点右边「补齐缺口 + 更新看板」会先把它们归档并更新看板，不用重下。`;
+        if (pend) pendEl.innerHTML = `下载结果里已经有 <b>${pend}</b> 份报表还没归档：点右边「补齐缺口」会先把它们归档，不用重下。`;
       }
     }
     if (s.dashboard) $('#linkDash').href = '#';
@@ -1498,11 +1480,11 @@ es.addEventListener('run', e => {
     return;
   }
   if (data.phase === 'seq-end'){
-    // 多步任务（首次初始化 / 一键补齐）的最后一步是更新看板，没有下载 summary，
+    // 多步任务（首次初始化 / 一键补齐）的最后一步是归档，没有下载 summary，
     // 所以「有几步没成」由后端单独推过来，这里给出唯一的最终结论。
     const n = (data.failures || []).length;
     if (n) toast(`${data.label}结束：${n} 项没下完，已下好的都已归档。详情看日志；过 1 小时可点「补齐缺口」接着补`, true);
-    else toast(`${data.label}完成，数据已归档，可以打开看板了`);
+    else toast(`${data.label}完成，数据已归档，点右上角「打开看板」即可看到`);
     return;
   }
   if (data.phase === 'end'){
@@ -1519,18 +1501,8 @@ es.addEventListener('run', e => {
     if (data.dashboard) $('#linkDash').href = '#';
     if (data.dataState) renderDataState(data.dataState);
     if (data.mode === 'publish'){
-      if (dashboardMode === 'local'){
-        // 本地看板：没有线上可推，归档完就能看。告诉用户点哪儿，别让他猜。
-        if (data.code === 0){
-          toast('数据已归档到本机，点右上角「打开看板」就能看到数据');
-          const btn = $('#btnPublish');
-          if (btn){ btn.classList.add('pulse'); setTimeout(() => btn.classList.remove('pulse'), 6000); }
-        } else {
-          toast('归档没成功，看日志最后几行', true);
-        }
-      } else {
-        toast(data.code === 0 ? '看板已更新并推送' : '看板更新失败，看日志', data.code !== 0);
-      }
+      // 归档完成（控制台没有发布动作）：归档完看板自动能读到新数据
+      toast(data.code === 0 ? '归档完成，点右上角「打开看板」即可看到最新数据' : '归档没成功，看日志最后几行', data.code !== 0);
       return;
     }
     if (data.summary) renderSummary(data.summary);
@@ -1600,7 +1572,6 @@ function setRunning(on){
   state.running = on;
   $('#btnRun').disabled = on;
   $('#btnStop').disabled = !on;
-  $('#btnPublish').disabled = on;
   if (on) $('#btnArchivePublish').disabled = true;
   else if (document.querySelector('#runPick option')?.value) $('#btnArchivePublish').disabled = false;
   $('#btnRun').textContent = on ? '执行中…' : '开始下载';
@@ -1725,20 +1696,13 @@ function renderScan(r){
 
   const s = r.sync || {};
   let syncHtml;
-  if (!s.checked){
-    syncHtml = '<span style="color:var(--ink-3)">线上状态没读到（离线或网络不通，本地缺口仍然准）</span>';
-  } else if (s.onlineStale){
-    syncHtml = '<span style="color:var(--warn);font-weight:600">线上看板落后于本地：点「只更新看板」即可同步</span>';
-  } else if (s.localNotRegenerated){
-    syncHtml = '<span style="color:var(--warn);font-weight:600">本地有新数据没进看板：点「只更新看板」重新生成</span>';
-  } else {
-    syncHtml = '<span style="color:var(--ok);font-weight:600">线上看板与本地数据一致</span>';
-  }
+  // 看板是模板 + 自动读数据目录：没有「线上是否落后」的概念，也不需要重新生成
+  syncHtml = '<span style="color:var(--ok);font-weight:600">看板自动读取「数据」目录：归档完点右上角「打开看板」即可看到最新数据</span>';
 
   // 一份数据都没有（刚装好、还没跑首次下载）：把「全缺 14 天」说清楚，别让人以为算错了
   const allEmpty = rows.length > 0 && rows.every(x => x.nothingYet);
   const emptyHint = allEmpty
-    ? '<div class="scan-empty">正式目录里还没有任何报表。点右边「<b>补齐缺口 + 更新看板</b>」会按首次初始化下载「上周 + 本周」（流量逐日 + 在售名单 + 广告），跑完自动归档并更新看板；下载结果里若已有报表，会先归档那一批，不重复下。</div>'
+    ? '<div class="scan-empty">正式目录里还没有任何报表。点右边「<b>补齐缺口</b>」会按首次初始化下载「上周 + 本周」（流量逐日 + 在售名单 + 广告），跑完自动归档；下载结果里若已有报表，会先归档那一批，不重复下。</div>'
     : '';
   const scope = r.fullHistory ? `全部历史，共 ${r.windowDays} 天` : `最近 ${r.windowDays} 天`;
   const olderHint = r.hasOlder
@@ -1763,7 +1727,7 @@ function renderScan(r){
   if (fillBtn) fillBtn.disabled = !((r.totalMissing || 0) + (r.nothingYetDays || 0)) || !!state.running;
 }
 
-// 一键补齐：只下缺的那些天 → 归档 → 更新看板。PLP 走 campaign 页（区间精确），PLG 走报表中心预设。
+// 一键补齐：只下缺的那些天 → 归档（看板自动读数据目录）。PLP 走 campaign 页（区间精确），PLG 走报表中心预设。
 $('#btnGapFill').addEventListener('click', async () => {
   const btn = $('#btnGapFill');
   btn.disabled = true;
@@ -1782,19 +1746,19 @@ $('#btnGapFill').addEventListener('click', async () => {
       return;
     }
     if (r.mode === 'archive') {
-      toast(r.message || '已开始归档并更新看板', false);
+      toast(r.message || '已开始归档下载结果', false);
       appendLog(`[控制台] ${r.message || '开始归档下载结果'}`);
       return;
     }
     const p = r.plan || {};
     toast(`已开始补齐：${(r.steps || []).length} 个下载步骤，步与步之间停 ${r.gapSec || 8} 秒`);
-    appendLog(`[控制台] 一键补齐已启动：流量逐日 + PLP 区间合并跑、PLG 按预设分步，全部跑完自动归档并更新看板`);
+    appendLog(`[控制台] 一键补齐已启动：流量逐日 + PLP 区间合并跑、PLG 按预设分步，全部跑完自动归档`);
     if (p.plgPreset) appendLog(`[控制台] PLG 缺口 ${p.plgDays?.[0]} ~ ${p.plgDays?.slice(-1)[0]}，按预设 ${p.plgPreset} 单独跑`);
     if (p.plgUnfillable?.length) appendLog(`[控制台] PLG 有 ${p.plgUnfillable.length} 天超出 eBay 可选范围（最早只到上周），补不了`);
   } catch {
     toast('连不上本地服务', true);
   } finally {
-    btn.textContent = '补齐缺口 + 更新看板';
+    btn.textContent = '补齐缺口';
     btn.disabled = false;
   }
 });

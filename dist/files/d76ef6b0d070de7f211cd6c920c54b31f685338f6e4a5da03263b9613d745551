@@ -468,12 +468,12 @@ function buildArgs(form) {
     else if (priorityList.length && pc.length === priorityList.length) args.push('--priority-campaigns', 'all');
   }
   if (form.keepTabs) args.push('--keep');
-  if (form.publish) args.push('--publish');
-  else if (form.apply) args.push('--apply');
+  // 控制台没有「发布看板」能力：老页面缓存传来的 publish 一律按归档处理
+  if (form.publish || form.apply) args.push('--apply');
   return args;
 }
 
-// ---------- 一键补齐：扫描缺口 → 组参 → 下载 → 自动归档 + 更新看板 ----------
+// ---------- 一键补齐：扫描缺口 → 组参 → 下载 → 自动归档（看板是模板，不在这里发布） ----------
 const dayList = (s, e) => {
   const out = [];
   for (let t = Date.parse(`${s}T00:00:00Z`); t <= Date.parse(`${e}T00:00:00Z`); t += 86400000) {
@@ -514,7 +514,7 @@ function openLocalDashboard() {
   }
 }
 
-// 统一启动后台任务：下载（download.mjs）与只更新看板（publish-only.mjs）共用日志流
+// 统一启动后台任务：下载 / 归档 / 店铺识别共用日志流
 function startJob(args, mode, label, onExit) {
   buffer = [];
   runInfo = { startedAt: Date.now(), args, runDir: null, mode };
@@ -541,7 +541,7 @@ function startJob(args, mode, label, onExit) {
     // 只认本次自己报出来的结果目录；失败没报就是没有，不去抓历史目录充数
     const dir = runInfo?.runDir || null;
     if (runInfo) runInfo.runDir = dir;
-    say(`[控制台] ${mode === 'publish' ? '看板更新' : mode === 'seller' ? '店铺识别' : '下载'}结束，退出码 ${code}`);
+    say(`[控制台] ${mode === 'publish' ? '归档' : mode === 'seller' ? '店铺识别' : '下载'}结束，退出码 ${code}`);
     // 本地看板模式：没有线上看板可推，归档完就是「看板可用」，把下一步说清楚。
     // 只在最后一步说一次——每归档一批就说一遍，日志会刷得人看不见重点。
     if (mode === 'publish' && code === 0 && dashboardMode() === 'local' && (!seq || seq.i + 1 >= seq.total)) {
@@ -560,7 +560,7 @@ function startJob(args, mode, label, onExit) {
 }
 
 // 逐天串行：每一天跑完等 gapMs，再跑下一天；中间的空档也算「运行中」
-// opts.thenArchive：所有下载步骤跑完后，自动补「逐个归档 → 推看板」
+// opts.thenArchive：所有下载步骤跑完后，自动补「逐个归档」步骤
 function startSequence(steps, label, gapMs, opts = {}) {
   if (!steps.length) return;
   seq = {
@@ -590,27 +590,27 @@ function runSeqStep() {
     }
     seq.i++;
 
-    // 下载都跑完了：把「逐个归档 + 推看板」的步骤补到队尾（运行目录要跑完才知道）
+    // 下载都跑完了：把「逐个归档」步骤补到队尾（运行目录要跑完才知道）
     if (seq.i >= seq.total && seq.thenArchive) {
       seq.thenArchive = false;
       const tail = tailSteps(seq.runDirs);
       seq.steps.push(...tail);
       seq.total = seq.steps.length;
-      if (!seq.runDirs.length) say('[控制台] 这次没有任何下载成功，直接更新看板');
+      if (!seq.runDirs.length) say('[控制台] 这次没有任何下载成功，没有可归档的文件');
     }
 
     if (seq.i >= seq.total) {
       const fails = seq.failures;
       say(`[控制台] ${seq.label} 全部结束：共 ${seq.total} 步`
         + (fails.length ? `，失败 ${fails.length} 步：${fails.join('、')}` : '，全部成功'));
-      // 多步任务最后一步是「更新看板」，它没有下载 summary，所以失败明细要在这里单独推给前端，
+      // 多步任务最后一步是归档，它没有下载 summary，所以失败明细要在这里单独推给前端，
       // 否则用户只看到进度条走完、不知道该不该再补一次。
       broadcast('run', { phase: 'seq-end', label: seq.label, failures: fails, total: seq.total });
       seq = null;
       return;
     }
 
-    // 等一下步：下载步骤之间要留间隔；归档 / 推看板不用等，跑完立刻接上
+    // 等一下步：下载步骤之间要留间隔；归档不用等，跑完立刻接上
     const next = seq.steps[seq.i];
     const waitMs = waitBeforeStep(step, next, seq.gapMs);
     if (waitMs >= 1000) {
@@ -899,7 +899,7 @@ const server = http.createServer(async (req, res) => {
         const pendingCsv = pending ? countCsv(pending) : 0;
         if (pendingCsv > 0) {
           say(`[控制台] 正式目录还没有数据，但下载结果里有现成的（${basename(pending)}，${pendingCsv} 份 CSV）：先归档它并更新看板`);
-          if (!dryRun) startSequence(tailSteps([pending]), '归档 + 更新看板', 0);
+          if (!dryRun) startSequence(tailSteps([pending]), '归档未处理的下载结果', 0);
           return reply({
             ok: true, started: true, mode: 'archive',
             scanRange, windowStart: winStart, windowEnd: winEnd,
@@ -987,16 +987,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, args });
     }
 
-    // 只更新看板：拿正式目录里已归档的数据重新生成 data.js 并推送 GitHub Pages
+    // 打开看板（本地看板自动读数据目录，没有「发布」动作——控制台不提供更新看板能力）
     if (path === '/api/publish' && req.method === 'POST') {
-      if (child || seq || par) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再更新看板' });
-      // 本地看板模式（运营的机器）没有线上看板可推：数据归档完看板就有了，直接把看板打开
-      if (dashboardMode() === 'local') {
-        openLocalDashboard();
-        return send(res, 200, { ok: true, local: true, message: '数据已在本机，已帮你打开看板' });
-      }
-      startJob(['publish-only.mjs'], 'publish', '只更新看板（不下载）');
-      return send(res, 200, { ok: true });
+      if (child || seq || par) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再打开看板' });
+      openLocalDashboard();
+      return send(res, 200, { ok: true, local: true, message: '看板自动读取本机数据目录，已帮你打开' });
     }
 
     // 打开本地看板（本地模式专用）
@@ -1009,16 +1004,16 @@ const server = http.createServer(async (req, res) => {
     // 最近几次运行：给「补做归档 + 更新看板」用
     if (path === '/api/runs') return send(res, 200, { ok: true, runs: recentRuns() });
 
-    // 对已完成的运行补做「归档 + 更新看板」：不重新下载，直接按 结果.json 归档再推看板
+    // 对已完成的运行补做归档：不重新下载，直接按 结果.json 把有效文件补进正式目录（不发布）
     if (path === '/api/archive-publish' && req.method === 'POST') {
       if (child || seq || par) return send(res, 409, { ok: false, error: '正在跑别的任务，等它结束再归档' });
       const form = await readBody(req);
       const runDir = String(form.runDir || '').trim();
       if (runDir && !isAbsolute(runDir)) return send(res, 400, { ok: false, error: '运行目录要填绝对路径' });
-      const args = ['archive-publish.mjs'];
+      const args = ['archive-publish.mjs', '--no-publish'];
       if (runDir) args.push('--run', runDir);
       const tag = runDir ? runDir.split(/[\\/]/).filter(Boolean).pop() : '最近一次运行';
-      startJob(args, 'publish', `归档 + 更新看板（${tag}）`);
+      startJob(args, 'publish', `归档下载结果（${tag}）`);
       return send(res, 200, { ok: true });
     }
 
