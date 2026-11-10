@@ -1,28 +1,48 @@
 // 看板数据体检：扫正式目录里的 CSV，算出每类报表「哪天有、哪天缺」。
 // 规则：
 //   1. 窗口结束固定取太平洋时间昨天（今天的数据还没出，不算缺）；
-//   2. 窗口起点 = max(该类最早有数据那天, 昨天回推 days 天)。
-//      取「最早有数据那天」是为了让链接上架前的空白天不算缺；
-//      再和 days 取大值，是为了新手默认只看最近 2 周（和首次下载口径一致），
-//      数据攒久了在界面上把区间调大即可，不必一上来就扫几个月。
-//   3. days = 0 表示全部历史（从该类第一天数据至今）。
-// 在售商品名单不参与体检。
+//   2. 默认窗口 = 上周一 ~ 昨天（「上周 + 本周」）。取上周一而不是「回推 N 天」，
+//      是因为广告报表的按日口径只有 今天/昨天/本周/上周，卡在周界上两份预设就够；
+//   3. 起点还要和「该类最早有数据那天」取大值：链接上架前的空白天不算缺；
+//   4. range = 0 表示全部历史（从该类第一天数据至今），数字表示最近 N 天。
+// 在售商品名单不参与体检（快照类，只看最新一份多旧）。
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import { DATA_DIR, REPO_DIR } from './config.mjs';
 
-// 默认体检区间：最近 2 周，和「首次下载最近 2 周」保持同一个口径。
-export const SCAN_DEFAULT_DAYS = 14;
-// 界面可选区间（0 = 全部历史），服务端只在这些值里认，避免被随意传大数拖慢扫描
-export const SCAN_DAY_OPTIONS = [14, 28, 56, 0];
-export function clampScanDays(value, fallback = SCAN_DEFAULT_DAYS) {
+// 默认体检区间：「上周 + 本周」（周一到昨天）。
+// 为什么不是「最近 14 天」（2026-11-10 改）：广告报表的「按日」只给 今天/昨天/本周/上周 四个口径，
+// 卡在周界上正好两份预设就盖住；用「最近 14 天」会横跨三周，PLG 得拆成好几步、
+// 还容易因为预设盖不住而补不了。周界口径也让周报看板天然对齐。
+export const SCAN_DEFAULT_RANGE = 'week';
+export const SCAN_DEFAULT_DAYS = 11;          // 周界口径下通常 11 天（上周 7 + 本周已过几天），仅用于兜底文案
+// 界面可选区间（'week' = 上周+本周，0 = 全部历史）
+export const SCAN_RANGE_OPTIONS = ['week', 28, 56, 0];
+
+// 上周一 ~ 太平洋时间的昨天：end 所在周的周一往前推 7 天
+export function weekWindow(now = new Date()) {
+  const end = addDays(pacificToday(now), -1);
+  const dow = new Date(`${end}T00:00:00Z`).getUTCDay();   // 0 = 周日
+  const thisMonday = addDays(end, -((dow + 6) % 7));
+  return { start: addDays(thisMonday, -7), end, thisMonday };
+}
+
+export function clampScanRange(value, fallback = SCAN_DEFAULT_RANGE) {
   // 注意 null / '' / undefined 都要走默认值：Number(null) 和 Number('') 都是 0，
   // 而 0 在这里表示「全部历史」，不特判就会让「没传参数」变成「扫全量」。
   if (value === null || value === undefined || String(value).trim() === '') return fallback;
-  const n = Number(value);
+  const s = String(value).trim().toLowerCase();
+  if (s === 'week' || s === 'lastweek+currentweek' || s === 'weeks') return 'week';
+  const n = Number(s);
   if (!Number.isFinite(n)) return fallback;
   if (n === 0) return 0;
   return Math.min(365, Math.max(1, Math.round(n)));
+}
+
+// 老调用方（只认数字天数）继续能用：默认仍走周界口径，传数字就按天数
+export function clampScanDays(value, fallback = SCAN_DEFAULT_RANGE) {
+  const r = clampScanRange(value, fallback);
+  return r === 'week' ? SCAN_DEFAULT_DAYS : r;
 }
 
 // ---------- 日期工具 ----------
@@ -229,14 +249,16 @@ export async function scanGaps(options = {}) {
   const root = options.dataDir || DATA_DIR;
   const dashboardUrl = options.dashboardUrl || null;
   const now = options.now || new Date();
-  const windowEnd = addDays(pacificToday(now), -1);   // 排除今天
-  // 体检区间：默认最近 2 周（和首次下载同一口径），0 = 全部历史
-  const days = clampScanDays(options.days);
-  const fullHistory = days === 0;
+  // 体检区间：默认「上周 + 本周」（周一到昨天），0 = 全部历史，数字 = 最近 N 天
+  const range = clampScanRange(options.range !== undefined ? options.range : options.days);
+  const fullHistory = range === 0;
+  const week = range === 'week';
+  const weekRange = week ? weekWindow(now) : null;
+  const windowEnd = weekRange ? weekRange.end : addDays(pacificToday(now), -1);   // 排除今天
   // 区间最早一天（含）；fullHistory 时为 null，表示「谁有数据就从谁的第一天算」
-  const minStart = fullHistory ? null : addDays(windowEnd, -(days - 1));
+  const minStart = fullHistory ? null : (weekRange ? weekRange.start : addDays(windowEnd, -(range - 1)));
   // 一条数据都没有时也要有个区间可报，否则「全缺 N 天」没处取值
-  const emptyStart = addDays(windowEnd, -(SCAN_DEFAULT_DAYS - 1));
+  const emptyStart = minStart || addDays(windowEnd, -(SCAN_DEFAULT_DAYS - 1));
   // 线上状态和本地扫描并行，网络慢也不拖累结果
   const onlinePromise = dashboardUrl ? onlineBundleCreatedAt(dashboardUrl) : Promise.resolve(null);
 
@@ -324,7 +346,9 @@ export async function scanGaps(options = {}) {
   return {
     ok: true,
     dataDir: root,
-    days,
+    range,
+    days: fullHistory ? 0 : (week ? null : range),
+    rangeLabel: fullHistory ? '全部历史' : (week ? '上周 + 本周' : `最近 ${range} 天`),
     fullHistory,
     windowStart,
     windowEnd,
@@ -351,10 +375,10 @@ export async function scanGaps(options = {}) {
 }
 
 if (process.argv[1] && /scan-gaps\.mjs$/.test(process.argv[1])) {
-  // 用法：node app/scan-gaps.mjs [看板地址] [--days=14|28|56|0]
-  const dayArg = process.argv.find(a => /^--days=/.test(a));
+  // 用法：node app/scan-gaps.mjs [看板地址] [--range=week|28|56|0] [--days=14]
+  const rangeArg = process.argv.find(a => /^--(range|days)=/.test(a));
   const url = process.argv.slice(2).find(a => !a.startsWith('--')) || null;
-  const out = await scanGaps({ dashboardUrl: url, days: dayArg ? dayArg.split('=')[1] : SCAN_DEFAULT_DAYS });
-  console.log(`统计区间 ${out.windowStart} ~ ${out.windowEnd}（${out.windowDays} 天，${out.fullHistory ? '全部历史' : '最近 ' + out.days + ' 天'}）共缺 ${out.totalMissing} 天`);
+  const out = await scanGaps({ dashboardUrl: url, range: rangeArg ? rangeArg.split('=')[1] : SCAN_DEFAULT_RANGE });
+  console.log(`统计区间 ${out.windowStart} ~ ${out.windowEnd}（${out.windowDays} 天，${out.rangeLabel}）共缺 ${out.totalMissing} 天`);
   console.log(JSON.stringify(out, null, 2));
 }

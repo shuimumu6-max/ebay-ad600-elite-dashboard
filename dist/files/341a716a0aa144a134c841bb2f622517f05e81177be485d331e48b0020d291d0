@@ -1,0 +1,168 @@
+// 「一键补齐」的排队计划：把缺口拆成尽量少的几步，逐步串行执行。
+// 拆出来单独放，是为了能离线跑测试（不用真去 eBay 下载）。
+//
+// 约定（2026-11-10 二次重写：PLG 多预设合并进同一个进程，补齐全流程只剩 1 个下载步）：
+//   1. 流量逐日 + PLP 区间 + PLG 全部预设合并成**一个进程**：流量在一个标签页里按天循环，
+//      PLP 三个 campaign 在另外的标签页并行，PLG 走报表中心串行队列依次提交，互不抢；
+//   2. PLP 用「起止区间」一份搞定（campaign 页支持区间，报表里带 Date 列），
+//      不再一天提交一次；
+//   3. PLG 只有预设区间（今天/昨天/本周/上周），多预设用逗号列表一次传（如
+//      LASTWEEK,CURRENTWEEK），报表中心内部串行、不会认错文件；
+//   4. 步与步之间留 gapSec 秒（默认 8，限 5~120）——只有拆出多个进程时才用得上；
+//   5. 归档 / 推看板不在这里，等下载跑完、拿到运行目录后再补到队尾。
+
+export const GAP_MIN_SEC = 5;
+export const GAP_MAX_SEC = 120;
+export const GAP_DEFAULT_SEC = 8;
+
+export function clampGapSec(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return GAP_DEFAULT_SEC;
+  return Math.min(GAP_MAX_SEC, Math.max(GAP_MIN_SEC, Math.round(n)));
+}
+
+// PLG 的四个「按日」预设，以及它们覆盖的日期区间（today = 太平洋时间的今天）
+export const PLG_PRESETS = ['TODAY', 'YESTERDAY', 'CURRENTWEEK', 'LASTWEEK'];
+export function presetRange(preset, today) {
+  const d = new Date(`${today}T00:00:00Z`);
+  const shift = n => { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const monday = shift(-(((d.getUTCDay() + 6) % 7)));
+  switch (preset) {
+    case 'TODAY': return [today, today];
+    case 'YESTERDAY': return [shift(-1), shift(-1)];
+    case 'CURRENTWEEK': return [monday, shift(-(((d.getUTCDay() + 6) % 7)) + 6)];
+    case 'LASTWEEK': {
+      const lastMon = new Date(`${monday}T00:00:00Z`);
+      lastMon.setUTCDate(lastMon.getUTCDate() - 7);
+      const a = lastMon.toISOString().slice(0, 10);
+      const b = new Date(lastMon); b.setUTCDate(b.getUTCDate() + 6);
+      return [a, b.toISOString().slice(0, 10)];
+    }
+    default: return null;
+  }
+}
+
+// 把缺口按预设分组；超出「上周」的日子返回 unfillable
+// （eBay 的按日数据只给到上周，更早的日子选不到，报错也补不了，只能告诉用户）
+//
+// 匹配顺序是「周 → 天」：一周里缺两天时，用一次「本周」比拆成「昨天 + 本周」少提交一次请求。
+// eBay 的广告报表提交次数是珍贵的（连点会被回 We couldn't process your download），
+// 少一次就少一次失败机会；「本周」报表同样包含昨天那天的数据。
+const PRESET_PRIORITY = ['CURRENTWEEK', 'LASTWEEK', 'YESTERDAY', 'TODAY'];
+
+export function groupPlgByPreset(days = [], today) {
+  const groups = [];
+  const unfillable = [];
+  for (const day of days) {
+    const preset = PRESET_PRIORITY.find(p => {
+      const r = presetRange(p, today);
+      return r && day >= r[0] && day <= r[1];
+    });
+    if (!preset) { unfillable.push(day); continue; }
+    const g = groups.find(x => x.preset === preset);
+    if (g) g.days.push(day); else groups.push({ preset, days: [day] });
+  }
+  for (const g of groups) g.days.sort();
+  groups.sort((a, b) => PRESET_PRIORITY.indexOf(a.preset) - PRESET_PRIORITY.indexOf(b.preset));
+  return { groups, unfillable: unfillable.sort() };
+}
+
+// 把一批日期合并成若干连续段：[{start, end, days}]，PLP 按段提交（一段=一次请求）
+export function contiguousRanges(days = []) {
+  const sorted = [...new Set(days)].filter(Boolean).sort();
+  const out = [];
+  for (const d of sorted) {
+    const last = out[out.length - 1];
+    if (last && new Date(`${last.end}T00:00:00Z`).getTime() + 86400000 === new Date(`${d}T00:00:00Z`).getTime()) {
+      last.end = d; last.days++;
+    } else {
+      out.push({ start: d, end: d, days: 1 });
+    }
+  }
+  return out;
+}
+
+// --dates 参数的写法：连续就用 a..b（更短），不连续就逗号列表
+export function daysArgSpec(days = []) {
+  if (!days.length) return '';
+  const ranges = contiguousRanges(days);
+  if (ranges.length === 1) return ranges[0].start === ranges[0].end ? ranges[0].start : `${ranges[0].start}..${ranges[0].end}`;
+  return days.join(',');
+}
+
+export function planGapFill({ trafficDays = [], plgDays = [], plpDays = [], plgPreset = '', plgGroups = [], outDir, campaigns = [], gapSec = GAP_DEFAULT_SEC } = {}) {
+  const traffic = [...new Set(trafficDays)].filter(Boolean).sort();
+  // PLG 预设组：老调用方只传 plgDays + plgPreset 也照旧能用。
+  // 多预设写成逗号列表（--plg-range LASTWEEK,CURRENTWEEK），报表中心串行队列会依次
+  // 提交——和流量/PLP 合并在同一个进程里，不再「一个预设一个进程」分步。
+  const groups = plgGroups.length
+    ? plgGroups
+    : (plgDays.length && plgPreset ? [{ preset: plgPreset, days: plgDays }] : []);
+  const plgList = groups.filter(g => (g.days || []).length);
+  const plgPresets = plgList.map(g => g.preset);
+  const plgLastDay = plgList.flatMap(g => g.days).sort().pop() || '';
+  const waitMs = clampGapSec(gapSec) * 1000;
+  const base = ['run-download.mjs', '--out', outDir, '--max-tabs', '10'];
+  const steps = [];
+
+  // PLP 合并成一个区间提交（min~max）：campaign 页的报表带 Date 列，一次请求就能覆盖整段；
+  // 中间已存在的天会被看板按「日期|活动|关键词」复合键去重覆盖，不会重复计数。
+  // 原来按天提交，14 天就是 14 轮 × 2 分钟，一个区间一步就够。
+  const plpSegments = contiguousRanges(plpDays);
+  const plpRange = plpSegments.length
+    ? { start: plpSegments[0].start, end: plpSegments[plpSegments.length - 1].end }
+    : null;
+  if (traffic.length || plpRange || plgPresets.length) {
+    const kinds = [];
+    const tail = [];
+    const lastDay = traffic.length
+      ? traffic[traffic.length - 1]
+      : (plpRange ? plpRange.end : plgLastDay);
+    if (traffic.length) { kinds.push('trafficDaily'); tail.push('--dates', daysArgSpec(traffic)); }
+    if (plpRange) {
+      kinds.push('plp');
+      tail.push('--plp-types', 'listing', '--campaigns', campaigns.join(','),
+        '--plp-start', plpRange.start, '--plp-end', plpRange.end);
+    }
+    if (plgPresets.length) {
+      kinds.push('plg');
+      tail.push('--plg-unit', 'DAILY', '--plg-range', plgPresets.join(','));
+    }
+    const parts = [];
+    if (traffic.length) parts.push(`流量逐日（${traffic[0]} ~ ${lastDay}，共 ${traffic.length} 天）`);
+    if (plpRange) parts.push(`PLP 物品列表（${plpRange.start} ~ ${plpRange.end}）`);
+    if (plgPresets.length) parts.push(`PLG 链接广告（预设 ${plgPresets.join(' + ')}，报表中心串行）`);
+    steps.push({
+      day: traffic.length ? `流量 ${traffic.length} 天` : (plpRange ? `PLP ${plpRange.start}~${plpRange.end}` : `PLG ${plgPresets.join('+')}`),
+      title: parts.length > 1 ? `${parts.join(' + ')}，一个进程并行` : parts[0],
+      mode: 'download',
+      kinds,
+      args: [...base, '--only', kinds.join(','), '--date', lastDay, ...tail],
+      gapMs: waitMs
+    });
+  }
+
+  const allDays = [...new Set([...traffic, ...plpDays])].sort();
+  return { steps, days: allDays, gapMs: waitMs };
+}
+
+// 下一步之前要等多久：下载步骤之间留间隔；归档 / 推看板本身 gapMs=0，跑完立刻接上
+export function waitBeforeStep(current, next, fallbackMs = 0) {
+  if (!next) return 0;
+  if (next.gapMs === 0) return 0;
+  if (current && Number.isFinite(current.gapMs)) return current.gapMs;
+  return fallbackMs;
+}
+
+// 下载跑完后，把「逐个归档 → 推看板」补到队尾（运行目录是跑完才知道的）
+export function tailSteps(runDirs = []) {
+  const tail = runDirs.map((dir, k) => ({
+    day: `归档 ${k + 1}/${runDirs.length}`,
+    title: `归档 ${k + 1}/${runDirs.length}（${String(dir).split(/[\\/]/).filter(Boolean).pop()}）`,
+    mode: 'publish',
+    args: ['archive-publish.mjs', '--run', dir, '--no-publish'],
+    gapMs: 0
+  }));
+  tail.push({ day: '更新看板', title: '更新看板', mode: 'publish', args: ['publish-only.mjs'], gapMs: 0 });
+  return tail;
+}

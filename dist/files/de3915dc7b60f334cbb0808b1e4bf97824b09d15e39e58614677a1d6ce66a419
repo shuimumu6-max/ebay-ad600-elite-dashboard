@@ -393,7 +393,7 @@
         <div class="pill"><span class="dot ok" id="dotShop"></span><span id="txtShop">我的店铺</span>
           <button class="link" id="btnShopName" title="只是个显示名，随时能改">改名</button></div>
         <div class="pill"><span class="dot" id="dotRun"></span><span id="txtRun">空闲</span></div>
-        <a class="tlink" id="linkDash" href="#" target="_blank" rel="noopener">在线看板 ↗</a>
+        <a class="tlink" id="linkDash" href="#" target="_blank" rel="noopener" title="本机全店铺产品看板（127.0.0.1 本机服务，按 SKU + 标题自动识别全部机型，不用发布）">打开看板 ↗</a>
       </div>
     </div>
 
@@ -405,17 +405,17 @@
 
   <div id="viewDownload">
 
-  <!-- 首次使用引导：正式目录（看板数据源）还没有 CSV 时出现，点一次就有 2 周数据 -->
+  <!-- 首次使用引导：正式目录（看板数据源）还没有 CSV 时出现，点一次就有「上周 + 本周」数据 -->
   <div class="firstrun" id="firstRun" hidden>
     <div class="fr-body">
-      <h3>第一次用？点一下，自动把最近 2 周的数据下下来</h3>
+      <h3>第一次用？点一下，自动把「上周 + 本周」的数据下下来</h3>
       <p>会先自动识别你的店铺（只读浏览器里的登录账号，不用填任何东西），然后依次下载：流量报表（逐日 14 份）、在售商品名单、PLG 链接广告与优先促销刊登（本周 + 上周——eBay 的广告「按日」数据只给这两周）。大概 10 分钟，全程自动，可以最小化窗口，但别关控制台。</p>
       <p class="fr-hint">两周刚好能对比「上周 vs 本周」。下完会自动归档，打开看板就能看到数据。eBay 对流量报表有频率限制，偶尔会中途说「先歇一会儿」——已经下好的不会重复，过 1 小时点右侧「补齐缺口 + 更新看板」接着补就行。</p>
       <p class="fr-hint" id="frPending" hidden></p>
       <p class="fr-hint" id="frConnectTip" hidden><b>现在还不能下载：</b>右上角显示「需要拨一次开关」——先点那里的「去开开关」，在浏览器里把 <b>Allow remote debugging</b> 拨到开，等顶部变成「已连接」，这个按钮就能点了。</p>
     </div>
     <div class="fr-actions">
-      <button class="btn primary" id="btnFirstRun">自动下载最近 2 周</button>
+      <button class="btn primary" id="btnFirstRun">自动下载上周 + 本周</button>
       <button class="btn" id="btnFirstRunSkip">不用，我自己选</button>
     </div>
   </div>
@@ -659,19 +659,19 @@
         <div class="panel-h">
           <h2>看板数据体检</h2>
           <span class="panel-sub" id="scanSub">看正式目录里每类报表覆盖到哪天</span>
-          <label class="scan-range" title="默认和「自动下载最近 2 周」同一个口径；数据攒久了再往上调，不必一上来就扫几个月">体检区间
+          <label class="scan-range" title="默认「上周 + 本周」：广告报表的按日口径只有 今天/昨天/本周/上周，卡在周界上两份预设就能盖住；数据攒久了再往上调，不必一上来就扫几个月">体检区间
             <select id="scanDays">
-              <option value="14" selected>最近 2 周</option>
+              <option value="week" selected>上周 + 本周</option>
               <option value="28">最近 4 周</option>
               <option value="56">最近 8 周</option>
               <option value="0">全部历史</option>
             </select>
           </label>
-          <button class="btn primary" id="btnGapFill" style="margin-left:8px" title="逐天串行：一天跑完停 90 秒再跑下一天，全部跑完自动归档并推看板" disabled>补齐缺口 + 更新看板</button>
+          <button class="btn primary" id="btnGapFill" style="margin-left:8px" title="流量逐日 + PLP 区间 + PLG 按预设，合并成 2~3 个下载步骤，跑完自动归档并推看板" disabled>补齐缺口 + 更新看板</button>
           <button class="btn" id="btnScan" style="margin-left:8px">扫描缺少的报表</button>
         </div>
         <div class="panel-b">
-          <p class="hint" style="margin-top:0">看板数据就是从正式目录生成的，这里缺的看板上也没有。日更口径＝流量单日 + PLG 链接广告 + PLP 物品列表（走 campaign 页区间汇总）+ 在售商品名单（快照，只看最新一份有多旧）。关键词 / 搜索词默认不下载，看板上这两个板块可以留空——这里只做「仅提醒」，不算缺口、也不会被补齐。「补齐缺口 + 更新看板」只下缺的那几天：流量按天精确补、PLG 用能盖住缺口的最小预设（今天/昨天/本周/上周）、PLP 按缺口起止区间，跑完自动归档并推送看板。流量累计只用于对账、活动汇总报表不进看板，均不参与体检；在售商品名单同样不参与。统计到太平洋时间「昨天」为止：今天的数据还没出、不算缺；链接上架之前的空白天也不算缺。区间默认「最近 2 周」，和首次下载同一口径——数据攒久了在右上角调成 4 周 / 8 周 / 全部历史即可，调大后「补齐缺口」也只补这个区间里的天。</p>
+          <p class="hint" style="margin-top:0">看板数据就是从正式目录生成的，这里缺的看板上也没有。日更口径＝流量单日 + PLG 链接广告 + PLP 物品列表（走 campaign 页区间汇总）+ 在售商品名单（快照，只看最新一份有多旧）。关键词 / 搜索词默认不下载，看板上这两个板块可以留空——这里只做「仅提醒」，不算缺口、也不会被补齐。「补齐缺口 + 更新看板」合并成尽量少的下载步骤：流量逐日一个进程跑完、PLP 按缺口起止一个区间请求、PLG 按预设（上周 / 本周）各一步，跑完自动归档并推送看板。流量累计只用于对账、活动汇总报表不进看板，均不参与体检；在售商品名单同样不参与。统计到太平洋时间「昨天」为止：今天的数据还没出、不算缺；链接上架之前的空白天也不算缺。区间默认「上周 + 本周」（上周一 ~ 昨天）：广告报表的按日口径只有今天/昨天/本周/上周，卡在周界上正好两份预设盖住，周报看板也对齐——数据攒久了在右上角调成 4 周 / 8 周 / 全部历史即可，调大后「补齐缺口」也只补这个区间里的天。</p>
           <div id="scanBody"></div>
         </div>
       </section>
@@ -997,7 +997,7 @@ $('#prRefresh').addEventListener('click', async () => {
   }
 });
 
-/* ---------- 首次使用：一键下最近 2 周，让看板一打开就有数据（也够做周度对比） ---------- */
+/* ---------- 首次使用：一键下「上周 + 本周」，让看板一打开就有数据（也够做周度对比） ---------- */
 $('#btnFirstRun').addEventListener('click', async () => {
   if (!state.chromeOk) return toast('还没连上浏览器：先点右上角「去开开关」，把开关拨到开', true);
   const btn = $('#btnFirstRun');
@@ -1010,12 +1010,12 @@ $('#btnFirstRun').addEventListener('click', async () => {
     })).json();
     if (!r.ok) throw new Error(r.error || '启动失败');
     $('#firstRun').hidden = true;
-    toast('已开始下载最近 2 周数据，进度看下方日志（约 10 分钟）');
+    toast('已开始下载「上周 + 本周」数据，进度看下方日志（约 10 分钟）');
   } catch (error) {
     toast(error.message, true);
     delete btn.dataset.busy;
     btn.disabled = !state.chromeOk;
-    btn.textContent = state.chromeOk ? '自动下载最近 2 周' : '先连接浏览器';
+    btn.textContent = state.chromeOk ? '自动下载上周 + 本周' : '先连接浏览器';
   }
 });
 $('#btnFirstRunSkip').addEventListener('click', () => {
@@ -1030,8 +1030,10 @@ function applyDashboardMode(){
   const local = dashboardMode === 'local';
   const link = $('#linkDash');
   if (link){
-    link.textContent = local ? '打开本机看板 ↗' : '在线看板 ↗';
-    link.title = local ? '数据只在这台电脑上，点这里打开看板' : '打开线上看板';
+    // 两种模式都打开本机全店铺看板（127.0.0.1）：运营的数据是他们自己店铺的，
+    // 机型按 SKU + 标题动态识别，不该看维护者店铺的线上看板（那只留作模板）。
+    link.textContent = '打开看板 ↗';
+    link.title = '本机全店铺产品看板（按 SKU + 标题自动识别全部机型，不用发布）';
   }
   const btnPub = $('#btnPublish');
   if (btnPub){
@@ -1049,8 +1051,8 @@ async function openLocalDashboard(){
   toast('已打开看板，报表会自动加载；想补文件也可以直接拖进页面');
 }
 // 顶栏「看板」链接：线上模式是普通外链；本地模式改成打开本机看板
+// 顶栏「打开看板」：两种模式都打开本机全店铺看板（app/open-dashboard.mjs → 看板/ebay-shop-dashboard.html）。
 $('#linkDash')?.addEventListener('click', e => {
-  if (dashboardMode !== 'local') return;
   e.preventDefault();
   openLocalDashboard();
 });
@@ -1307,7 +1309,7 @@ function applyConnectGate(ok, reason){
   const frBtn = $('#btnFirstRun');
   if (frBtn && !frBtn.dataset.busy){
     frBtn.disabled = !ok;
-    frBtn.textContent = ok ? '自动下载最近 2 周' : '先连接浏览器';
+    frBtn.textContent = ok ? '自动下载上周 + 本周' : '先连接浏览器';
     frBtn.title = ok ? '' : (state.chromeReason || '先连接浏览器');
   }
   const tip = $('#frConnectTip');
@@ -1405,7 +1407,7 @@ async function refreshState(){
         if (pend) pendEl.innerHTML = `下载结果里已经有 <b>${pend}</b> 份报表还没归档：点右边「补齐缺口 + 更新看板」会先把它们归档并更新看板，不用重下。`;
       }
     }
-    if (s.dashboard) $('#linkDash').href = dashboardMode === 'local' ? '#' : s.dashboard;
+    if (s.dashboard) $('#linkDash').href = '#';
     if (s.dataState) renderDataState(s.dataState);
     $('#dotRun').className = 'dot ' + (s.running ? 'busy' : 'ok');
     $('#txtRun').textContent = s.running ? '下载中…' : '空闲';
@@ -1514,7 +1516,7 @@ es.addEventListener('run', e => {
     }
     setRunning(false);
     loadRuns();                                   // 跑完 / 归档完都刷新一次运行清单
-    if (data.dashboard) $('#linkDash').href = dashboardMode === 'local' ? '#' : data.dashboard;
+    if (data.dashboard) $('#linkDash').href = '#';
     if (data.dataState) renderDataState(data.dataState);
     if (data.mode === 'publish'){
       if (dashboardMode === 'local'){
@@ -1736,7 +1738,7 @@ function renderScan(r){
   // 一份数据都没有（刚装好、还没跑首次下载）：把「全缺 14 天」说清楚，别让人以为算错了
   const allEmpty = rows.length > 0 && rows.every(x => x.nothingYet);
   const emptyHint = allEmpty
-    ? '<div class="scan-empty">正式目录里还没有任何报表。点右边「<b>补齐缺口 + 更新看板</b>」会按首次初始化下载最近 2 周（流量逐日 + 在售名单 + 广告），跑完自动归档并更新看板；下载结果里若已有报表，会先归档那一批，不重复下。</div>'
+    ? '<div class="scan-empty">正式目录里还没有任何报表。点右边「<b>补齐缺口 + 更新看板</b>」会按首次初始化下载「上周 + 本周」（流量逐日 + 在售名单 + 广告），跑完自动归档并更新看板；下载结果里若已有报表，会先归档那一批，不重复下。</div>'
     : '';
   const scope = r.fullHistory ? `全部历史，共 ${r.windowDays} 天` : `最近 ${r.windowDays} 天`;
   const olderHint = r.hasOlder
@@ -1769,7 +1771,7 @@ $('#btnGapFill').addEventListener('click', async () => {
   try {
     const res = await fetch('/api/gap-fill', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ days: scanWindowDays() })
+      body: JSON.stringify({ range: scanWindowRange() })
     });
     const r = await res.json();
     if (!r.ok) { toast(r.error || '补齐没启动', true); return; }
@@ -1785,9 +1787,8 @@ $('#btnGapFill').addEventListener('click', async () => {
       return;
     }
     const p = r.plan || {};
-    const days = (r.steps || []).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s.day)).length;
-    toast(`已开始逐天补齐：${days} 天，每天之间停 ${r.gapSec || 90} 秒`);
-    appendLog(`[控制台] 一键补齐已启动：逐天串行，每天之间停 ${r.gapSec || 90} 秒，全部跑完自动归档并更新看板`);
+    toast(`已开始补齐：${(r.steps || []).length} 个下载步骤，步与步之间停 ${r.gapSec || 8} 秒`);
+    appendLog(`[控制台] 一键补齐已启动：流量逐日 + PLP 区间合并跑、PLG 按预设分步，全部跑完自动归档并更新看板`);
     if (p.plgPreset) appendLog(`[控制台] PLG 缺口 ${p.plgDays?.[0]} ~ ${p.plgDays?.slice(-1)[0]}，按预设 ${p.plgPreset} 单独跑`);
     if (p.plgUnfillable?.length) appendLog(`[控制台] PLG 有 ${p.plgUnfillable.length} 天超出 eBay 可选范围（最早只到上周），补不了`);
   } catch {
@@ -1798,17 +1799,17 @@ $('#btnGapFill').addEventListener('click', async () => {
   }
 });
 
-// 体检区间（0 = 全部历史）。默认 2 周，和后台上限同一套取值
-function scanWindowDays(){
-  const v = Number($('#scanDays')?.value);
-  return Number.isFinite(v) ? v : 14;
+// 体检区间（'week' = 上周 + 本周，0 = 全部历史）。默认周界口径：广告按日只给 今天/昨天/本周/上周
+function scanWindowRange(){
+  const v = $('#scanDays')?.value;
+  return (v === undefined || v === '') ? 'week' : v;
 }
 
 $('#btnScan').addEventListener('click', async () => {
   $('#btnScan').disabled = true;
   $('#scanBody').innerHTML = '<div class="empty">正在扫描正式目录…</div>';
   try{
-    const r = await (await fetch(`/api/scan?days=${scanWindowDays()}`)).json();
+    const r = await (await fetch(`/api/scan?range=${encodeURIComponent(scanWindowRange())}`)).json();
     renderScan(r);
     const gapTotal = (r.totalMissing || 0) + (r.nothingYetDays || 0);
     toast(gapTotal ? `有 ${gapTotal} 天数据缺失` : '各类报表数据齐全', !!gapTotal);

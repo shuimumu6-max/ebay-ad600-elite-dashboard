@@ -1,0 +1,151 @@
+// 体检区间的离线验收（不需要浏览器、不联网、不碰正式目录）
+// 盯四件事：
+//   1. 默认口径 =「上周 + 本周」（上周一 ~ 太平洋昨天），和首次下载同一口径；
+//   2. 区间外的更早数据不算缺、也不算进统计区间，但界面上要能知道「更早还有」；
+//   3. 一条数据都没有时不能抛错（新手第一件事就是点这个按钮）；
+//   4. 参数清洗：'week' / 数字 / 0 各归各位。
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { scanGaps, clampScanRange, weekWindow, addDays } from './scan-gaps.mjs';
+
+let pass = 0;
+const fails = [];
+const ok = (name, cond, extra = '') => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); }
+  else { fails.push(name); console.log(`  ✗ ${name}${extra ? ' → ' + extra : ''}`); }
+};
+const eq = (name, actual, expected) => ok(name, actual === expected, `期望 ${expected}，实际 ${actual}`);
+
+// 固定「现在」：太平洋时间 2026-11-09（周一）→ 体检窗口 = 上周一 10-26 ~ 昨天 11-08，恰好 14 天
+const NOW = new Date('2026-11-10T02:00:00Z');
+const WINDOW_END = '2026-11-08';
+// 太平洋时间 2026-11-11（周三）→ 窗口 = 上周一 11-02 ~ 昨天 11-10，共 9 天
+const NOW_MIDWEEK = new Date('2026-11-11T20:00:00Z');
+
+// eBay 的流量报表把日期写在「Report for Nov 06, 2026 to Nov 08, 2026」这句前言里
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pretty = iso => `${MON[+iso.slice(5, 7) - 1]} ${iso.slice(8, 10)}, ${iso.slice(0, 4)}`;
+const trafficCsv = (day) => [
+  'Traffic report',
+  // 真实报表后面一定跟「compared to ...」，解析器靠它截断日期
+  `Report for ${pretty(day)} to ${pretty(day)} compared to ${pretty(addDays(day, -31))} - ${pretty(addDays(day, -31))}`,
+  'Listing title,Category,eBay item ID,Quantity sold,Traffic',
+  'x,Diagnostics,820289759002,1,12'
+].join('\r\n');
+
+const plgCsv = (dates) => [
+  'Campaign name,Campaign ID,Date,Item ID,Impressions,Clicks,Ad fees',
+  ...dates.map(d => `AD600,123,${d},820289759002,100,2,0.5`)
+].join('\r\n');
+
+const root = mkdtempSync(join(tmpdir(), 'scan-window-'));
+const dir = join(root, '数据');
+mkdirSync(dir, { recursive: true });
+try {
+  // ---- 场景 A0：周界窗口计算 ----
+  console.log('场景 A0：上周 + 本周的窗口计算');
+  const wMon = weekWindow(NOW);
+  eq('周一：起点 = 上周一 10-26', wMon.start, '2026-10-26');
+  eq('周一：终点 = 昨天 11-08', wMon.end, '2026-11-08');
+  const wWed = weekWindow(NOW_MIDWEEK);
+  eq('周三：起点 = 上周一 11-02', wWed.start, '2026-11-02');
+  eq('周三：终点 = 昨天 11-10', wWed.end, '2026-11-10');
+
+  // ---- 场景 A：全新用户，目录全空 ----
+  console.log('场景 A：一条数据都没有（新手第一次点「扫描缺少的报表」）');
+  const emptyDir = join(root, '空目录');
+  mkdirSync(emptyDir, { recursive: true });
+  let empty = null, emptyErr = null;
+  try {
+    empty = await scanGaps({ dataDir: emptyDir, dashboardUrl: null, now: NOW });
+  } catch (error) { emptyErr = error; }
+  ok('不再抛 Cannot read properties of null', !emptyErr, emptyErr?.message);
+  if (empty) {
+    eq('默认口径 = 周界', empty.range, 'week');
+    eq('区间标签 = 上周 + 本周', empty.rangeLabel, '上周 + 本周');
+    eq('窗口结束 = 昨天', empty.windowEnd, WINDOW_END);
+    eq('窗口起点 = 上周一', empty.windowStart, '2026-10-26');
+    eq('窗口 = 14 天（周一时上周整周 + 本周整周）', empty.windowDays, 14);
+    const daily = ['trafficDaily', 'plg', 'plpListing'];
+    ok('日更三类都标成「全缺 14 天」',
+      daily.every(k => empty.rows.find(r => r.key === k)?.missingDays === 14));
+    ok('在售名单按快照报「还没有」，不算缺几天',
+      empty.rows.find(r => r.key === 'activeList')?.snapshot === true);
+    ok('关键词 / 搜索词降级为「仅提醒」，不进缺口',
+      ['plpKeyword', 'plpSearch'].every(k => empty.rows.find(r => r.key === k)?.optional === true));
+    eq('全缺天数只算必需的三类（3 × 14）', empty.nothingYetDays, 42);
+    eq('allEmpty 为 true，体检中心据此走「首次初始化」', empty.allEmpty, true);
+    eq('「共缺」只算已有数据里的零星缺口', empty.totalMissing, 0);
+  }
+
+  // ---- 场景 A2：周三看（本周只有 2 天）----
+  console.log('场景 A2：周三体检（窗口只有 9 天，本周还没过完不算缺）');
+  const midEmpty = await scanGaps({ dataDir: emptyDir, dashboardUrl: null, now: NOW_MIDWEEK });
+  eq('周三窗口起点 = 11-02', midEmpty.windowStart, '2026-11-02');
+  eq('周三窗口 = 9 天', midEmpty.windowDays, 9);
+  eq('周三全缺天数 = 3 × 9', midEmpty.nothingYetDays, 27);
+
+  // ---- 场景 B：数据只覆盖最近 3 天（首次下载刚跑完的样子）----
+  console.log('场景 B：只有最近几天数据（刚跑完首次下载）');
+  writeFileSync(join(dir, 'traffic-1106.csv'), trafficCsv('2026-11-06'), 'utf8');
+  writeFileSync(join(dir, 'traffic-1107.csv'), trafficCsv('2026-11-07'), 'utf8');
+  writeFileSync(join(dir, 'traffic-1108.csv'), trafficCsv('2026-11-08'), 'utf8');
+  writeFileSync(join(dir, 'plg-week.csv'), plgCsv(['2026-11-07']), 'utf8');
+
+  const recent = await scanGaps({ dataDir: dir, dashboardUrl: null, now: NOW });
+  eq('有数据后 allEmpty = false', recent.allEmpty, false);
+  eq('区间仍是 14 天', recent.windowDays, 14);
+  const traffic = recent.rows.find(r => r.key === 'trafficDaily');
+  const plg = recent.rows.find(r => r.key === 'plg');
+  eq('流量：3 天都有 → 不缺', traffic.missingDays, 0);
+  eq('流量：不会把上架前的日子算成缺', traffic.windowStart, '2026-11-06');
+  eq('PLG：少 11-08 一天才算缺', plg.missingDays, 1);
+  eq('PLG 缺口定位到 11-08', plg.missingRanges[0]?.start, '2026-11-08');
+
+  // ---- 场景 C：有更早的数据（区间外）----
+  console.log('场景 C：数据比 2 周长（体检只看上周+本周，但要提示「更早还有」）');
+  writeFileSync(join(dir, 'traffic-1001.csv'), trafficCsv('2026-10-01'), 'utf8');
+  const clipped = await scanGaps({ dataDir: dir, dashboardUrl: null, now: NOW });
+  const t2 = clipped.rows.find(r => r.key === 'trafficDaily');
+  eq('区间仍从 10-26 起（不被老数据拉回去）', clipped.windowStart, '2026-10-26');
+  eq('区间外的 10-01 不算进缺口', t2.windowStart, '2026-10-26');
+  eq('缺口 = 10-26 ~ 11-05 共 11 天', t2.missingDays, 11);
+  eq('能看出区间外还有数据（最早 10-01）', clipped.oldestData, '2026-10-01');
+  ok('hasOlder 为 true，界面才提示调大区间', clipped.hasOlder === true);
+  ok('coveredBefore > 0', clipped.coveredBefore > 0);
+
+  // ---- 场景 C2：调成 4 周（28 天，老口径仍可用）----
+  console.log('场景 C2：把区间调成「最近 4 周」');
+  const fourWeeks = await scanGaps({ dataDir: dir, dashboardUrl: null, now: NOW, range: 28 });
+  eq('range = 28', fourWeeks.range, 28);
+  eq('起点 = 昨天回推 27 天', fourWeeks.windowStart, addDays(WINDOW_END, -27));
+
+  // ---- 场景 D：调成全部历史 ----
+  console.log('场景 D：把区间调成「全部历史」');
+  const full = await scanGaps({ dataDir: dir, dashboardUrl: null, now: NOW, range: 0 });
+  eq('区间起点 = 最早那天', full.windowStart, '2026-10-01');
+  eq('fullHistory 标记', full.fullHistory, true);
+  eq('全部历史下不再提示「更早还有」', full.hasOlder, false);
+  ok('全部历史的缺口 ≥ 周界的缺口', full.totalMissing >= clipped.totalMissing);
+
+  // ---- 场景 E：参数清洗 ----
+  console.log('场景 E：区间参数清洗');
+  eq('不传 → week', clampScanRange(undefined), 'week');
+  eq('空串 → week', clampScanRange(''), 'week');
+  eq("'week' → week", clampScanRange('week'), 'week');
+  eq('0 → 全部历史', clampScanRange('0'), 0);
+  eq('28 → 28', clampScanRange('28'), 28);
+  eq('老参数 14 → 14（数字口径保留）', clampScanRange(14), 14);
+  eq('超大值夹到 365', clampScanRange(9999), 365);
+  eq('负数当 1 天', clampScanRange(-5), 1);
+} finally {
+  try { rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录清不掉不影响结论 */ }
+}
+
+console.log('');
+if (fails.length) {
+  console.log(`FAIL ${fails.length} 项：${fails.join('；')}`);
+  process.exit(1);
+}
+console.log(`PASS 全部 ${pass} 项`);

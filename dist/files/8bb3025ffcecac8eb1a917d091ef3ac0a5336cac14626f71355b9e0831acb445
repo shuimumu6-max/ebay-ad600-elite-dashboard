@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureEnv, bridgeHealth, startBridgeDaemon, openInspectPage, findChrome } from '../app/ensure-env.mjs';
 import { DATA_DIR, yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIVE_TYPES, ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS } from '../app/config.mjs';
 import { dataDirState, dashboardMode } from '../app/publish.mjs';
-import { scanGaps, pacificToday, clampScanDays } from '../app/scan-gaps.mjs';
+import { scanGaps, pacificToday, clampScanRange, weekWindow, daySpan } from '../app/scan-gaps.mjs';
 import { catalogSnapshot } from '../app/reports.mjs';
 import { SHOP, shopSummary, configFilePath, saveConfigPatch } from '../app/shop-config.mjs';
 import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, groupPlgByPreset, GAP_DEFAULT_SEC } from './gap-plan.mjs';
@@ -122,11 +122,9 @@ function runSellerScan() {
 }
 
 // ---------- 首次初始化：一次把够用的历史数据下下来，看板一打开就有内容 ----------
-// 口径（2026-11-09 实测修正）：eBay 报表中心「按日」粒度只给 今天/昨天/本周/上周，
-// 所以**广告数据最多只能按日回溯两周**（上月/自定义必须用 SUMMARY 汇总，没有逐日行）。
-// 因此：流量逐日 N 天、PLG 和优先促刊各下「上周 + 本周」两份按日数据。
-// days 默认 14（两周）：实测连续下到第 16~17 份流量就会被 eBay 限速拦下，
-// 两周刚好覆盖「上周 vs 本周」做周度对比，又在安全窗口内能一次跑完。
+// 口径（2026-11-10 定，与体检同口径）：「上周 + 本周」，即 上周一 ~ 太平洋昨天。
+// 广告报表「按日」只给 今天/昨天/本周/上周，周界口径两份预设正好盖住；
+// 流量逐日也下同一区间，周报看板天然对齐（上周 7 天 + 本周已过天数）。
 function shiftDays(iso, days) {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -134,39 +132,32 @@ function shiftDays(iso, days) {
 }
 
 // 返回两路队列：流量·在售 一路，广告 一路（广告内部必须串行：PLG 与优先促刊行名相同）
-function firstRunPlan(days = 14) {
-  const end = yesterdayPacific();
-  const start = shiftDays(end, -(days - 1));
+function firstRunPlan() {
+  const week = weekWindow();
+  const end = week.end;
+  const start = week.start;                      // 上周一
+  const days = daySpan(start, end) + 1;          // 通常 8~14 天（看今天是周几）
   const base = ['run-download.mjs', '--out', OUT_DIR, '--max-tabs', '10'];
   // 并行下载：一次调用里同时下「流量 + 在售名单 + 广告」，download.mjs 内部是 Promise.all，
   // 各入口各开自己的标签页（流量走 performance 页，广告/名单走报表中心队列），互不抢。
   // 不能拆成两个进程并行 —— 桥的下载目录是全局设置，两个进程会互相把下载目录改到自己那边，
   // 文件落进对方目录就认领不到（实测 7 天流量只成功 3 天，就是这么丢的）。
+  // 2026-11-10：--plg-range / --priority-range 支持逗号分隔多预设后，上周+本周的广告
+  // 也进同一个进程（报表中心内部串行提交），原来「上周一步、本周第二步」的两进程拆法取消。
   const step1 = {
-    day: '流量·名单·广告上周',
-    title: `流量（逐日 ${days} 份）+ 在售名单 + 广告上周（多入口并行）`,
+    day: '流量·名单·广告（上周+本周）',
+    title: `流量（逐日 ${days} 份，${start} ~ ${end}）+ 在售名单 + 广告上周·本周（多入口并行，报表中心串行）`,
     // 只跑「逐日」：`--only traffic` 会同时开一条累计报表任务，两条 traffic 请求并行更容易被限速。
     args: [...base, '--only', 'trafficDaily,active,plg,priority',
       '--dates', `${start}..${end}`, '--date', end,
       '--active-type', 'active',
-      '--plg-unit', 'DAILY', '--plg-range', 'LASTWEEK',
+      '--plg-unit', 'DAILY', '--plg-range', 'LASTWEEK,CURRENTWEEK',
       // 默认只下物品列表：关键词 / 搜索词会拖慢首次初始化，看板上留空即可（需要时单独下）
       '--priority-types', 'listing',
-      '--priority-unit', 'DAILY', '--priority-range', 'LASTWEEK']
+      '--priority-unit', 'DAILY', '--priority-range', 'LASTWEEK,CURRENTWEEK']
   };
-  const step2 = {
-    day: '广告本周',
-    title: '广告本周（PLG + 优先促销刊登 4 类，按日）',
-    args: [...base, '--only', 'plg,priority', '--date', end,
-      '--plg-unit', 'DAILY', '--plg-range', 'CURRENTWEEK',
-      '--priority-types', 'listing',
-      '--priority-unit', 'DAILY', '--priority-range', 'CURRENTWEEK']
-  };
-  const queues = [
-    { label: '本轮（并行）', steps: [step1] },
-    { label: '本周广告', steps: [step2] }
-  ];
-  const steps = [step1, step2];
+  const steps = [step1];
+  const queues = [{ label: '本轮（并行）', steps }];
   return { steps, queues, start, end, days };
 }
 
@@ -576,7 +567,7 @@ function startSequence(steps, label, gapMs, opts = {}) {
     steps, i: 0, gapMs, label, timer: null, total: steps.length,
     runDirs: [], failures: [], thenArchive: !!opts.thenArchive
   };
-  say(`[控制台] ${label}：共 ${steps.length} 步，逐天串行，每天之间停 ${Math.round(gapMs / 1000)} 秒`);
+  say(`[控制台] ${label}：共 ${steps.length} 步串行，步与步之间停 ${Math.round(gapMs / 1000)} 秒`);
   runSeqStep();
 }
 
@@ -841,14 +832,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // 首次初始化：一键下载最近 2 周（Traffic 逐日 + PLG 上周/本周 + 优先促刊 4 类 + 在售名单）。
+    // 首次初始化：一键下载「上周 + 本周」（Traffic 逐日 + PLG 上周/本周 + 优先促刊 + 在售名单）。
     // 目的是让新装的人打开看板就有数据，不用先研究「该下哪些报表、什么粒度」。
     if (path === '/api/first-run' && req.method === 'POST') {
       if (child || seq || scanChild || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
       const body = await readBody(req).catch(() => ({}));
-      // 默认 14 天：实测连下到第 16~17 份会被 eBay 限速，两周既够做周度对比又能一次跑完。
-      const days = Math.min(90, Math.max(7, Number(body.days) || 14));
-      const plan = firstRunPlan(days);
+      const plan = firstRunPlan();
       if (body.dryRun) {
         return send(res, 200, {
           ok: true, dryRun: true, start: plan.start, end: plan.end,
@@ -861,7 +850,7 @@ const server = http.createServer(async (req, res) => {
       if (!state?.connected) {
         return send(res, 409, { ok: false, needsConnect: true, error: CONNECT_FIRST });
       }
-      say(`[控制台] 首次初始化：流量 ${days} 天 + 在售名单 + 广告（上周/本周），多入口并行下载；全程只读，不改动任何已有数据`);
+      say(`[控制台] 首次初始化：流量 ${plan.days} 天（${plan.start} ~ ${plan.end}，上周 + 本周）+ 在售名单 + 广告（上周/本周），多入口并行下载；全程只读，不改动任何已有数据`);
       // 先把店铺名读出来（只读，几秒），读不到也不拦着下载
       try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
       // 一步一步来：实测两路并行时，两个进程抢同一个浏览器窗口和同一个下载目录，
@@ -869,7 +858,7 @@ const server = http.createServer(async (req, res) => {
       // thenArchive：下完自动归档进「数据」，不用再让用户找「归档」按钮（小白最容易卡在这一步）。
       startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0, { thenArchive: true });
       return send(res, 200, {
-        ok: true, started: true, start: plan.start, end: plan.end, days,
+        ok: true, started: true, start: plan.start, end: plan.end, days: plan.days,
         queues: plan.queues.map(q => ({ label: q.label, steps: q.steps.map(s => ({ day: s.day, title: s.title })) }))
       });
     }
@@ -879,12 +868,12 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/gap-fill' && req.method === 'POST') {
       if (child || seq || par) return send(res, 409, { ok: false, error: '已有任务在跑，先等它结束' });
       if (!(await requireBrowser(res))) return;
-      // 补齐范围和界面上「体检区间」保持一致：看到的是最近 2 周，补的也只补这 2 周，
+      // 补齐范围和界面上「体检区间」保持一致：看到的是「上周 + 本周」，补的也只补这个区间，
       // 不会因为你选了个短区间，后台反而去补几个月的窟窿。
       const form = await readBody(req).catch(() => ({}));
-      const scanDays = clampScanDays(form.days);
+      const scanRange = clampScanRange(form.range !== undefined ? form.range : form.days);
       let scanned;
-      try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL, days: scanDays }); }
+      try { scanned = await scanGaps({ dashboardUrl: DASHBOARD_URL, range: scanRange }); }
       catch (error) { return send(res, 500, { ok: false, error: `扫描失败：${error.message}` }); }
       const byKey = Object.fromEntries(scanned.rows.map(r => [r.key, r]));
       const winStart = scanned.windowStart;
@@ -897,7 +886,7 @@ const server = http.createServer(async (req, res) => {
           ok: true, dryRun: true, started: false,
           mode: payload.mode || (payload.started ? 'gap' : 'none'),
           message: payload.message || null,
-          scanDays, windowStart: winStart, windowEnd: winEnd,
+          scanRange, windowStart: winStart, windowEnd: winEnd,
           days: payload.days || [], start: payload.start, end: payload.end,
           steps: (payload.steps || []).map(x => ({ day: x.day, title: x.title || null }))
         });
@@ -913,19 +902,18 @@ const server = http.createServer(async (req, res) => {
           if (!dryRun) startSequence(tailSteps([pending]), '归档 + 更新看板', 0);
           return reply({
             ok: true, started: true, mode: 'archive',
-            scanDays, windowStart: winStart, windowEnd: winEnd,
+            scanRange, windowStart: winStart, windowEnd: winEnd,
             message: `下载结果里有 ${pendingCsv} 份现成报表，已开始归档并更新看板；回来看还缺就再点一次`
           });
         }
-        const days = !scanDays || scanDays > 90 ? 14 : Math.max(7, scanDays);
-        const plan = firstRunPlan(days);
-        say(`[控制台] 体检发现正式目录一条数据都没有：按首次初始化下载最近 ${days} 天（流量逐日 + 在售名单 + 广告上周/本周），跑完自动归档并更新看板`);
+        const plan = firstRunPlan();
+        say(`[控制台] 体检发现正式目录一条数据都没有：按首次初始化下载「上周 + 本周」（${plan.start} ~ ${plan.end}，流量逐日 + 在售名单 + 广告），跑完自动归档并更新看板`);
         try { await runSellerScan(); } catch (error) { say(`[控制台] 店铺名没读到（不影响下载）：${error.message}`); }
         if (!dryRun) startSequence(plan.steps.map(step => ({ ...step, mode: 'download' })), `首次初始化（${plan.start} ~ ${plan.end}）`, 0, { thenArchive: true });
         return reply({
-          ok: true, started: true, mode: 'first-run', days, start: plan.start, end: plan.end,
-          scanDays, windowStart: winStart, windowEnd: winEnd,
-          message: `还没有任何数据，已按首次初始化开始下载最近 ${days} 天，跑完自动归档并更新看板`
+          ok: true, started: true, mode: 'first-run', days: plan.days, start: plan.start, end: plan.end,
+          scanRange, windowStart: winStart, windowEnd: winEnd,
+          message: `还没有任何数据，已按首次初始化开始下载「上周 + 本周」（${plan.start} ~ ${plan.end}），跑完自动归档并更新看板`
         });
       }
 
@@ -963,7 +951,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const allDays = [...new Set([...trafficDays, ...plpDays])].sort();
-      // 每天之间停 1~2 分钟（默认 90 秒）：同一天/相邻天连续提交容易被 eBay 回「We couldn't process your download」
+      // 步与步之间停几秒（默认 8 秒）：现在一个进程里批量跑，步骤只剩「流量+PLP / PLG 上周 / PLG 本周」三步左右，
+      // 不同报表类型之间不需要等一分半；真被限速时下载脚本自己会放慢并止损
       const gapSec = clampGapSec(form.gapSec);
       const { steps } = planGapFill({
         trafficDays, plgDays: plgFillable, plpDays, plgGroups,
@@ -972,7 +961,7 @@ const server = http.createServer(async (req, res) => {
       if (!dryRun) startSequence(steps, '一键补齐缺口', gapSec * 1000, { thenArchive: true });
       return reply({
         ok: true, started: true, gapSec,
-        scanDays, windowStart: winStart, windowEnd: winEnd,
+        scanRange, windowStart: winStart, windowEnd: winEnd,
         days: allDays,
         steps: steps.map(s => ({ day: s.day, args: s.args })),
         plan: {
@@ -1040,8 +1029,10 @@ const server = http.createServer(async (req, res) => {
 
     // 看板数据体检：正式目录里每类报表哪天有、哪天缺（今天与上架前不算缺）
     if (path === '/api/scan') {
-      const scanDays = clampScanDays(url.searchParams.get('days'));
-      const report = await scanGaps({ dashboardUrl: `${DASHBOARD_URL}data.js`, days: scanDays });
+      const scanRange = clampScanRange(url.searchParams.get('range') !== null
+        ? url.searchParams.get('range')
+        : url.searchParams.get('days'));
+      const report = await scanGaps({ dashboardUrl: `${DASHBOARD_URL}data.js`, range: scanRange });
       say(`[控制台] 体检完成：${report.rows.length} 类报表，区间 ${report.windowStart} ~ ${report.windowEnd}`
         + `（${report.windowDays} 天），共缺 ${report.totalMissing} 天`);
       return send(res, 200, report);

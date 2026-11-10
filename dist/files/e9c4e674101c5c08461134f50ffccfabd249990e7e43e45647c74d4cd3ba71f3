@@ -27,9 +27,10 @@ export const CAMPAIGN_URL = id => `https://www.ebay.com/sh/ads/dashboard/campaig
 // PLP campaign（链接 / 关键词 / 搜索词各 1 份）：来自店铺配置
 export const CAMPAIGNS = PLP_CAMPAIGNS;
 
-// PLP 异步生成：静等 120 秒后首检，之后每 30 秒查一次（查太勤会打断它自己的生成队列）
+// PLP 异步生成：提交后先每 3 秒轻读一次页面（不刷新），满 120 秒才开始按 30 秒节奏刷新查询
 export const PLP_POLL = {
-  firstWaitMs: 120000,    // 首次提交后先静等 120 秒：生成本来就慢，查太勤会打断它自己的队列
+  firstWaitMs: 120000,    // 静等期上限：这段时间只读 DOM，不刷新页面
+  earlyPollMs: 3000,      // 静等期轻查间隔（DOM 只读，无网络请求，不会打扰生成队列）
   retryWaitMs: 60000,     // 点 Try again 重新提交后静等 60 秒（重试时队列较短），再开始查
   intervalMs: 30000,      // 刷新间隔上限：每 30 秒最多刷新一次页面
   settleMs: 12000,        // 刷新后最多等 12 秒看按钮出现（实测 eBay 渲染就绪态要 6~8 秒，2.5 秒必漏）

@@ -235,8 +235,145 @@
     // === SHOP-PRODUCTS-END ===
     const PRODUCT_UNKNOWN = 'unknown';
     // 全店铺口径：PRODUCTS 是动态产品目录（种子 + 在售名单全部 SKU），
-    // 启动时由 normalizeState 用 bundle.products 覆盖；builder 模式下保持种子。
+    // 线上 bundle 启动时由 normalizeState 用 bundle.products 覆盖；
+    // 本机看板（其他运营的「在线看板」就是本机 127.0.0.1 服务，不需要发布）不再只留种子：
+    // 下面 rebuildProductCatalog 会按构建端同一套规则（SKU + 标题提炼机型名）动态重建，
+    // 没有这步的话本地只会显示 KNOWN_PRODUCTS 里的两个种子机型。
     let PRODUCTS = KNOWN_PRODUCTS.map(product => ({ ...product }));
+
+    // ===== 机型提炼（与 update-shop-dashboard.mjs 同口径移植；改规则两边要同步） =====
+    // 标题里的通用描述词，永远不是机型名的一部分（遇到即停止收集）。
+    const MODEL_STOPWORDS = new Set([
+      'obd', 'obd2', 'obdii', 'scanner', 'scan', 'car', 'auto', 'automotive', 'diagnostic', 'diagnostics',
+      'tool', 'tools', 'full', 'system', 'systems', 'all', 'bidirectional', 'professional', 'code', 'codes',
+      'reader', 'fault', 'battery', 'tester', 'analyzer', 'test', 'tests', 'active', 'ecu', 'coding',
+      'programming', 'programmer', 'wireless', 'bluetooth', 'heavy', 'duty', 'truck', 'j1939', 'online',
+      'new', 'newest', 'brand', 'authentic', 'lifetime', 'free', 'updates', 'update', 'coverage', 'vehicle',
+      'vehicles', 'insights', 'unlock', 'grab', 'reveal', 'unseen', 'features', 'live', 'data', 'with',
+      'and', 'for', 'the', 'advanced', 'portable', 'waterproof', 'pocket', 'compact', 'monocular',
+      'thermal', 'camera', 'infrared', 'digital', 'zoom', 'screen', 'multifunctional', 'printable',
+      'report', 'booster', 'charger', 'charging', 'cranking', 'power', 'jump', 'starter', 'ip67', 'ip68',
+      'oe-level', 'oelevel', 'top-tier', 'toplevel', 'multifunction',
+      'resets', 'reset', 'services', 'service', 'functions', 'function', 'motorcycle', 'ios', 'android',
+      'full-system', 'fullsystem', 'j2534', 'pass-thru', 'passthru', 'yard', 'hour', '11-hour', 'table',
+      'diagram', 'topology', 'mapping', 'support', 'handheld', 'hunting', 'night', 'vision', 'imager',
+      'imaging', 'telescope', 'adventure', 'outdoor', 'precise', 'detection', 'maintenance', 'compatibility',
+      'oem', 'oem-level', 'reprogramming', 'us'
+    ]);
+    function cleanModelToken(raw) { return raw.replace(/^[^\w+.-]+|[^\w+.-]+$/g, ''); }
+    function isSpecNoise(lower, raw) {
+      return /^20\d{2}$/.test(lower)
+        || /%$/.test(raw)
+        || /["”']$/.test(raw)
+        || /^\d+(\.\d+)?(v|mm|hz|cca|in)$/.test(lower)
+        || /^\d+\+$/.test(lower)
+        || /\d+x\d+/.test(lower)
+        || /^\d+x$/.test(lower);
+    }
+    // 从单个标题提炼机型名：TOPDON 品牌词之后、首个停用词之前的连续 token（最多 3 个）。
+    function deriveModelName(title) {
+      const text = clean(title).replace(/[^\x20-\x7E]/g, ' ');
+      const tokens = text.split(/\s+/).filter(Boolean);
+      const brandIndex = tokens.findIndex(token => /^topdon$/i.test(token));
+      const start = brandIndex >= 0 ? brandIndex + 1 : 0;
+      const collected = [];
+      for (let index = start; index < Math.min(tokens.length, start + 6); index += 1) {
+        const raw = tokens[index];
+        const lower = raw.toLowerCase();
+        if (collected.length && /^topdon$/i.test(lower)) continue;
+        if (isSpecNoise(lower, raw)) continue;
+        if (MODEL_STOPWORDS.has(lower)) break;
+        const cleaned = cleanModelToken(raw);
+        if (!cleaned || !/[a-z0-9]/i.test(cleaned)) continue;
+        if (/^\d+$/.test(cleaned) || /^\d+\.\d+$/.test(cleaned)) {
+          const nextRaw = tokens[index + 1] || '';
+          const next = cleanModelToken(nextRaw).toLowerCase();
+          if (cleaned.length <= 4 && (!next || MODEL_STOPWORDS.has(next))) {
+            collected.push(cleaned);
+            if (collected.length >= 3) break;
+          }
+          continue;
+        }
+        collected.push(cleaned);
+        if (collected.length >= 3) break;
+      }
+      if (!collected.length || !collected.some(token => /[a-z]/i.test(token))) return '';
+      return collected.join(' ');
+    }
+    // 一个 SKU 下的多标题投票：取票数最高的机型，显示名用出现次数最多的原始写法。
+    function deriveModelLabel(titles) {
+      const votes = new Map();
+      for (const [title, count] of titles) {
+        const model = deriveModelName(title);
+        if (!model) continue;
+        const norm = titleKey(model);
+        if (!votes.has(norm)) votes.set(norm, { votes: 0, surfaces: new Map() });
+        const entry = votes.get(norm);
+        entry.votes += count;
+        entry.surfaces.set(model, (entry.surfaces.get(model) || 0) + count);
+      }
+      if (!votes.size) return { model: '' };
+      const winner = [...votes.entries()].sort((a, b) => b[1].votes - a[1].votes || a[0].localeCompare(b[0]))[0][1];
+      const surface = [...winner.surfaces.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+      return { model: surface };
+    }
+    // 动态产品目录：种子 + 全部 SKU（机型名提炼不出回退 SKU；同机型多 SKU 合并）。
+    function buildProductCatalogLocal(skuByItemIdMaps, skuTitles) {
+      const catalog = KNOWN_PRODUCTS.map(product => ({ ...product, titleTokens: [...product.titleTokens], skus: [product.sku] }));
+      const byLabel = new Map(catalog.map(product => [titleKey(product.label), product]));
+      const bySku = new Map(catalog.flatMap(product => product.skus.map(sku => [sku.toLowerCase(), product])));
+      const allSkus = new Map();
+      for (const map of skuByItemIdMaps) {
+        for (const sku of map.values()) {
+          const key = String(sku);
+          if (key && !allSkus.has(key)) allSkus.set(key, skuTitles.get(key) || new Map());
+        }
+      }
+      for (const [sku, titles] of skuTitles) if (!allSkus.has(sku)) allSkus.set(sku, titles);
+      const skuEntries = [...allSkus.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [sku, titles] of skuEntries) {
+        if (!sku || bySku.has(sku.toLowerCase())) continue;
+        const { model } = deriveModelLabel(titles);
+        const label = model || sku;
+        const norm = titleKey(label);
+        const same = byLabel.get(norm);
+        if (same) {
+          if (!same.skus.includes(sku)) same.skus.push(sku);
+          bySku.set(sku.toLowerCase(), same);
+          continue;
+        }
+        const product = { key: label, label, sku, skus: [sku], titleTokens: [norm] };
+        catalog.push(product);
+        byLabel.set(norm, product);
+        bySku.set(sku.toLowerCase(), product);
+      }
+      return catalog;
+    }
+    // 本机看板入口：数据来自 CSV（本机服务自动加载 / 手工上传），没有 bundle.products 可用，
+    // 这里按构建端同一套规则重建产品目录，并把旧行里「未识别」的归类清掉让它按新目录重算。
+    function rebuildProductCatalog() {
+      const skuTitles = new Map();
+      const addTitle = (sku, title, count = 1) => {
+        const key = String(sku || '').trim();
+        const t = clean(title);
+        if (!key || !t) return;
+        if (!skuTitles.has(key)) skuTitles.set(key, new Map());
+        const bucket = skuTitles.get(key);
+        bucket.set(t, (bucket.get(t) || 0) + count);
+      };
+      (fullState.activeListings?.items || []).forEach(item => addTitle(item.sku || skuByItemId.get(String(item.itemId)), item.title));
+      (fullState.trafficRaw || []).forEach(row => addTitle(skuByItemId.get(String(row.itemId)), row.title));
+      (fullState.ads?.plpRows || []).forEach(row => addTitle(skuByItemId.get(String(row.itemId)), row.title));
+      const catalog = buildProductCatalogLocal([skuByItemId], skuTitles);
+      // 只有真从数据里识别出种子之外的 SKU 才替换，避免空白工作台反复覆盖
+      if (catalog.length > KNOWN_PRODUCTS.length) {
+        PRODUCTS = catalog;
+        fullState.products = catalog.map(product => ({ ...product }));
+        [fullState.plgRaw, fullState.trafficRaw, fullState.ads?.plpRows, fullState.activeListings?.items].forEach(rows => {
+          (rows || []).forEach(row => { if (!row.product || row.product === PRODUCT_UNKNOWN) delete row.product; });
+        });
+      }
+    }
 
     const COVERAGE = [
       ['自然曝光', '直接提供', 'Traffic：Total organic impressions on eBay site；PLG：Organic Impressions'],
@@ -1515,6 +1652,8 @@
           messages.push(`${file.name}：${error.message}`);
         }
       }
+      // 本地 / builder 模式没有 bundle.products：按 SKU + 标题重建产品目录（种子之外的全部机型）
+      rebuildProductCatalog();
       await saveState();
       loading(false);
       ui.page = 'dashboard';
@@ -1729,6 +1868,9 @@
             localStorage.setItem('ebay-shop-preloaded-stamp', stamp);
             localStorage.setItem('ebay-shop-preloaded-bundle', seeded.bundleId);
           }
+          // 本机看板（无线上 bundle）：从已持久化的数据里重建产品目录，
+          // 修掉旧版本只认两个种子机型的问题；有 bundle 时以 bundle.products 为准，不重建。
+          if (!seeded) rebuildProductCatalog();
         }
         applyModelFilter();
       } catch (error) {

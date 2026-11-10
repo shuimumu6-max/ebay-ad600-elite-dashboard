@@ -1,0 +1,155 @@
+// 「一键补齐」排队计划的离线自检：不连浏览器、不下载，只验证拆天/顺序/间隔/归档步骤
+// 用法：node app/check-gap-plan.mjs
+import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, groupPlgByPreset, presetRange, GAP_DEFAULT_SEC } from '../ui/gap-plan.mjs';
+
+// 只用占位值：这个脚本会随分发包发到别的店铺，不能带本店的路径和活动 ID
+const OUT = '<下载结果目录>';
+const IDS = ['<活动A>', '<活动B>', '<活动C>'];
+let fail = 0;
+const ok = (name, cond, extra = '') => {
+  if (cond) console.log(`  PASS  ${name}`);
+  else { fail++; console.log(`  FAIL  ${name}${extra ? '  ← ' + extra : ''}`); }
+};
+
+console.log('— PLG 缺口跨两周（多预设合并成一步） —');
+{
+  // 2026-11-12 是周四（太平洋）：上周 = 11-02~11-08，本周 = 11-09~11-15，10-27 早于上周
+  const today = '2026-11-12';
+  const { groups, unfillable } = groupPlgByPreset(
+    ['2026-10-27', '2026-11-05', '2026-11-06', '2026-11-10', '2026-11-11'], today
+  );
+  ok('早于上周的日子单独列为补不了', unfillable.length === 1 && unfillable[0] === '2026-10-27', unfillable.join(','));
+  ok('上周的缺口归一组', groups.some(g => g.preset === 'LASTWEEK' && g.days.length === 2));
+  ok('本周的缺口归一组', groups.some(g => g.preset === 'CURRENTWEEK' && g.days.length === 2));
+
+  const { steps } = planGapFill({ plgGroups: groups, outDir: OUT, campaigns: IDS, gapSec: 90 });
+  const plgSteps = steps.filter(x => x.kinds.includes('plg'));
+  ok('纯 PLG 缺口合并成 1 个进程步', steps.length === 1 && plgSteps.length === 1, `实际 ${steps.length}`);
+  ok('两个预设写成逗号列表', steps[0].args[steps[0].args.indexOf('--plg-range') + 1] === 'CURRENTWEEK,LASTWEEK');
+  ok('--date 取全部缺口最后一天', steps[0].args[steps[0].args.indexOf('--date') + 1] === '2026-11-11');
+  ok('只跑 plg', steps[0].args[steps[0].args.indexOf('--only') + 1] === 'plg');
+}
+
+console.log('— PLG 预设区间边界 —');
+{
+  const today = '2026-11-10';
+  const last = presetRange('LASTWEEK', today);
+  const cur = presetRange('CURRENTWEEK', today);
+  ok('上周 = 11-02 ~ 11-08', last[0] === '2026-11-02' && last[1] === '2026-11-08', last.join('~'));
+  ok('本周 = 11-09 ~ 11-15', cur[0] === '2026-11-09' && cur[1] === '2026-11-15', cur.join('~'));
+  ok('昨天 = 11-09', presetRange('YESTERDAY', today)[0] === '2026-11-09');
+}
+
+console.log('— 间隔取值 —');
+ok('默认 8 秒', clampGapSec(undefined) === GAP_DEFAULT_SEC && GAP_DEFAULT_SEC === 8);
+ok('低于 5 抬到 5', clampGapSec(2) === 5);
+ok('高于 120 压到 120', clampGapSec(999) === 120);
+ok('非法值回落 8', clampGapSec('abc') === 8);
+
+console.log('— 只有流量缺口（3 天）—');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-05', '2026-11-06', '2026-11-07'],
+    plgDays: [], plpDays: [], plgPreset: '', outDir: OUT, campaigns: IDS, gapSec: 8
+  });
+  ok('三天合并成一个进程步', steps.length === 1, `实际 ${steps.length}`);
+  ok('--dates 用连续区间写法', (() => {
+    const i = steps[0].args.indexOf('--dates');
+    return i >= 0 && steps[0].args[i + 1] === '2026-11-05..2026-11-07';
+  })());
+  ok('--date 取最后一天', steps[0].args[steps[0].args.indexOf('--date') + 1] === '2026-11-07');
+  ok('只跑 trafficDaily', steps[0].args[steps[0].args.indexOf('--only') + 1] === 'trafficDaily');
+  ok('间隔 8 秒', steps[0].gapMs === 8000);
+}
+
+console.log('— 流量缺口不连续（逗号列表）—');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-05', '2026-11-07'], plgDays: [], plpDays: [], plgPreset: '',
+    outDir: OUT, campaigns: IDS, gapSec: 8
+  });
+  const i = steps[0].args.indexOf('--dates');
+  ok('--dates 用逗号列表', steps[0].args[i + 1] === '2026-11-05,2026-11-07', steps[0].args[i + 1]);
+}
+
+console.log('— 流量 + PLP 合并到一个进程 —');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-06', '2026-11-07'],
+    plgDays: [], plpDays: ['2026-11-07', '2026-11-06'], plgPreset: '', outDir: OUT, campaigns: IDS, gapSec: 8
+  });
+  ok('流量 + PLP 合并成一步', steps.length === 1, `实际 ${steps.length}`);
+  ok('一个进程同时跑 trafficDaily,plp', steps[0].args[steps[0].args.indexOf('--only') + 1] === 'trafficDaily,plp');
+  ok('PLP 用起止区间（不按天拆）', (() => {
+    const a = steps[0].args.indexOf('--plp-start');
+    const b = steps[0].args.indexOf('--plp-end');
+    return steps[0].args[a + 1] === '2026-11-06' && steps[0].args[b + 1] === '2026-11-07';
+  })());
+  ok('PLP 只下物品列表', steps[0].args[steps[0].args.indexOf('--plp-types') + 1] === 'listing');
+  ok('带了活动列表', steps[0].args.includes('--campaigns'));
+}
+
+console.log('— PLP 缺口不连续也只发一个区间 —');
+{
+  const { steps } = planGapFill({
+    trafficDays: [], plgDays: [], plpDays: ['2026-11-02', '2026-11-04', '2026-11-08'], plgPreset: '',
+    outDir: OUT, campaigns: IDS, gapSec: 8
+  });
+  ok('三段缺口合并成一步', steps.length === 1, `实际 ${steps.length}`);
+  ok('区间 = min ~ max', (() => {
+    const a = steps[0].args.indexOf('--plp-start');
+    const b = steps[0].args.indexOf('--plp-end');
+    return steps[0].args[a + 1] === '2026-11-02' && steps[0].args[b + 1] === '2026-11-08';
+  })());
+  ok('纯 PLP 那步不带 --dates', !steps[0].args.includes('--dates'));
+}
+
+console.log('— 流量 + PLP + PLG 三路合并一个进程 —');
+{
+  const { steps } = planGapFill({
+    trafficDays: ['2026-11-07'], plgDays: ['2026-11-06', '2026-11-07'], plpDays: ['2026-11-07'],
+    plgPreset: 'CURRENTWEEK', outDir: OUT, campaigns: IDS, gapSec: 8
+  });
+  ok('三路合并成一步', steps.length === 1, `实际 ${steps.length}`);
+  ok('--only = trafficDaily,plp,plg', steps[0].args[steps[0].args.indexOf('--only') + 1] === 'trafficDaily,plp,plg');
+  ok('PLG 用 DAILY 粒度 + 预设 CURRENTWEEK', (() => {
+    const a = steps[0].args.indexOf('--plg-range');
+    return steps[0].args[steps[0].args.indexOf('--plg-unit') + 1] === 'DAILY'
+      && steps[0].args[a + 1] === 'CURRENTWEEK';
+  })());
+  ok('PLP 仍是起止区间写法', steps[0].args[steps[0].args.indexOf('--plp-start') + 1] === '2026-11-07');
+}
+
+console.log('— 没有缺口 —');
+{
+  const { steps } = planGapFill({ trafficDays: [], plgDays: [], plpDays: [], plgPreset: '', outDir: OUT, campaigns: IDS });
+  ok('不产生任何步骤', steps.length === 0);
+}
+
+console.log('— 跑完补归档 + 推看板 —');
+{
+  const dirs = ['C:/x/测试下载/2026-11-08_10-00-00', 'C:/x/测试下载/2026-11-08_10-05-00'];
+  const tail = tailSteps(dirs);
+  ok('每个运行目录一步归档 + 最后推看板', tail.length === 3, `实际 ${tail.length}`);
+  ok('归档不推看板（--no-publish）', tail.slice(0, 2).every(s => s.args.includes('--no-publish')));
+  ok('归档步骤零等待', tail.every(s => s.gapMs === 0));
+  ok('最后一件事是 publish-only', tail[2].args[0] === 'publish-only.mjs' && tail[2].mode === 'publish');
+  ok('下载失败（无目录）时也推一次看板', tailSteps([]).length === 1);
+}
+
+console.log('— 步间等待：下载之间等、归档不等 —');
+{
+  const step1 = { day: '流量 3 天', gapMs: 8000 };
+  const step2 = { day: 'PLG LASTWEEK', gapMs: 8000 };
+  const arch = { day: '归档 1/2', gapMs: 0 };
+  const pub = { day: '更新看板', gapMs: 0 };
+  ok('下载 → 下载：等 8 秒', waitBeforeStep(step1, step2, 8000) === 8000);
+  ok('下载 → 归档：不等', waitBeforeStep(step2, arch, 8000) === 0);
+  ok('归档 → 归档：不等', waitBeforeStep(arch, arch, 8000) === 0);
+  ok('归档 → 推看板：不等', waitBeforeStep(arch, pub, 8000) === 0);
+  ok('没有下一步：不等', waitBeforeStep(pub, undefined, 8000) === 0);
+  ok('当前步没写间隔时用兜底值', waitBeforeStep({ day: 'x' }, step2, 6000) === 6000);
+}
+
+console.log(fail ? `\n${fail} 项不通过` : '\n全部通过：拆天、顺序、间隔、归档步骤都符合预期');
+process.exit(fail ? 1 : 0);

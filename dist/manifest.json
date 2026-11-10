@@ -1,6 +1,6 @@
 {
-  "version": "v202611101139",
-  "createdAt": "2026-11-10 11:39:12",
+  "version": "v202611101416",
+  "createdAt": "2026-11-10 14:16:22",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -45,13 +45,18 @@
     },
     {
       "path": "app/check-gap-plan.mjs",
-      "hash": "6f4daab820473610b5f75c2f8ff7f44c1ba2f29dcd439495e6a574d2b7d24b13",
-      "size": 7369
+      "hash": "da1f4bb49e334abd5597b753062376205ba747932327b1c30eeb770ba197e345",
+      "size": 8027
     },
     {
       "path": "app/check-options.mjs",
       "hash": "05a091903f49f00a585caf16c5899998381419658b528b4f217e8f1f55879adf",
       "size": 8299
+    },
+    {
+      "path": "app/check-scan-window.mjs",
+      "hash": "560daa0c17c7d16c78c490bc909a8aa0507747564ffe23409466558c2e786ba1",
+      "size": 8537
     },
     {
       "path": "app/check-ui.mjs",
@@ -60,8 +65,8 @@
     },
     {
       "path": "app/config.mjs",
-      "hash": "12749af13cde2a2f15578005333e2cc93928566bc6233b05af146d5dcdc531bd",
-      "size": 8079
+      "hash": "e9c4e674101c5c08461134f50ffccfabd249990e7e43e45647c74d4cd3ba71f3",
+      "size": 8163
     },
     {
       "path": "app/dashboard-server.mjs",
@@ -70,8 +75,8 @@
     },
     {
       "path": "app/download.mjs",
-      "hash": "7a52362f6e95b3fa24cad1119d271d41916f8c2d778d4d6dfa5f89ee09e3bccc",
-      "size": 100500
+      "hash": "2ad8b8e99dba1027a249e0eb020ec370dea59f6f8702eb577bb4767ab8862ef1",
+      "size": 104095
     },
     {
       "path": "app/engine.mjs",
@@ -155,8 +160,8 @@
     },
     {
       "path": "app/scan-gaps.mjs",
-      "hash": "4220f9d67c0daf3ec4e8392e97f198105a77ae58b4a488177a0d12e44925b7b8",
-      "size": 16087
+      "hash": "822a299f898a357128665f4c73415a49cc81478ccb4688280c79fe9075623815",
+      "size": 17665
     },
     {
       "path": "app/shop-config.mjs",
@@ -165,18 +170,18 @@
     },
     {
       "path": "ui/index.html",
-      "hash": "2056d7eb726b49db3017e7f8b8b2c64c9257fe9677d930c958714c90c8279023",
-      "size": 116771
+      "hash": "de3915dc7b60f334cbb0808b1e4bf97824b09d15e39e58614677a1d6ce66a419",
+      "size": 117411
     },
     {
       "path": "ui/server.mjs",
-      "hash": "49de05b260e81de880ecd415460e744782ab5c8984797d2786d5b89751673d96",
-      "size": 56140
+      "hash": "8bb3025ffcecac8eb1a917d091ef3ac0a5336cac14626f71355b9e0831acb445",
+      "size": 56093
     },
     {
       "path": "ui/gap-plan.mjs",
-      "hash": "272bea769ad5e1f5af117e2989e1e9e5e46ee24ba0a6bf670dbdf2ce80595fda",
-      "size": 6056
+      "hash": "341a716a0aa144a134c841bb2f622517f05e81177be485d331e48b0020d291d0",
+      "size": 8412
     },
     {
       "path": "一键下载.cmd",
@@ -210,8 +215,8 @@
     },
     {
       "path": "看板/ebay-shop-dashboard.html",
-      "hash": "03f4742a07adf055cf676ac57ced8ff09b679eeac5ce9c18fd1bf45c2e2d22a8",
-      "size": 146091
+      "hash": "52245244db0a76b0e55d23e1aaeed1e1950c39cb780bef3ae012acd7728ce3fb",
+      "size": 154565
     },
     {
       "path": "在线更新.mjs",

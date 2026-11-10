@@ -45,7 +45,7 @@ if (flag('help')) {
   --priority-types 优先促销刊登类型，可多选（逗号分隔）：keyword,listing,campaign,search（默认 keyword）
   --priority-type 兼容别名：只接受单值，--priority-types 优先
   --priority-unit 优先促刊时间粒度：DAILY（默认）或 SUMMARY
-  --priority-range 优先促刊日期范围（同 --plg-range 的 8 个值）
+  --priority-range 优先促刊日期范围（同 --plg-range 的 8 个值；支持逗号分隔多预设）
   --priority-custom-start / --priority-custom-end  优先促刊自定义区间起止日
   --priority-campaigns 优先促刊活动 ID（逗号分隔，默认 PLP 3 个；传 all = 全部 31 个活动）
   --latest        报表中心不新提交请求，直接下载最新一条已完成请求（最快）
@@ -55,7 +55,7 @@ if (flag('help')) {
   --plp-days      PLP 按日逐个出：逗号分隔的日期（campaign 页没有「按日」粒度，只能起止=同一天）
   --plp-types     PLP 报表类型，逗号分隔：listing,keyword,search（默认三类全要）
   --plg-unit      PLG 链接广告时间粒度：DAILY（默认）或 SUMMARY
-  --plg-range     PLG 日期范围：TODAY/YESTERDAY/CURRENTWEEK/LASTWEEK/CURRENTMONTH/PREVIOUSMONTH/LAST90D/CUSTOM
+  --plg-range     PLG 日期范围：TODAY/YESTERDAY/CURRENTWEEK/LASTWEEK/CURRENTMONTH/PREVIOUSMONTH/LAST90D/CUSTOM（支持逗号分隔多预设，如 LASTWEEK,CURRENTWEEK）
   --plg-custom-start / --plg-custom-end  --plg-range CUSTOM 时的起止日
   --plg-campaigns 只跑指定活动，逗号分隔（活动 ID 各店铺不同，从控制台活动列表里看），默认全部活动
   --campaigns     只跑指定 campaign（PLP 用，逗号分隔，默认配置里那三个）
@@ -119,9 +119,17 @@ function assertRangeForUnit(unit, range, flag) {
       + `按月/自定义请改用对应 --*-unit SUMMARY`);
   }
 }
-const plgRange = (value('plg-range', '') || '').toUpperCase();
-if (!PLG_RANGE_SET.has(plgRange)) throw new Error(`--plg-range 不支持 ${plgRange}`);
-assertRangeForUnit(plgUnit, plgRange, '--plg-range');
+// 日期范围支持逗号分隔多预设（--plg-range LASTWEEK,CURRENTWEEK）：多个预设进报表中心
+// 的串行队列依次提交，同一个进程内完成——省掉「一个预设一个进程」的启动开销和步间隔。
+// CUSTOM 只能单独传（一次只能一个自定义区间）。
+const plgRangeList = (value('plg-range', '') || '').toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
+if (!plgRangeList.length) plgRangeList.push('');
+for (const r of plgRangeList) {
+  if (!PLG_RANGE_SET.has(r)) throw new Error(`--plg-range 不支持 ${r}`);
+  if (plgRangeList.length > 1 && r === 'CUSTOM') throw new Error('--plg-range 传多个预设时不能包含 CUSTOM');
+  assertRangeForUnit(plgUnit, r, '--plg-range');
+}
+const plgRange = plgRangeList[0];   // 兼容旧引用（CUSTOM 校验等）；多预设时它只是第一个
 const plgCustomStart = value('plg-custom-start', '');
 const plgCustomEnd = value('plg-custom-end', '');
 if (plgRange === 'CUSTOM') {
@@ -167,9 +175,15 @@ const priorityTypeDefs = priorityTypeKeys.map(k => PRIORITY_TYPES.find(t => t.ke
 const priorityTypeDef = priorityTypeDefs[0];
 const priorityUnit = (value('priority-unit', 'DAILY') || 'DAILY').toUpperCase();
 if (!['DAILY', 'SUMMARY'].includes(priorityUnit)) throw new Error(`--priority-unit 只接受 DAILY 或 SUMMARY`);
-const priorityRange = (value('priority-range', '') || '').toUpperCase();
-if (!PLG_RANGE_SET.has(priorityRange)) throw new Error(`--priority-range 不支持 ${priorityRange}`);
-assertRangeForUnit(priorityUnit, priorityRange, '--priority-range');
+// 同 --plg-range：支持逗号分隔多预设，多个预设进报表中心串行队列
+const priorityRangeList = (value('priority-range', '') || '').toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
+if (!priorityRangeList.length) priorityRangeList.push('');
+for (const r of priorityRangeList) {
+  if (!PLG_RANGE_SET.has(r)) throw new Error(`--priority-range 不支持 ${r}`);
+  if (priorityRangeList.length > 1 && r === 'CUSTOM') throw new Error('--priority-range 传多个预设时不能包含 CUSTOM');
+  assertRangeForUnit(priorityUnit, r, '--priority-range');
+}
+const priorityRange = priorityRangeList[0];   // 兼容旧引用；多预设时它只是第一个
 const priorityCustomStart = value('priority-custom-start', '');
 const priorityCustomEnd = value('priority-custom-end', '');
 if (priorityRange === 'CUSTOM') {
@@ -231,9 +245,13 @@ const runDir = join(value('out', RUNS_DIR), stamp);
 for (const folder of Object.values(FOLDERS)) mkdirSync(join(runDir, folder), { recursive: true });
 const inbox = join(runDir, FOLDERS.inbox);
 
-// 逐日批量下载时每天之间的间隔。30 天连点是触发 eBay 风控最常见的原因（实测会被拦到
-// 一整天都下不来），多花两分钟换 30 天全下来，值。
-const BATCH_GAP_MS = Number(process.env.EBAY_BATCH_GAP_MS || 20000);
+// 逐日批量下载时每天之间的间隔。
+// 2026-11-10 实测：一天真正的成本是「2 秒换页 + 8 秒下载」，原来固定停 20 秒等于白等一倍时间
+// （11 天光等待就 3.5 分钟）。eBay 限速是「短时间反复提交同类请求」触发，不是「隔得不够久」，
+// 而真被限速时 grabTraffic 的 50 秒无响应判定会立刻抛错。所以常态放到 5 秒，
+// 一旦有某天失败（任何原因）就升回 20 秒，宁可慢一点也不连累后面的天。
+const BATCH_GAP_MS = Number(process.env.EBAY_BATCH_GAP_MS || 5000);
+const BATCH_GAP_SLOW_MS = Number(process.env.EBAY_BATCH_GAP_SLOW_MS || 20000);
 
 const results = [];
 const timings = {};
@@ -1087,6 +1105,8 @@ async function runTrafficBatch(dates) {
   const done = [];
   let blockedStreak = 0;
   let stoppedEarly = 0;
+  // 常态 5 秒；任何一天失败就切到 20 秒（见 BATCH_GAP_MS 处的说明）
+  let gapMs = BATCH_GAP_MS;
   for (let index = 0; index < dates.length; index++) {
     const day = dates[index];
     const startAt = Date.now();
@@ -1133,10 +1153,12 @@ async function runTrafficBatch(dates) {
         break;
       } else {
         console.log(`[失败] Traffic ${day}: ${error.message}`);
+        // 出现非限速类失败，说明页面/网络开始不稳，后面的天放慢节奏
+        gapMs = Math.max(gapMs, BATCH_GAP_SLOW_MS);
       }
     }
-    // 每天之间留一点间隔：30 天连点是最容易触发风控的用法
-    if (index < dates.length - 1) await sleep(BATCH_GAP_MS);
+    // 每天之间留一点间隔；失败过就自动放慢
+    if (index < dates.length - 1) await sleep(gapMs);
   }
   if (stoppedEarly) timings.trafficBatchStopped = { days: stoppedEarly, reason: 'EBAY_BLOCKED' };
   return done;
@@ -1331,14 +1353,17 @@ function reqDef(kind, priorityDef) {
   };
 }
 
-// 各类报表的选项覆盖规则；CUSTOM 区间统一走日历，其余按 radio value 选
-function stepsFor(kind, priorityDef) {
+// 各类报表的选项覆盖规则；CUSTOM 区间统一走日历，其余按 radio value 选。
+// rangeOverride：同一类要提交多个预设时（如 PLG 上周+本周），每个预设传自己的值。
+function stepsFor(kind, priorityDef, rangeOverride) {
   const cfg = reqDef(kind, priorityDef);
+  const plgRangeNow = rangeOverride || plgRange;
+  const priorityRangeNow = rangeOverride || priorityRange;
   return cfg.steps.map(step => {
     if (kind === 'plg') {
       if (step.card === 'Time unit') return { ...step, fragment: `"CAMPAIGN_TIME_UNIT":"${plgUnit}"` };
-      if (step.card === 'Date range' && plgRange && plgRange !== 'CUSTOM') {
-        return { ...step, fragment: `"DATE_RANGE":"${plgRange}"` };
+      if (step.card === 'Date range' && plgRangeNow && plgRangeNow !== 'CUSTOM') {
+        return { ...step, fragment: `"DATE_RANGE":"${plgRangeNow}"` };
       }
     }
     if (kind === 'active' && step.card === 'Type') {
@@ -1353,15 +1378,15 @@ function stepsFor(kind, priorityDef) {
     if (kind === 'priority') {
       if (step.card === 'Type') return { ...step, fragment: `"TYPE":"${cfg.type}"` };
       if (step.card === 'Time unit') return { ...step, fragment: `"CAMPAIGN_TIME_UNIT":"${priorityUnit}"` };
-      if (step.card === 'Date range' && priorityRange && priorityRange !== 'CUSTOM') {
-        return { ...step, fragment: `"DATE_RANGE":"${priorityRange}"` };
+      if (step.card === 'Date range' && priorityRangeNow && priorityRangeNow !== 'CUSTOM') {
+        return { ...step, fragment: `"DATE_RANGE":"${priorityRangeNow}"` };
       }
     }
     return step;
   });
 }
 
-async function configureReportCenter(page, kind, priorityDef) {
+async function configureReportCenter(page, kind, priorityDef, rangeOverride) {
   const cfg = RC_REQUESTS[kind];
   await page.eval(RC_CLOSE).catch(() => {});
   let hasOpen = await waitUntil(page, RC_HAS_OPEN, v => v?.ok, 20000);
@@ -1376,7 +1401,7 @@ async function configureReportCenter(page, kind, priorityDef) {
   if (!opened.ok) throw new Error('未点击到 Download report 按钮');
   await sleep(1500);
 
-  for (const step of stepsFor(kind, priorityDef)) {
+  for (const step of stepsFor(kind, priorityDef, rangeOverride)) {
     if (step.card === 'Campaigns') {
       // 活动级（优先促刊 CAMPAIGN）没有这张卡，没有 ids 时直接跳过
       if (kind === 'plg') await pickCampaigns(page, plgCampaignIds, 'PLG');
@@ -1384,9 +1409,9 @@ async function configureReportCenter(page, kind, priorityDef) {
       continue;
     }
     if (step.card === 'Date range') {
-      if (kind === 'plg' && plgRange === 'CUSTOM') { await pickCustomRange(page, plgCustomStart, plgCustomEnd); continue; }
+      if (kind === 'plg' && (rangeOverride || plgRange) === 'CUSTOM') { await pickCustomRange(page, plgCustomStart, plgCustomEnd); continue; }
       if (kind === 'orders' && orderRange === 'CUSTOM') { await pickCustomRange(page, orderCustomStart, orderCustomEnd); continue; }
-      if (kind === 'priority' && priorityRange === 'CUSTOM') { await pickCustomRange(page, priorityCustomStart, priorityCustomEnd); continue; }
+      if (kind === 'priority' && (rangeOverride || priorityRange) === 'CUSTOM') { await pickCustomRange(page, priorityCustomStart, priorityCustomEnd); continue; }
     }
     await pickStep(page, step);
   }
@@ -1483,10 +1508,10 @@ function rowMatchFor(kind, priorityDef) {
   return reqDef(kind, priorityDef).rowMatch;
 }
 
-async function runReportCenter(kind, priorityDef) {
+async function runReportCenter(kind, priorityDef, rangeOverride) {
   const page = await newPage(`rc_${kind}`);
-  // 名单类三种类型的行名不同，日志里要写清楚是哪一种
-  const label = reqDef(kind, priorityDef).label;
+  // 名单类三种类型的行名不同，日志里要写清楚是哪一种；多预设时标出当前这份的范围
+  const label = reqDef(kind, priorityDef).label + (rangeOverride ? `（${rangeOverride}）` : '');
   try {
     return await retry(`报表中心 ${label}`, async attempt => {
       if (attempt > 1) {
@@ -1509,7 +1534,7 @@ async function runReportCenter(kind, priorityDef) {
         return out;
       }
 
-      await configureReportCenter(page, kind, priorityDef);
+      await configureReportCenter(page, kind, priorityDef, rangeOverride);
       const submittedAt = Date.now();
       console.log(`[报表中心] ${label} 已提交，窗口等待生成…`);
 
@@ -1564,7 +1589,7 @@ async function runReportCenter(kind, priorityDef) {
           : '；这一轮没有任何新请求行（eBay 可能没收到提交，或被限速）';
         throw new Error(`等待生成超时（${Math.round(RC_POLL.timeoutMs / 1000)} 秒），未发现匹配「${def.rowMatch.source}」的完成请求${seen}`);
       }
-      timings[`${kind}Generate`] = { ms: Date.now() - submittedAt, ok: true, round };
+      timings[`${kind}Generate${rangeOverride ? '@' + rangeOverride : ''}`] = { ms: Date.now() - submittedAt, ok: true, round };
 
       const out = await downloadReportRow(page, kind, row.ref, label, kind);
       const bad = out.filter(item => !item.valid);
@@ -1649,17 +1674,27 @@ async function runPlpCampaignOnce(task) {
       return at;
     });
     const firstCheck = submittedAt + PLP_POLL.firstWaitMs;
+    const peek = async () => page.eval(PLP_STATUS).catch(() => null);
+    const isReady = s => Boolean(s?.downloadNow || s?.tryAgain);
+    // 静等期只读 DOM（不刷新页面、不产生网络请求）：实测 2026-11-10 三个 campaign
+    // 分别在第 64 / 124 / 132 秒就绪，原来死等满 120 秒才首查，第一个白等近一分钟。
+    // 轻查不会打扰 eBay 的生成队列（打扰它的只有刷新），所以从提交后就开始看。
     if (firstCheck > Date.now()) {
-      console.log(`[PLP] ${tag} 已提交，静等 ${Math.round(PLP_POLL.firstWaitMs / 1000)} 秒后首查（之后每 ${Math.round(PLP_POLL.intervalMs / 1000)} 秒一次）`);
-      await sleep(firstCheck - Date.now());
+      console.log(`[PLP] ${tag} 已提交，先每 ${Math.round(PLP_POLL.earlyPollMs / 1000)} 秒轻查一次（不刷新页面，不打扰生成队列）`);
+      while (Date.now() < firstCheck) {
+        await sleep(Math.max(300, Math.min(PLP_POLL.earlyPollMs, firstCheck - Date.now())));
+        const early = await peek();
+        if (isReady(early)) {
+          console.log(`[PLP] ${tag} 第 ${Math.round((Date.now() - submittedAt) / 1000)} 秒已就绪，不再等满 ${Math.round(PLP_POLL.firstWaitMs / 1000)} 秒`);
+          break;
+        }
+      }
     }
 
     let deadline = firstCheck + PLP_POLL.timeoutMs;
     let round = 0;
     let retries = 0;
     let lastReloadAt = 0;
-    const peek = async () => page.eval(PLP_STATUS).catch(() => null);
-    const isReady = s => Boolean(s?.downloadNow || s?.tryAgain);
     while (Date.now() < deadline) {
       round++;
       // 先看当前页面：已经就绪就直接用，不再多刷一次
@@ -1774,11 +1809,11 @@ console.log(`页面计划：${plan.map(p => p.key).join(' / ')}（同屏最多 $
 let rcChain = Promise.resolve();
 let rcQueued = 0;
 let rcDone = 0;
-function queueReportCenter(kind, priorityDef) {
+function queueReportCenter(kind, priorityDef, rangeOverride) {
   rcQueued++;
   const result = rcChain.then(
-    () => runReportCenter(kind, priorityDef),
-    () => runReportCenter(kind, priorityDef)
+    () => runReportCenter(kind, priorityDef, rangeOverride),
+    () => runReportCenter(kind, priorityDef, rangeOverride)
   ).finally(() => {
     rcDone++;
     console.log(`[队列] 报表中心 ${rcDone}/${rcQueued} 完成${rcDone < rcQueued ? `，还有 ${rcQueued - rcDone} 个排队` : ''}`);
@@ -1791,13 +1826,25 @@ const jobs = [];
 if (batchMode) jobs.push(['trafficBatch', () => runTrafficBatch(batchDates)]);
 else if (runDaily) jobs.push(['trafficDaily', () => runTraffic('trafficDaily', date, date)]);
 if (runRange) jobs.push(['trafficRange', () => runTraffic('trafficRange', rangeStart, rangeEnd)]);
-if (runPlg) jobs.push(['reportCenter_plg', () => queueReportCenter('plg')]);
+// PLG 支持多预设（如 LASTWEEK,CURRENTWEEK）：每个预设一个任务，全部进报表中心串行
+// 队列依次提交——单进程内完成，不用再「一个预设一个进程」分步跑。
+if (runPlg) {
+  const many = plgRangeList.length > 1;
+  for (const r of plgRangeList) {
+    jobs.push([many ? `reportCenter_plg_${r}` : 'reportCenter_plg',
+      () => queueReportCenter('plg', null, many ? r : null)]);
+  }
+}
 if (runActive) jobs.push(['reportCenter_active', () => queueReportCenter('active')]);
 if (runOrders) jobs.push(['reportCenter_orders', () => queueReportCenter('orders')]);
-// 优先促销刊登：每种报表类型一个任务，全部进串行队列，任务数不受标签页上限约束
+// 优先促销刊登：每种报表类型 × 每个日期范围一个任务，全部进串行队列，任务数不受标签页上限约束
 if (runPriority) {
+  const many = priorityRangeList.length > 1;
   for (const pd of priorityTypeDefs) {
-    jobs.push([`reportCenter_priority_${pd.key}`, () => queueReportCenter('priority', pd)]);
+    for (const r of priorityRangeList) {
+      jobs.push([`reportCenter_priority_${pd.key}${many ? '_' + r : ''}`,
+        () => queueReportCenter('priority', pd, many ? r : null)]);
+    }
   }
 }
 // PLP 三个 campaign 默认并发提交（2.5 秒间隔）：实测并发整轮 186 秒，串行要 318 秒，
