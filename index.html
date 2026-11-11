@@ -303,6 +303,7 @@
       dataState = {
         plgRaw: pick(fullState.plgRaw),
         trafficRaw: pick(fullState.trafficRaw),
+        itemHistory: fullState.itemHistory || {},
         activeListings: fullState.activeListings ? { ...fullState.activeListings, items: pick(fullState.activeListings.items) } : null,
         sources: structuredClone(fullState.sources || []),
         products: structuredClone(fullState.products),
@@ -603,6 +604,30 @@
       }
       const coverage = missingCount ? `仅覆盖 ${covered.size}/${dayCount} 天，缺少日报：${missing.join('、')}${missingCount > 10 ? `等 ${missingCount} 天` : ''}；Traffic 合计不完整，缺失日期不补零。` : `已按日报汇总 ${covered.size} 天。`;
       const useSnapshot = snapshot.length > 0 && ui.trafficSource !== 'daily';
+      // 换品检测（只标注，历史值不剔除）：区间快照按导出时标题归属整个区间，
+      // 若链接期间卖过别的商品（itemId 复用改标题），快照会包含前身商品的数据。
+      // 判据两类：① 标题历史里有与当前视图不同的产品归属且日期与区间有交集；
+      // ② 无历史证据但日报覆盖不满且快照曝光远大于日报相加。
+      const coverageByItem = new Map();
+      for (const row of selected) coverageByItem.set(row.itemId, (coverageByItem.get(row.itemId) || 0) + 1);
+      const swaps = [];
+      if (useSnapshot && start !== end) {
+        const history = dataState.itemHistory || {};
+        const singleProduct = ui.product && ui.product !== PRODUCT_ALL;
+        for (const row of snapshot) {
+          const hist = history[row.itemId] || [];
+          const foreign = hist.filter(h => h.f <= end && h.l >= start && (singleProduct ? h.p !== ui.product : h.p === null));
+          const dailyImp = items.get(row.itemId)?.totalImpressions ?? null;
+          const coveredDays = coverageByItem.get(row.itemId) || 0;
+          const snapshotImp = Number(row.totalImpressions) || 0;
+          const gapImp = dailyImp == null ? null : snapshotImp - dailyImp;
+          const suspect = foreign.length > 0 || (dailyImp != null && coveredDays < dayCount && gapImp > 200 && gapImp / Math.max(snapshotImp, 1) > 0.3);
+          if (!suspect) continue;
+          swaps.push({ itemId: row.itemId, title: row.title, foreign, coveredDays, dayCount, snapshotImp, dailyImp, gapImp });
+        }
+        swaps.sort((a, b) => (b.gapImp ?? 0) - (a.gapImp ?? 0) || b.snapshotImp - a.snapshotImp);
+      }
+      const swapNote = swaps.length ? `检测到 ${swaps.length} 个链接在区间内换过标题/商品，快照值含其前身商品的数据（明细见下方快照面板）；历史值按口径保留、不剔除。` : '';
       const comparisons = new Map((start !== end ? snapshot : []).map(row => {
         const dailyRow = items.get(row.itemId);
         return [row.itemId, { cumulativePV: row.totalPageViews, dailyPV: dailyRow?.totalPageViews ?? null,
@@ -610,12 +635,12 @@
       }));
       const mismatchCount = [...comparisons.values()].filter(row => row.difference != null && row.difference !== 0).length;
       const reconciliation = start === end ? '单日报表，不涉及区间累计对账。' : snapshot.length
-        ? `同区间核对：${mismatchCount} 个 Item 的日报合计总PV与累计总PV不一致，明细见“PV核对”。日度数据不按累计值补写。`
+        ? `同区间核对：${mismatchCount} 个 Item 的日报合计总PV与累计总PV不一致，明细见“PV核对”。日度数据不按累计值补写。${swapNote}`
         : '没有同区间累计报表可供核对；日报合计尚未与累计报表对账，不能作为后台近30天Views的直接替代。';
       const sourceNote = useSnapshot
         ? `Traffic：${start === end ? '单日报表' : '使用原始区间累计报表，起止日期与所选日期完全一致'}。${reconciliation}`
         : `Traffic：日报汇总。${coverage} ${reconciliation}`;
-      return { rows: useSnapshot ? snapshot : [...items.values()], comparisons,
+      return { rows: useSnapshot ? snapshot : [...items.values()], comparisons, swaps,
         note: `${sourceNote} 总PV包含站内和站外访问；站内PV仅计算站内来源。CTR按站内PV/曝光计算，转化率按销量/总PV计算。`,
         complete: useSnapshot || missingCount === 0 };
     }
@@ -711,9 +736,10 @@
           pvAudit: (() => {
             if (!traffic) return '缺Traffic';
             const check = selection.comparisons?.get(itemId);
-            if (!check) return traffic.start === traffic.end ? '单日报表' : '仅日报，未对账';
-            if (check.dailyPV == null) return `累计${check.cumulativePV}，缺日报记录`;
-            return check.difference === 0 ? '日报与累计一致' : `日报${check.dailyPV} / 累计${check.cumulativePV}，差额${check.difference > 0 ? '+' : ''}${check.difference}`;
+            const swapTag = (selection.swaps || []).some(swap => swap.itemId === itemId) ? '（含前身商品数据）' : '';
+            if (!check) return traffic.start === traffic.end ? '单日报表' : `仅日报，未对账${swapTag}`;
+            if (check.dailyPV == null) return `累计${check.cumulativePV}，缺日报记录${swapTag}`;
+            return check.difference === 0 ? '日报与累计一致' : `日报${check.dailyPV} / 累计${check.cumulativePV}，差额${check.difference > 0 ? '+' : ''}${check.difference}${swapTag}`;
           })(),
           quantitySold: traffic?.quantitySold || 0,
           totalCtr: traffic ? ebayViews / traffic.totalImpressions || 0 : 0,
@@ -785,6 +811,7 @@
             <li><strong>仍待确认的原因：</strong>更新延迟、后续修订、时区边界或统计规则可能影响结果，现有文件尚不能确定具体原因；不能据此认定存在跨天去重。</li>
           </ul>
           <p><strong>如何读“PV核对”：</strong>差额＝已有日报合计总PV－同区间累计总PV，正数表示日报更大。它只表示文件之间有差额，尚不能直接判定哪一份数据错误。“日报与累计一致”也只代表数值一致，不代表已确认每日记录齐全、结束日完整或数据最终准确。</p>
+          <p><strong>换品链接（itemId 复用）：</strong>区间快照按“导出那一刻的标题”把整个区间的数据归属给该链接；如果链接中途改标题换了商品（例如 ONE Lite 改成 UD900E），快照值会包含前身商品的数据，而日报按当天标题判定、不含前身时段——因此区间汇总与日报累计可能差距很大，看板只标注这类链接、不剔除任何历史值。</p>
           <p><strong>指标口径：</strong>总PV包含站内和站外访问；站内PV只是其中一部分。与后台“Views (30 days)”比较前，还要核实其日期范围和指标定义。</p>
         </details>
       </div>`;
@@ -868,6 +895,16 @@
       const views = sum(rows, 'totalPageViews');
       const sold = sum(rows, 'quantitySold');
       const onsiteViews = sum(rows, 'promotedEbayViews') + sum(rows, 'organicEbayViews');
+      // 换品链接明细：快照值含前身商品数据，只标注不剔除
+      const swaps = (trafficSelection().swaps || []).slice(0, 8);
+      const swapsTotal = (trafficSelection().swaps || []).length;
+      const swapHtml = start !== end && swapsTotal ? `<div class="snapshot-note"><strong>⚠ 区间内换过标题/商品的链接（历史值保留，未剔除）：</strong>${swaps.map(s => {
+        const hist = s.foreign.length
+          ? s.foreign.map(h => `曾为「${esc(h.t.length > 34 ? h.t.slice(0, 34) + '…' : h.t)}」（${h.f.slice(5)}~${h.l.slice(5)}，${h.p ? esc(h.p) : '非目标产品'}）`).join('；')
+          : `日报仅覆盖 ${s.coveredDays}/${s.dayCount} 天`;
+        const gap = s.dailyImp == null ? `快照曝光 ${fmt(s.snapshotImp)}，区间内无日报记录` : `快照曝光 ${fmt(s.snapshotImp)} vs 日报相加 ${fmt(s.dailyImp)}（差 ${s.gapImp > 0 ? '+' : ''}${fmt(s.gapImp)}）`;
+        return `<div>· <span class="mono">${esc(s.itemId)}</span> ${hist} — ${gap}</div>`;
+      }).join('')}${swapsTotal > 8 ? `<div>…等共 ${swapsTotal} 个</div>` : ''}快照按导出时标题把整个区间归属给该链接，因此含前身商品的数据；日报按当天标题判定，两个口径对不上是预期行为。</div>` : '';
       return `<section class="panel snapshot"><div class="panel-head"><h3>Traffic 区间快照</h3><span class="badge ${start === end ? 'green' : 'amber'}">${start === end ? '单日' : '区间累计'}</span></div><div class="panel-body">
         ${start !== end ? `<p class="snapshot-note">这份 Traffic 是 ${rangeText(start, end)} 的累计数据，只用于区间汇总，不会混入上方的日度趋势。</p>` : ''}
         <div class="snapshot-metrics">
@@ -876,7 +913,7 @@
           <div class="snapshot-metric"><span>Quantity sold</span><strong>${fmt(sold)}</strong></div>
           <div class="snapshot-metric"><span>站内 CTR</span><strong>${pct(onsiteViews / impressions || 0)}</strong></div>
           <div class="snapshot-metric"><span>总转化率</span><strong>${pct(sold / views || 0)}</strong></div>
-        </div></div></section>`;
+        </div>${swapHtml}</div></section>`;
     }
 
     function dailyPage() {
