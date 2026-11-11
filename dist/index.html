@@ -75,21 +75,45 @@
   code { background:#eef2f7; padding:1px 6px; border-radius:4px; font-size:13px; }
   .foot { padding:6px 4px 0; color:var(--muted); font-size:12.5px; line-height:1.9; }
   a { color:var(--brand); }
+
+  .nav { position:sticky; top:0; z-index:9; margin:0 -4px 20px; padding:9px 6px;
+         background:rgba(244,247,251,.94); backdrop-filter:blur(6px);
+         border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center; }
+  .nav a { color:#3d4d61; font-size:13px; text-decoration:none; padding:4px 11px; border-radius:999px; }
+  .nav a:hover { background:#fff; color:var(--brand); }
+  .nav .brand-nav { font-weight:700; color:var(--ink); margin-right:6px; }
+
+  .stages { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px; }
+  .stage { border:1px solid var(--line); border-radius:10px; padding:14px 16px; background:#fbfdff; }
+  .stage b { display:block; font-size:14px; margin-bottom:6px; }
+  .stage b i { font-style:normal; color:var(--brand); margin-right:4px; }
+  .stage span { color:var(--muted); font-size:13px; }
   @media (max-width:560px) {
     body { padding:26px 12px 56px; }
     .card { padding:20px 18px; }
     .entry { grid-template-columns:1fr; }
     h1 { font-size:23px; }
+    .stages { grid-template-columns:1fr; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
 
+  <nav class="nav">
+    <span class="brand-nav">eBay 报表工具包</span>
+    <a href="#sop">上手三阶段</a>
+    <a href="#ai">方式一 · AI 帮装</a>
+    <a href="#manual">方式二 · 自己装</a>
+    <a href="#daily">日常使用</a>
+    <a href="#faq">常见问题</a>
+    <a href="./ai-install.md" download>SOP 文档</a>
+  </nav>
+
   <header>
     <h1>eBay 报表工具包</h1>
-    <p class="lead">在你自己电脑上批量下载 eBay 后台报表，再用本地看板看数据。不用装环境、不用连数据库、数据不出本机。</p>
-    <div class="meta">最新版本 <b>v202611111150</b> · 发布于 2026-11-11 11:50:39（北京时间）· 单店铺版（下载器 + 本地看板）</div>
+    <p class="lead">在你自己电脑上批量下载 eBay 后台报表，再用本地看板看数据。核心就两样：<b>批量下载能力 + 看板模板</b>。不用装环境、不用连数据库、数据不出本机。</p>
+    <div class="meta">最新版本 <b>v202611111206</b> · 发布于 2026-11-11 12:06:51（北京时间）· 单店铺版（下载器 + 本地看板）</div>
     <div class="chips">
       <span class="chip">Windows 10 / 11</span>
       <span class="chip">需要 Chrome 或 Edge 并已登录 eBay 后台</span>
@@ -97,16 +121,32 @@
     </div>
   </header>
 
-  <section class="card hero">
+  <section class="card" id="sop">
+    <div class="tag">上手 SOP</div>
+    <h2>3 个阶段，从零到圆满
+      <small>这套工具是在一个具体店铺（美国站）上打磨出来的，但你的环境可以完全不同——AI 会先适配再动手，不照搬任何默认假设。</small>
+    </h2>
+    <div class="stages">
+      <div class="stage"><b><i>阶段一 · MVP</i>｜先跑通</b>
+        <span>装好工具 + 一个谷歌 Chrome + 一个店铺，浏览器前台可见地自动下载出第一份报表，本地看板显示你店铺的真实数据（15 分钟内）。做完 AI 会停下来等你验收。</span></div>
+      <div class="stage"><b><i>阶段二 · 扩展</i>｜和 AI 对话</b>
+        <span>用大白话提需求：补齐上周 + 本周、每天定时自动下载、自动归档分类、改看板（加指标 / 换版式 / 只看某几个机型）、再接一个店铺……</span></div>
+      <div class="stage"><b><i>阶段三 · 进阶</i>｜解锁控制台</b>
+        <span>图形控制台勾选下载、体检补齐、自动归档都在界面上。稳定在自己电脑上用顺之后，完全不用再借助 AI——解锁阶段三就算圆满。</span></div>
+    </div>
+    <p class="hint ok">兼容性已写进安装说明：AI 第一步必问「做哪个站点、几个店铺」；站点不用猜，任何一份在售名单 CSV 的 <code>Listing site</code> / <code>Currency</code> 列即可自证；行名列名对不上时，以实际 CSV 表头适配，而不是硬套本店配置。</p>
+  </section>
+
+  <section class="card hero" id="ai">
     <div class="tag">推荐</div>
     <h2>方式一：让 AI 帮你装
       <small>你只需要复制一段话、回答几个问题。命令和报错都交给 AI 处理。</small>
     </h2>
 
     <ol class="bigsteps">
-      <li><b>点下面的「复制 AI 安装说明」</b><span>这段说明里已经写好了下载地址、每一步命令、检查标准和禁止事项，AI 照着就能干。</span></li>
-      <li><b>粘给你的 AI 助手</b><span>能操作电脑的 AI（WorkBuddy、Cursor、Claude Code 等）会自己下载安装；只能聊天的 AI 会给你一条条命令，你复制到 PowerShell 执行。</span></li>
-      <li><b>回答店铺信息，看结果报告</b><span>不需要填店铺名和活动 ID——工具会自动识别，店铺名在界面里随时能改。装完 AI 会给你一份自检报告，并帮你启动「下载上周 + 本周」。</span></li>
+      <li><b>点下面的「复制 AI 安装说明」</b><span>这段说明自带环境适配指引：AI 会先摸清你的环境（站点、店铺数量、浏览器），分阶段跑通，而不是照搬步骤。</span></li>
+      <li><b>粘给你的 AI 助手</b><span>能操作电脑的 AI（WorkBuddy、Cursor、Claude Code 等）会自己下载安装；只能聊天的 AI 会一条条给你命令，你复制到 PowerShell 执行。</span></li>
+      <li><b>配合两件小事，验收 MVP</b><span>回答 AI「做哪个站点、几个店铺」；拨一次浏览器调试开关。之后 AI 前台可见地下载第一份报表、点亮本地看板——阶段一完成，再按需和它对话进入阶段二，用顺了最后解锁控制台。</span></li>
     </ol>
 
     <div class="actions">
@@ -123,7 +163,7 @@
     </details>
   </section>
 
-  <section class="card">
+  <section class="card" id="manual">
     <h2>方式二：自己装
       <small>不放心让 AI 动手，就按这三步走，每步都写了「你应该看到什么」。全程不用填任何东西。</small>
     </h2>
@@ -144,16 +184,18 @@
         <span class="sees">应该看到：浏览器自动打开 http://127.0.0.1:7788 ，顶部显示 Chrome 连接正常，右上角写着「我的店铺」（点「改名」随时能改）。</span></li>
     </ol>
 
-    <h3>第 3 步：点一下「自动下载上周 + 本周」</h3>
+    <h3>第 3 步：拿第一份数据（相当于阶段一 MVP）</h3>
     <ol class="steps">
       <li>控制台页面最上面有个蓝色按钮「<b>自动下载上周 + 本周</b>」，点它就行。
         <span class="sees">它会自动识别你的店铺（只读浏览器里的登录账号），再下流量报表（逐日 14 份）、在售名单、PLG 链接广告、优先促销刊登，约 8~15 分钟。跑完打开看板就有数据了——不用你去研究该下哪些报表。两周刚好够看「上周 vs 本周」。</span></li>
-      <li>以后只补缺的日子，或者自己在界面上勾想下的报表。
+      <li>只想先快跑一次试试？在文件夹地址栏输入 cmd 回车，执行 <code>一键下载.cmd --full --only trafficDaily,active</code>（昨天的流量报表 + 在售名单，约 2~5 分钟，Chrome 前台可见）。
         <span class="sees">店铺名和活动 ID 都不用填：活动留空就是报表中心后台的全部活动，报表 CSV 里本来就带 Campaign，看板直接读。</span></li>
+      <li>以后只补缺的日子，或者自己在界面上勾想下的报表。
+        <span class="sees">进阶玩法（定时任务、多店铺、改看板）见上方「上手三阶段」，或把方式一的说明发给 AI，让它带你做。</span></li>
     </ol>
   </section>
 
-  <section class="card">
+  <section class="card" id="daily">
     <h2>装完怎么用 <small>日常就三个入口，都在安装文件夹里。</small></h2>
     <div class="entries">
       <div class="entry"><code>报表控制台.cmd</code><p>下载报表。勾选报表类型和日期，界面上每个后台参数都能选，点开始下载。</p></div>
@@ -162,7 +204,7 @@
     </div>
   </section>
 
-  <section class="card faq">
+  <section class="card faq" id="faq">
     <h2>常见问题</h2>
 
     <details><summary>公司网络打不开这个页面，或者下载很慢怎么办？</summary>
