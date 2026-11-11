@@ -235,8 +235,145 @@
     // === SHOP-PRODUCTS-END ===
     const PRODUCT_UNKNOWN = 'unknown';
     // 全店铺口径：PRODUCTS 是动态产品目录（种子 + 在售名单全部 SKU），
-    // 启动时由 normalizeState 用 bundle.products 覆盖；builder 模式下保持种子。
+    // 线上 bundle 启动时由 normalizeState 用 bundle.products 覆盖；
+    // 本机看板（其他运营的「在线看板」就是本机 127.0.0.1 服务，不需要发布）不再只留种子：
+    // 下面 rebuildProductCatalog 会按构建端同一套规则（SKU + 标题提炼机型名）动态重建，
+    // 没有这步的话本地只会显示 KNOWN_PRODUCTS 里的两个种子机型。
     let PRODUCTS = KNOWN_PRODUCTS.map(product => ({ ...product }));
+
+    // ===== 机型提炼（与 update-shop-dashboard.mjs 同口径移植；改规则两边要同步） =====
+    // 标题里的通用描述词，永远不是机型名的一部分（遇到即停止收集）。
+    const MODEL_STOPWORDS = new Set([
+      'obd', 'obd2', 'obdii', 'scanner', 'scan', 'car', 'auto', 'automotive', 'diagnostic', 'diagnostics',
+      'tool', 'tools', 'full', 'system', 'systems', 'all', 'bidirectional', 'professional', 'code', 'codes',
+      'reader', 'fault', 'battery', 'tester', 'analyzer', 'test', 'tests', 'active', 'ecu', 'coding',
+      'programming', 'programmer', 'wireless', 'bluetooth', 'heavy', 'duty', 'truck', 'j1939', 'online',
+      'new', 'newest', 'brand', 'authentic', 'lifetime', 'free', 'updates', 'update', 'coverage', 'vehicle',
+      'vehicles', 'insights', 'unlock', 'grab', 'reveal', 'unseen', 'features', 'live', 'data', 'with',
+      'and', 'for', 'the', 'advanced', 'portable', 'waterproof', 'pocket', 'compact', 'monocular',
+      'thermal', 'camera', 'infrared', 'digital', 'zoom', 'screen', 'multifunctional', 'printable',
+      'report', 'booster', 'charger', 'charging', 'cranking', 'power', 'jump', 'starter', 'ip67', 'ip68',
+      'oe-level', 'oelevel', 'top-tier', 'toplevel', 'multifunction',
+      'resets', 'reset', 'services', 'service', 'functions', 'function', 'motorcycle', 'ios', 'android',
+      'full-system', 'fullsystem', 'j2534', 'pass-thru', 'passthru', 'yard', 'hour', '11-hour', 'table',
+      'diagram', 'topology', 'mapping', 'support', 'handheld', 'hunting', 'night', 'vision', 'imager',
+      'imaging', 'telescope', 'adventure', 'outdoor', 'precise', 'detection', 'maintenance', 'compatibility',
+      'oem', 'oem-level', 'reprogramming', 'us'
+    ]);
+    function cleanModelToken(raw) { return raw.replace(/^[^\w+.-]+|[^\w+.-]+$/g, ''); }
+    function isSpecNoise(lower, raw) {
+      return /^20\d{2}$/.test(lower)
+        || /%$/.test(raw)
+        || /["”']$/.test(raw)
+        || /^\d+(\.\d+)?(v|mm|hz|cca|in)$/.test(lower)
+        || /^\d+\+$/.test(lower)
+        || /\d+x\d+/.test(lower)
+        || /^\d+x$/.test(lower);
+    }
+    // 从单个标题提炼机型名：TOPDON 品牌词之后、首个停用词之前的连续 token（最多 3 个）。
+    function deriveModelName(title) {
+      const text = clean(title).replace(/[^\x20-\x7E]/g, ' ');
+      const tokens = text.split(/\s+/).filter(Boolean);
+      const brandIndex = tokens.findIndex(token => /^topdon$/i.test(token));
+      const start = brandIndex >= 0 ? brandIndex + 1 : 0;
+      const collected = [];
+      for (let index = start; index < Math.min(tokens.length, start + 6); index += 1) {
+        const raw = tokens[index];
+        const lower = raw.toLowerCase();
+        if (collected.length && /^topdon$/i.test(lower)) continue;
+        if (isSpecNoise(lower, raw)) continue;
+        if (MODEL_STOPWORDS.has(lower)) break;
+        const cleaned = cleanModelToken(raw);
+        if (!cleaned || !/[a-z0-9]/i.test(cleaned)) continue;
+        if (/^\d+$/.test(cleaned) || /^\d+\.\d+$/.test(cleaned)) {
+          const nextRaw = tokens[index + 1] || '';
+          const next = cleanModelToken(nextRaw).toLowerCase();
+          if (cleaned.length <= 4 && (!next || MODEL_STOPWORDS.has(next))) {
+            collected.push(cleaned);
+            if (collected.length >= 3) break;
+          }
+          continue;
+        }
+        collected.push(cleaned);
+        if (collected.length >= 3) break;
+      }
+      if (!collected.length || !collected.some(token => /[a-z]/i.test(token))) return '';
+      return collected.join(' ');
+    }
+    // 一个 SKU 下的多标题投票：取票数最高的机型，显示名用出现次数最多的原始写法。
+    function deriveModelLabel(titles) {
+      const votes = new Map();
+      for (const [title, count] of titles) {
+        const model = deriveModelName(title);
+        if (!model) continue;
+        const norm = titleKey(model);
+        if (!votes.has(norm)) votes.set(norm, { votes: 0, surfaces: new Map() });
+        const entry = votes.get(norm);
+        entry.votes += count;
+        entry.surfaces.set(model, (entry.surfaces.get(model) || 0) + count);
+      }
+      if (!votes.size) return { model: '' };
+      const winner = [...votes.entries()].sort((a, b) => b[1].votes - a[1].votes || a[0].localeCompare(b[0]))[0][1];
+      const surface = [...winner.surfaces.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+      return { model: surface };
+    }
+    // 动态产品目录：种子 + 全部 SKU（机型名提炼不出回退 SKU；同机型多 SKU 合并）。
+    function buildProductCatalogLocal(skuByItemIdMaps, skuTitles) {
+      const catalog = KNOWN_PRODUCTS.map(product => ({ ...product, titleTokens: [...product.titleTokens], skus: [product.sku] }));
+      const byLabel = new Map(catalog.map(product => [titleKey(product.label), product]));
+      const bySku = new Map(catalog.flatMap(product => product.skus.map(sku => [sku.toLowerCase(), product])));
+      const allSkus = new Map();
+      for (const map of skuByItemIdMaps) {
+        for (const sku of map.values()) {
+          const key = String(sku);
+          if (key && !allSkus.has(key)) allSkus.set(key, skuTitles.get(key) || new Map());
+        }
+      }
+      for (const [sku, titles] of skuTitles) if (!allSkus.has(sku)) allSkus.set(sku, titles);
+      const skuEntries = [...allSkus.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [sku, titles] of skuEntries) {
+        if (!sku || bySku.has(sku.toLowerCase())) continue;
+        const { model } = deriveModelLabel(titles);
+        const label = model || sku;
+        const norm = titleKey(label);
+        const same = byLabel.get(norm);
+        if (same) {
+          if (!same.skus.includes(sku)) same.skus.push(sku);
+          bySku.set(sku.toLowerCase(), same);
+          continue;
+        }
+        const product = { key: label, label, sku, skus: [sku], titleTokens: [norm] };
+        catalog.push(product);
+        byLabel.set(norm, product);
+        bySku.set(sku.toLowerCase(), product);
+      }
+      return catalog;
+    }
+    // 本机看板入口：数据来自 CSV（本机服务自动加载 / 手工上传），没有 bundle.products 可用，
+    // 这里按构建端同一套规则重建产品目录，并把旧行里「未识别」的归类清掉让它按新目录重算。
+    function rebuildProductCatalog() {
+      const skuTitles = new Map();
+      const addTitle = (sku, title, count = 1) => {
+        const key = String(sku || '').trim();
+        const t = clean(title);
+        if (!key || !t) return;
+        if (!skuTitles.has(key)) skuTitles.set(key, new Map());
+        const bucket = skuTitles.get(key);
+        bucket.set(t, (bucket.get(t) || 0) + count);
+      };
+      (fullState.activeListings?.items || []).forEach(item => addTitle(item.sku || skuByItemId.get(String(item.itemId)), item.title));
+      (fullState.trafficRaw || []).forEach(row => addTitle(skuByItemId.get(String(row.itemId)), row.title));
+      (fullState.ads?.plpRows || []).forEach(row => addTitle(skuByItemId.get(String(row.itemId)), row.title));
+      const catalog = buildProductCatalogLocal([skuByItemId], skuTitles);
+      // 只有真从数据里识别出种子之外的 SKU 才替换，避免空白工作台反复覆盖
+      if (catalog.length > KNOWN_PRODUCTS.length) {
+        PRODUCTS = catalog;
+        fullState.products = catalog.map(product => ({ ...product }));
+        [fullState.plgRaw, fullState.trafficRaw, fullState.ads?.plpRows, fullState.activeListings?.items].forEach(rows => {
+          (rows || []).forEach(row => { if (!row.product || row.product === PRODUCT_UNKNOWN) delete row.product; });
+        });
+      }
+    }
 
     const COVERAGE = [
       ['自然曝光', '直接提供', 'Traffic：Total organic impressions on eBay site；PLG：Organic Impressions'],
@@ -336,6 +473,7 @@
       dataState = {
         plgRaw: pick(fullState.plgRaw),
         trafficRaw: pick(fullState.trafficRaw),
+        itemHistory: fullState.itemHistory || {},
         activeListings: fullState.activeListings ? { ...fullState.activeListings, items: pick(fullState.activeListings.items) } : null,
         sources: structuredClone(fullState.sources || []),
         products: structuredClone(fullState.products),
@@ -635,6 +773,30 @@
       }
       const coverage = missingCount ? `仅覆盖 ${covered.size}/${dayCount} 天，缺少日报：${missing.join('、')}${missingCount > 10 ? `等 ${missingCount} 天` : ''}；Traffic 合计不完整，缺失日期不补零。` : `已按日报汇总 ${covered.size} 天。`;
       const useSnapshot = snapshot.length > 0 && ui.trafficSource !== 'daily';
+      // 换品检测（只标注，历史值不剔除）：区间快照按导出时标题归属整个区间，
+      // 若链接期间卖过别的商品（itemId 复用改标题），快照会包含前身商品的数据。
+      // 判据两类：① 标题历史里有与当前机型视图不同的归属且日期与区间有交集；
+      // ② 无历史证据但日报覆盖不满且快照曝光远大于日报相加。
+      const coverageByItem = new Map();
+      for (const row of selected) coverageByItem.set(row.itemId, (coverageByItem.get(row.itemId) || 0) + 1);
+      const swaps = [];
+      if (useSnapshot && start !== end) {
+        const history = dataState.itemHistory || {};
+        const singleModel = ui.models.length === 1;
+        for (const row of snapshot) {
+          const hist = history[row.itemId] || [];
+          const foreign = hist.filter(h => h.f <= end && h.l >= start && (singleModel ? h.p !== ui.models[0] : h.p === null));
+          const dailyImp = items.get(row.itemId)?.totalImpressions ?? null;
+          const coveredDays = coverageByItem.get(row.itemId) || 0;
+          const snapshotImp = Number(row.totalImpressions) || 0;
+          const gapImp = dailyImp == null ? null : snapshotImp - dailyImp;
+          const suspect = foreign.length > 0 || (dailyImp != null && coveredDays < dayCount && gapImp > 200 && gapImp / Math.max(snapshotImp, 1) > 0.3);
+          if (!suspect) continue;
+          swaps.push({ itemId: row.itemId, title: row.title, foreign, coveredDays, dayCount, snapshotImp, dailyImp, gapImp });
+        }
+        swaps.sort((a, b) => (b.gapImp ?? 0) - (a.gapImp ?? 0) || b.snapshotImp - a.snapshotImp);
+      }
+      const swapNote = swaps.length ? `检测到 ${swaps.length} 个链接在区间内换过标题/商品，快照值含其前身商品的数据（明细见下方快照面板）；历史值按口径保留、不剔除。` : '';
       const comparisons = new Map((start !== end ? snapshot : []).map(row => {
         const dailyRow = items.get(row.itemId);
         return [row.itemId, { cumulativePV: row.totalPageViews, dailyPV: dailyRow?.totalPageViews ?? null,
@@ -642,12 +804,12 @@
       }));
       const mismatchCount = [...comparisons.values()].filter(row => row.difference != null && row.difference !== 0).length;
       const reconciliation = start === end ? '单日报表，不涉及区间累计对账。' : snapshot.length
-        ? `同区间核对：${mismatchCount} 个 Item 的日报合计总PV与累计总PV不一致，明细见“PV核对”。日度数据不按累计值补写。`
+        ? `同区间核对：${mismatchCount} 个 Item 的日报合计总PV与累计总PV不一致，明细见“PV核对”。日度数据不按累计值补写。${swapNote}`
         : '没有同区间累计报表可供核对；日报合计尚未与累计报表对账，不能作为后台近30天Views的直接替代。';
       const sourceNote = useSnapshot
         ? `Traffic：${start === end ? '单日报表' : '使用原始区间累计报表，起止日期与所选日期完全一致'}。${reconciliation}`
         : `Traffic：日报汇总。${coverage} ${reconciliation}`;
-      return { rows: useSnapshot ? snapshot : [...items.values()], comparisons,
+      return { rows: useSnapshot ? snapshot : [...items.values()], comparisons, swaps,
         note: `${sourceNote} 总PV包含站内和站外访问；站内PV仅计算站内来源。CTR按站内PV/曝光计算，转化率按销量/总PV计算。`,
         complete: useSnapshot || missingCount === 0 };
     }
@@ -744,9 +906,10 @@
           pvAudit: (() => {
             if (!traffic) return '缺Traffic';
             const check = selection.comparisons?.get(itemId);
-            if (!check) return traffic.start === traffic.end ? '单日报表' : '仅日报，未对账';
-            if (check.dailyPV == null) return `累计${check.cumulativePV}，缺日报记录`;
-            return check.difference === 0 ? '日报与累计一致' : `日报${check.dailyPV} / 累计${check.cumulativePV}，差额${check.difference > 0 ? '+' : ''}${check.difference}`;
+            const swapTag = (selection.swaps || []).some(swap => swap.itemId === itemId) ? '（含前身商品数据）' : '';
+            if (!check) return traffic.start === traffic.end ? '单日报表' : `仅日报，未对账${swapTag}`;
+            if (check.dailyPV == null) return `累计${check.cumulativePV}，缺日报记录${swapTag}`;
+            return check.difference === 0 ? '日报与累计一致' : `日报${check.dailyPV} / 累计${check.cumulativePV}，差额${check.difference > 0 ? '+' : ''}${check.difference}${swapTag}`;
           })(),
           quantitySold: traffic?.quantitySold || 0,
           totalCtr: traffic ? ebayViews / traffic.totalImpressions || 0 : 0,
@@ -1012,6 +1175,16 @@
       const views = sum(rows, 'totalPageViews');
       const sold = sum(rows, 'quantitySold');
       const onsiteViews = sum(rows, 'promotedEbayViews') + sum(rows, 'organicEbayViews');
+      // 换品链接明细：快照值含前身商品数据，只标注不剔除
+      const swapsAll = (trafficSelection().swaps || []);
+      const swaps = swapsAll.slice(0, 8);
+      const swapHtml = start !== end && swapsAll.length ? `<div class="snapshot-note"><strong>⚠ 区间内换过标题/商品的链接（历史值保留，未剔除）：</strong>${swaps.map(s => {
+        const hist = s.foreign.length
+          ? s.foreign.map(h => `曾为「${esc(h.t.length > 34 ? h.t.slice(0, 34) + '…' : h.t)}」（${h.f.slice(5)}~${h.l.slice(5)}，${h.p ? esc(h.p) : '未识别商品'}）`).join('；')
+          : `日报仅覆盖 ${s.coveredDays}/${s.dayCount} 天`;
+        const gap = s.dailyImp == null ? `快照曝光 ${fmt(s.snapshotImp)}，区间内无日报记录` : `快照曝光 ${fmt(s.snapshotImp)} vs 日报相加 ${fmt(s.dailyImp)}（差 ${s.gapImp > 0 ? '+' : ''}${fmt(s.gapImp)}）`;
+        return `<div>· <span class="mono">${esc(s.itemId)}</span> ${hist} — ${gap}</div>`;
+      }).join('')}${swapsAll.length > 8 ? `<div>…等共 ${swapsAll.length} 个</div>` : ''}快照按导出时标题把整个区间归属给该链接，因此含前身商品的数据；日报按当天标题判定，两个口径对不上是预期行为。</div>` : '';
       return `<section class="panel snapshot"><div class="panel-head"><h3>Traffic 区间快照</h3><span class="badge ${start === end ? 'green' : 'amber'}">${start === end ? '单日' : '区间累计'}</span></div><div class="panel-body">
         <div class="snapshot-metrics">
           <div class="snapshot-metric"><span>链接总曝光</span><strong>${fmt(impressions)}</strong></div>
@@ -1019,7 +1192,7 @@
           <div class="snapshot-metric"><span>Quantity sold</span><strong>${fmt(sold)}</strong></div>
           <div class="snapshot-metric"><span>站内 CTR</span><strong>${pct(onsiteViews / impressions || 0)}</strong></div>
           <div class="snapshot-metric"><span>总转化率</span><strong>${pct(sold / views || 0)}</strong></div>
-        </div></div></section>`;
+        </div>${swapHtml}</div></section>`;
     }
 
     function dailyPage() {
@@ -1499,26 +1672,72 @@
       if (ui.page === 'ads' && ui.adTab === 'overview') setTimeout(renderAdCharts, 0);
     }
 
-    async function importFiles(files) {
+    async function importFiles(files, options = {}) {
       const csvFiles = files.filter(file => file.name.toLowerCase().endsWith('.csv'));
       if (!csvFiles.length) return toast('请选择 CSV 文件。', true);
       loading(true, `正在处理 ${csvFiles.length} 个文件…`);
       const messages = [];
+      let failed = 0;
       for (const file of csvFiles) {
         try {
           const result = await readFile(file);
           mergeImport(result);
           messages.push(`${result.type}：${result.rows.length} 行`);
         } catch (error) {
+          failed += 1;
           messages.push(`${file.name}：${error.message}`);
         }
       }
+      // 本地 / builder 模式没有 bundle.products：按 SKU + 标题重建产品目录（种子之外的全部机型）
+      rebuildProductCatalog();
       await saveState();
       loading(false);
       ui.page = 'dashboard';
       render();
-      toast(`导入完成。${messages.join('；')}`);
+      // 自动加载（本地看板服务）时文件多、消息长，只说结论，细节留在控制台
+      toast(options.auto
+        ? `已自动加载 ${csvFiles.length - failed} 份报表${failed ? `（另有 ${failed} 份不是本看板支持的类型，已跳过）` : ''}`
+        : `导入完成。${messages.join('；')}`);
       document.getElementById('fileInput').value = '';
+    }
+
+    // 双击「打开看板.cmd」时，页面由本机小服务托管（127.0.0.1）：直接把「数据」目录里已归档的 CSV 拉进来。
+    // 用 bundleId 记住上次加载的是哪一批，内容没变就不再重复解析；file:// 双击打开时协议不对，完全不进这里。
+    async function autoLoadFromLocalServer() {
+      const isLocalHost = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+      if (location.protocol !== 'http:' || !isLocalHost) return;
+      let manifest;
+      try {
+        const res = await fetch('/auto-data.json', { cache: 'no-store' });
+        if (!res.ok) return;
+        manifest = await res.json();
+      } catch { return; }
+      if (!manifest || !Array.isArray(manifest.files) || !manifest.files.length) return;
+      // 同一台机器上可能装了两份工具包（或复制了一份），它们共用同一个浏览器存储。
+      // 发现根目录变了就清空重来，免得新版看板里还挂着上一份包的数据。
+      const root = String(manifest.root || '');
+      const prevRoot = localStorage.getItem('ebay-shop-autoload-root');
+      if (root && prevRoot && prevRoot !== root) {
+        fullState = structuredClone(DEFAULT_STATE);
+        localStorage.removeItem('ebay-shop-autoload-stamp');
+        localStorage.removeItem('ebay-shop-preloaded-stamp');
+        toast('检测到另一份工具包，已切换成当前这份的数据');
+      }
+      if (root) localStorage.setItem('ebay-shop-autoload-root', root);
+      const stamp = 'auto|' + manifest.bundleId;
+      if (stamp === localStorage.getItem('ebay-shop-autoload-stamp')) return;
+      loading(true, `正在读取已下载的 ${manifest.files.length} 份报表…`);
+      const files = [];
+      for (const entry of manifest.files) {
+        try {
+          const res = await fetch(`/auto-data/${entry.index}?v=${manifest.bundleId}`, { cache: 'no-store' });
+          if (!res.ok) continue;
+          files.push(new File([await res.blob()], entry.name, { type: 'text/csv' }));
+        } catch { /* 单份读不到不影响其它 */ }
+      }
+      if (!files.length) { loading(false); return; }
+      await importFiles(files, { auto: true });
+      localStorage.setItem('ebay-shop-autoload-stamp', stamp);
     }
 
     function exportData() {
@@ -1685,12 +1904,17 @@
             localStorage.setItem('ebay-shop-preloaded-stamp', stamp);
             localStorage.setItem('ebay-shop-preloaded-bundle', seeded.bundleId);
           }
+          // 本机看板（无线上 bundle）：从已持久化的数据里重建产品目录，
+          // 修掉旧版本只认两个种子机型的问题；有 bundle 时以 bundle.products 为准，不重建。
+          if (!seeded) rebuildProductCatalog();
         }
         applyModelFilter();
       } catch (error) {
         toast('无法读取本地数据，将以空白工作台启动。', true);
         applyModelFilter();
       }
+      // 本地看板服务模式：自己把已归档的 CSV 拉进来（file:// 双击打开时这一步什么都不做）
+      try { await autoLoadFromLocalServer(); } catch { /* 自动加载失败不影响手动上传 */ }
       render();
     })();
   </script>
