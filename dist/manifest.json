@@ -1,6 +1,6 @@
 {
-  "version": "v202611111110",
-  "createdAt": "2026-11-11 11:10:27",
+  "version": "v202611111142",
+  "createdAt": "2026-11-11 11:42:41",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -225,8 +225,8 @@
     },
     {
       "path": "看板更新提示词.md",
-      "hash": "6f7236b2356c6834ae3afbccb20c14475a32c0b2ea596183b7dbbd48bea6b039",
-      "size": 2961
+      "hash": "a1c8e266050ca893ca97ca2fbca1791e628be46ccab3a15e976e54e03e8e5396",
+      "size": 3116
     },
     {
       "path": "看板/ebay-shop-dashboard.html",
