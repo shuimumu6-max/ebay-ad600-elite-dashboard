@@ -457,12 +457,46 @@
       const label = PRODUCTS.find(product => product.key === key)?.label || (key === PRODUCT_UNKNOWN ? '未识别' : key);
       return `<div class="product-notice">当前机型「${esc(label)}」暂无 PLP 数据（现有广告快照仅覆盖 ${esc(PRODUCTS[0]?.label || '部分')} 等已推广机型）；流量与 PLG 数据可正常查看。</div>`;
     }
+    // 换品检测证据（本地解析路径）：同一 itemId 出现过的不同标题。构建端
+    // （update-shop-dashboard.mjs）产出同样的 itemHistory；这里只在前端自解析、
+    // 且 bundle 没带 itemHistory 时收集一次。只标注，历史值保留不剔除。
+    function collectItemHistory(state) {
+      if (state.itemHistory) return state;
+      const itemHistory = new Map();
+      [state.plgRaw, state.trafficRaw, state.ads?.plpRows].forEach(rows => {
+        (rows || []).forEach(row => {
+          const itemId = String(row.itemId || '');
+          const title = String(row.title || '').trim();
+          const date = row.start || row.date || '';
+          if (!itemId || !title || !date) return;
+          let entry = itemHistory.get(itemId);
+          if (!entry) itemHistory.set(itemId, entry = new Map());
+          const norm = title.toLowerCase().replace(/\s+/g, ' ');
+          const known = entry.get(norm);
+          if (known) {
+            if (date < known.f) known.f = date;
+            if (date > known.l) known.l = date;
+            known.n += 1;
+          } else {
+            entry.set(norm, { t: title, p: row.product === PRODUCT_UNKNOWN ? null : row.product, f: date, l: date, n: 1 });
+          }
+        });
+      });
+      const out = {};
+      for (const [itemId, entry] of itemHistory) {
+        if (entry.size < 2) continue;
+        out[itemId] = [...entry.values()].sort((a, b) => a.f.localeCompare(b.f));
+      }
+      state.itemHistory = out;
+      return state;
+    }
     function normalizeState(state) {
       if (state.products?.length) PRODUCTS = state.products.map(product => ({ ...product }));
       else state.products = PRODUCTS.map(product => ({ ...product }));
       [state.plgRaw, state.trafficRaw, state.ads?.plpRows, state.activeListings?.items].forEach(rows => {
         (rows || []).forEach(row => { if (!row.product) row.product = productOf(row); });
       });
+      collectItemHistory(state);
       return state;
     }
     function applyModelFilter() {
