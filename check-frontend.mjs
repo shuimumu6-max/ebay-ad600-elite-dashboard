@@ -361,6 +361,36 @@ ok('手工核对剔除：820216825374/820216832219 快照按窗口扣减，本�
   api.applyProduct();
 });
 
+ok('日报漏归因补足：Traffic 当日 0 但 PLG 有出单时按 PLG 补足（10 月 AD600 Elite = 3 台）', () => {
+  api.setFullState({
+    plgRaw: bundle.plgRaw,
+    trafficRaw: bundle.trafficRaw,
+    itemHistory: bundle.itemHistory,
+    activeListings: bundle.activeListings,
+    sources: bundle.sources,
+    ads: bundle.ads,
+    products: bundle.products,
+    productCounts: bundle.productCounts
+  });
+  api.setUiProduct('AD600 Elite');
+  api.ui.start = '2026-10-01';
+  api.ui.end = '2026-10-31';
+  api.ui.trafficSource = 'daily';
+  api.applyProduct();
+  const rows = api.itemPerformance();
+  const total = rows.reduce((sum, row) => sum + (row.quantitySold || 0), 0);
+  assert.equal(total, 3, '10 月日报口径销量应为 3 台（5374 的 10-20 由 PLG 补足 + 10-26，820231485833 的 10-24）');
+  const row5374 = rows.find(row => row.itemId === '820216825374');
+  assert.equal(row5374.quantitySold, 2, '5374 十月应为 2 台（10-20 补足 + 10-26）');
+  const selection = api.trafficSelection();
+  assert.equal(selection.rows.find(row => row.itemId === '820216825374').soldPlgFilled, 1, '5374 应留痕 PLG 补足 1 台');
+  assert.match(selection.note, /销量补足/, '说明里应提示 PLG 补足');
+  api.ui.start = '';
+  api.ui.end = '';
+  api.setUiProduct('all');
+  api.applyProduct();
+});
+
 ok('手工核对剔除配置：与 shop 模板逐字一致', () => {
   const extract = text => {
     const match = text.match(/\/\/ === MANUAL-SOLD-EXCLUSIONS-START ===([\s\S]*?)\/\/ === MANUAL-SOLD-EXCLUSIONS-END ===/);
