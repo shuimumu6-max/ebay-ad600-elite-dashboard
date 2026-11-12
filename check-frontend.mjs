@@ -373,4 +373,83 @@ ok('手工核对剔除配置：与 shop 模板逐字一致', () => {
   if (existsSync(shopPath)) assert.equal(extract(readFileSync(shopPath, 'utf8')), online, 'shop 模板的手工剔除配置与在线模板不一致');
 });
 
+ok('换品历史自愈：旧状态缺 itemHistory 时自动从报表行重建', () => {
+  // 模拟旧版页面存进 IndexedDB 的状态：有报表行但没有 itemHistory。
+  // 注意：预置行的前身标题行已被构建端过滤，前端重建只能恢复行内可见的多标题 item
+  //（如 820216825374 的两个 AD600 Elite 标题）；完整历史由 start() 用预置 bundle 补全。
+  api.setFullState({
+    plgRaw: bundle.plgRaw,
+    trafficRaw: bundle.trafficRaw,
+    itemHistory: undefined,
+    activeListings: bundle.activeListings,
+    sources: bundle.sources,
+    ads: bundle.ads,
+    products: bundle.products,
+    productCounts: bundle.productCounts
+  });
+  api.setUiProduct('all');
+  api.applyProduct();
+  assert.ok(api.dataState.itemHistory && Object.keys(api.dataState.itemHistory).length > 0, 'itemHistory 未从报表行重建');
+  assert.ok(api.dataState.itemHistory['820216825374'], '重建结果缺 820216825374 的标题历史');
+  // 空对象 itemHistory 也必须触发重建
+  api.setFullState({
+    plgRaw: bundle.plgRaw,
+    trafficRaw: bundle.trafficRaw,
+    itemHistory: {},
+    activeListings: bundle.activeListings,
+    sources: bundle.sources,
+    ads: bundle.ads,
+    products: bundle.products,
+    productCounts: bundle.productCounts
+  });
+  api.setUiProduct('all');
+  api.applyProduct();
+  assert.ok(Object.keys(api.dataState.itemHistory || {}).length > 0, '空 itemHistory 未触发重建');
+});
+
+ok('换品剔除宁剔勿留：本体时期日报零覆盖时快照销量剔为 0', () => {
+  // 模拟旧状态/缺日报场景：去掉 900E 两条链接 11-05~11-08 的日报行，
+  // 窗口 11-01~11-08 内本体时期（11-05 起）零日报覆盖 → 快照销量应剔为 0 而不是保留原值。
+  const strippedDaily = bundle.trafficRaw.filter(row =>
+    !(['820289759002', '820289778048'].includes(row.itemId) && row.start === row.end && row.start >= '2026-11-05' && row.start <= '2026-11-08'));
+  api.setFullState({
+    plgRaw: bundle.plgRaw,
+    trafficRaw: strippedDaily,
+    itemHistory: bundle.itemHistory,
+    activeListings: bundle.activeListings,
+    sources: bundle.sources,
+    ads: bundle.ads,
+    products: bundle.products,
+    productCounts: bundle.productCounts
+  });
+  api.setUiProduct('UltraDiag900 E');
+  api.ui.start = '2026-11-01';
+  api.ui.end = '2026-11-08';
+  api.ui.trafficSource = 'snapshot';
+  api.applyProduct();
+  const selection = api.trafficSelection();
+  for (const [itemId, rawSold] of [['820289759002', 2], ['820289778048', 1]]) {
+    const row = selection.rows.find(r => r.itemId === itemId);
+    assert.ok(row, `缺 ${itemId} 快照行`);
+    assert.equal(row.quantitySold, 0, `${itemId} 零覆盖时应剔为 0`);
+    assert.equal(row.soldExcluded, rawSold, `${itemId} 应剔除 ${rawSold} 台`);
+    assert.equal(row.soldUncertain, true, `${itemId} 应标注不确定`);
+  }
+  // 恢复标准状态
+  api.setFullState({
+    plgRaw: bundle.plgRaw,
+    trafficRaw: bundle.trafficRaw,
+    itemHistory: bundle.itemHistory,
+    activeListings: bundle.activeListings,
+    sources: bundle.sources,
+    ads: bundle.ads,
+    products: bundle.products,
+    productCounts: bundle.productCounts
+  });
+  api.ui.start = '';
+  api.ui.end = '';
+  api.setUiProduct('all');
+  api.applyProduct();
+});
+
 console.log(`\n全部通过：${passed} 项`);
