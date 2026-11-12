@@ -217,6 +217,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
+    const FRONTEND_VERSION = 'v20261112-剔除版';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -899,7 +900,7 @@
       return `<header class="topbar">
         <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay 流量与广告看板</h1><p>${PRODUCTS.map(product => product.label).join(' · ')} ｜ Traffic + PLG + PLP + 关键词</p></div></div>
         <div class="product-switch" role="group" aria-label="产品范围">${productSwitch()}</div>
-        <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'}</span></div>
+        <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'} · ${FRONTEND_VERSION}</span></div>
       </header>
       <div class="workspace">
         <aside class="sidebar"><nav class="nav">${pages.map(([id, ico, label]) => `<button class="nav-btn ${ui.page === id ? 'active' : ''}" data-page="${id}">${icon(ico)}<span>${label}</span></button>`).join('')}</nav></aside>
