@@ -219,6 +219,16 @@
     ];
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
+    // === MANUAL-SOLD-EXCLUSIONS-START ===
+    // 手工核对换品剔除（2026-11-12 用户按 eBay 订单记录核对）：下列链接历史上被改卖过其它商品，
+    // 前身标题在现有报表里看不到（itemHistory 覆盖不到），由维护者人工指定「哪些日期的出单属于前身商品」。
+    // exclude：日期 → 出单台数（全部视为非本体出单剔除）；未列出的日期视为本体出单、原样保留。
+    // 日度行（Traffic/PLG）载入时按日期扣减；区间快照在 trafficSelection 里按窗口覆盖到的日期扣减。
+    const MANUAL_SOLD_EXCLUSIONS = {
+      '820216825374': { exclude: { '2026-10-09': 1, '2026-10-10': 3, '2026-10-11': 1 }, reason: '人工核对（2026-11-12）：本体出单仅 10-20×1、10-26×1、11-06×1；10-09/10-10/10-11 的出单为前身商品时期' },
+      '820216832219': { exclude: { '2026-10-08': 1, '2026-10-09': 4 }, reason: '人工核对（2026-11-12）：本体未出单；10-08/10-09 的出单为前身商品时期' }
+    };
+    // === MANUAL-SOLD-EXCLUSIONS-END ===
     // === PRODUCTS-END ===
 
     const COVERAGE = [
@@ -292,6 +302,26 @@
       [state.plgRaw, state.trafficRaw, state.ads?.plpRows, state.activeListings?.items].forEach(rows => {
         (rows || []).forEach(row => { if (!row.product) row.product = productOf(row); });
       });
+      applyManualSoldCuts(state);
+      return state;
+    }
+    // 手工核对剔除：日度行载入时直接按日期扣减（soldManualCut 留痕，防止重复扣减）
+    function applyManualSoldCuts(state) {
+      const cutRow = (row, fields, date) => {
+        const manual = MANUAL_SOLD_EXCLUSIONS[String(row.itemId)];
+        if (!manual || row.soldManualCut) return;
+        const qty = Number(manual.exclude[date]) || 0;
+        if (!(qty > 0)) return;
+        const applied = {};
+        fields.forEach(field => {
+          const value = Number(row[field]) || 0;
+          const cut = Math.min(qty, Math.max(value, 0));
+          if (cut > 0) { row[field] = value - cut; applied[field] = cut; }
+        });
+        if (Object.keys(applied).length) row.soldManualCut = applied;
+      };
+      (state.trafficRaw || []).forEach(row => { if (row.start && row.start === row.end) cutRow(row, ['quantitySold'], row.start); });
+      (state.plgRaw || []).forEach(row => cutRow(row, ['totalSold', 'organicSold', 'adSold'], row.date));
       return state;
     }
     function applyProduct() {
@@ -627,17 +657,18 @@
         }
         swaps.sort((a, b) => (b.gapImp ?? 0) - (a.gapImp ?? 0) || b.snapshotImp - a.snapshotImp);
       }
-      const swapNote = swaps.length ? `检测到 ${swaps.length} 个链接在区间内换过标题/商品：销量已剔除非本体时期的出单，曝光/PV 等其余数值含前身商品数据、按口径保留（明细见下方快照面板）。` : '';
       // 换品销量剔除（2026-11-12 用户拍板：直接剔除非本体时期的出单，其余数值保留）：
       // 区间快照的 Quantity sold 按导出时标题归属整个区间，会包含前身商品时期的出单；
       // 日报按当天标题判定、前身时期行在构建期已被过滤，因此用日报重算「本体时期」出单：
       // 本体时期日报覆盖完整 → 快照销量替换为日报合计并记录剔除量；覆盖不全 → 保留快照原值并标注不确定。
       let soldAdjustedCount = 0;
       let soldExcludedTotal = 0;
+      let manualAdjustedCount = 0;
       if (useSnapshot && start !== end) {
         const history = dataState.itemHistory || {};
         const singleProduct = ui.product && ui.product !== PRODUCT_ALL;
         for (const row of snapshot) {
+          if (MANUAL_SOLD_EXCLUSIONS[row.itemId]) continue; // 人工核对剔除的链接走下方手工剔除，避免两套口径叠加
           const hist = history[row.itemId] || [];
           // 前身按「产品」判定（与上方换品检测同口径）：同产品改标题文案不算换品，
           // 否则会把本体在旧标题下的真实出单误剔（如 AD600 Elite 820216825374 改写标题后的出单）。
@@ -670,8 +701,38 @@
           soldExcludedTotal += Math.max(row.soldExcluded, 0);
         }
       }
+      // 手工核对换品剔除（2026-11-12 用户按订单记录核对）：这些链接的前身标题在报表里看不到、
+      // itemHistory 覆盖不到，由人工指定「哪些日期的出单属于前身商品」（日度行已在载入时剔除）；
+      // 区间快照按窗口覆盖到的手工剔除日期+台数扣减销量。
+      if (useSnapshot) {
+        for (const row of snapshot) {
+          const manual = MANUAL_SOLD_EXCLUSIONS[row.itemId];
+          if (!manual) continue;
+          const excluded = Object.entries(manual.exclude).reduce((total, [date, qty]) => (date >= start && date <= end ? total + Number(qty || 0) : total), 0);
+          if (!(excluded > 0)) continue;
+          const base = Number(row.quantitySold) || 0;
+          const cut = Math.min(excluded, Math.max(base, 0));
+          if (!(cut > 0)) continue;
+          row.soldRaw = row.soldRaw ?? base;
+          row.soldExcluded = (row.soldExcluded || 0) + cut;
+          row.soldManual = true;
+          row.quantitySold = Math.max(base - cut, 0);
+          soldAdjustedCount += 1;
+          soldExcludedTotal += cut;
+          manualAdjustedCount += 1;
+          if (start !== end) {
+            const existingSwap = swaps.find(swap => swap.itemId === row.itemId);
+            if (existingSwap) { existingSwap.manual = manual; existingSwap.manualExcluded = cut; }
+            else swaps.push({ itemId: row.itemId, title: row.title, foreign: [], manual, manualExcluded: cut,
+              coveredDays: coverageByItem.get(row.itemId) || 0, dayCount,
+              snapshotImp: Number(row.totalImpressions) || 0, dailyImp: items.get(row.itemId)?.totalImpressions ?? null, gapImp: null });
+          }
+        }
+        swaps.sort((a, b) => (b.manualExcluded || 0) - (a.manualExcluded || 0) || (b.gapImp ?? 0) - (a.gapImp ?? 0) || b.snapshotImp - a.snapshotImp);
+      }
+      const swapNote = swaps.length ? `检测到 ${swaps.length} 个链接在区间内换过标题/商品：销量已剔除非本体时期的出单，曝光/PV 等其余数值含前身商品数据、按口径保留（明细见下方快照面板）。` : '';
       const soldAdjustNote = soldAdjustedCount || swaps.length
-        ? `销量口径：${soldAdjustedCount} 个换品链接的快照销量已按日报剔除非本体时期的出单${soldExcludedTotal > 0 ? `（共剔除 ${fmt(soldExcludedTotal)} 台）` : ''}；本体时期日报覆盖不全的链接按已覆盖日报剔除并标注不确定。`
+        ? `销量口径：${soldAdjustedCount} 个换品链接的快照销量已剔除非本体时期的出单${soldExcludedTotal > 0 ? `（共剔除 ${fmt(soldExcludedTotal)} 台）` : ''}${manualAdjustedCount ? `，其中 ${manualAdjustedCount} 个链接按 2026-11-12 人工订单核对剔除` : ''}；本体时期日报覆盖不全的链接按已覆盖日报剔除并标注不确定。`
         : '';
       const comparisons = new Map((start !== end ? snapshot : []).map(row => {
         const dailyRow = items.get(row.itemId);
@@ -953,12 +1014,18 @@
       const swaps = (trafficSelection().swaps || []).slice(0, 8);
       const swapsTotal = (trafficSelection().swaps || []).length;
       const swapHtml = start !== end && swapsTotal ? `<div class="snapshot-note"><strong>⚠ 区间内换过标题/商品的链接（销量已剔除非本体时期出单；曝光/PV 等其余数值保留）：</strong>${swaps.map(s => {
-        const hist = s.foreign.length
-          ? s.foreign.map(h => `曾为「${esc(h.t.length > 34 ? h.t.slice(0, 34) + '…' : h.t)}」（${h.f.slice(5)}~${h.l.slice(5)}，${h.p ? esc(h.p) : '非目标产品'}）`).join('；')
-          : `日报仅覆盖 ${s.coveredDays}/${s.dayCount} 天`;
-        const gap = s.dailyImp == null ? `快照曝光 ${fmt(s.snapshotImp)}，区间内无日报记录` : `快照曝光 ${fmt(s.snapshotImp)} vs 日报相加 ${fmt(s.dailyImp)}（差 ${s.gapImp > 0 ? '+' : ''}${fmt(s.gapImp)}）`;
+        const hist = s.manual
+          ? `人工核对剔除（${esc(s.manual.reason)}）`
+          : s.foreign.length
+            ? s.foreign.map(h => `曾为「${esc(h.t.length > 34 ? h.t.slice(0, 34) + '…' : h.t)}」（${h.f.slice(5)}~${h.l.slice(5)}，${h.p ? esc(h.p) : '非目标产品'}）`).join('；')
+            : `日报仅覆盖 ${s.coveredDays}/${s.dayCount} 天`;
+        const gap = s.manual
+          ? `快照按窗口扣减 ${fmt(s.manualExcluded)} 台`
+          : s.dailyImp == null ? `快照曝光 ${fmt(s.snapshotImp)}，区间内无日报记录` : `快照曝光 ${fmt(s.snapshotImp)} vs 日报相加 ${fmt(s.dailyImp)}（差 ${s.gapImp > 0 ? '+' : ''}${fmt(s.gapImp)}）`;
         const srow = rows.find(r => r.itemId === s.itemId);
-        const soldLine = !srow ? '' : srow.soldUncertain && srow.soldExcluded != null && srow.soldExcluded > 0
+        const soldLine = !srow ? '' : srow.soldManual
+          ? `；销量：快照累计 ${fmt(srow.soldRaw)} → 人工核对剔除 ${fmt(srow.soldExcluded)} 台（非本体出单），本体 ${fmt(srow.quantitySold)} 台`
+          : srow.soldUncertain && srow.soldExcluded != null && srow.soldExcluded > 0
           ? `；销量：本体时期日报覆盖不全，暂按已覆盖日报 ${fmt(srow.quantitySold)}（快照原值 ${fmt(srow.soldRaw)}，剔除或有偏差）`
           : srow.soldUncertain
             ? `；销量：本体时期日报覆盖不全，保留快照原值 ${fmt(srow.soldRaw ?? srow.quantitySold)}（可能含前身出单）`
