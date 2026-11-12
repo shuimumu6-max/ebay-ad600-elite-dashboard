@@ -105,11 +105,12 @@ ok('切回「全部」后数据完整恢复', () => {
   assert.equal(api.productNotice(), '');
 });
 
-ok('产品切换器恰好三档且顺序固定', () => {
+ok('产品切换器恰好两档（600E / 900E，2026-11-13 用户拍板去掉「全部」档）且顺序固定', () => {
   // vm 里的数组跨 realm，用 JSON 比较而非 deepStrictEqual
-  assert.equal(JSON.stringify(api.productOptions().map(([key]) => key)), JSON.stringify(['all', 'AD600 Elite', 'UltraDiag900 E']));
+  assert.equal(JSON.stringify(api.productOptions().map(([key]) => key)), JSON.stringify(['AD600 Elite', 'UltraDiag900 E']));
+  api.setUiProduct('AD600 Elite'); // 前一个用例切到了内部 all 档（UI 已无此档），切回真实档位再断言高亮
   const markup = api.productSwitch();
-  assert.equal((markup.match(/data-product=/g) || []).length, 3);
+  assert.equal((markup.match(/data-product=/g) || []).length, 2);
   assert.ok(markup.includes('class="product-btn active"'));
 });
 
