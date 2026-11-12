@@ -40,6 +40,7 @@
     .status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
     .product-switch { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); flex: 0 0 auto; }
+    .product-bar { padding: 12px 22px 0; display: flex; justify-content: flex-start; }
     .product-btn { min-height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-family: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
     .product-btn:hover { color: var(--blue); }
     .product-btn.active { color: var(--blue); background: var(--panel); box-shadow: var(--shadow); }
@@ -169,7 +170,8 @@
     @media (max-width: 720px) {
       .topbar { height: auto; min-height: 58px; padding: 10px 14px; flex-wrap: wrap; gap: 8px; }
       .brand p, .status span:last-child { display: none; }
-      .product-switch { order: 3; width: 100%; overflow-x: auto; }
+      .product-bar { padding: 10px 14px 0; }
+      .product-switch { width: 100%; overflow-x: auto; }
       .product-btn { flex: 1 0 auto; }
       .content { padding: 18px 14px 34px; }
       .page-head { align-items: flex-start; flex-direction: column; }
@@ -207,7 +209,7 @@
     // fullState = 全量数据（含两个产品）；dataState = 当前产品视图，页面函数一律读 dataState。
     let fullState = structuredClone(DEFAULT_STATE);
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', product: 'all', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
     // 仅 builder 模式（手工上传 CSV）使用：在售名单里的 itemId→SKU
     let skuByItemId = new Map();
@@ -217,7 +219,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
-    const FRONTEND_VERSION = 'v20261112-剔除版4';
+    const FRONTEND_VERSION = 'v20261113-机型栏';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -284,7 +286,8 @@
     function isTargetModelTitle(value) { return inProduct({ title: value }, PRODUCT_ALL); }
 
     function productOptions() {
-      return [[PRODUCT_ALL, '全部'], ...PRODUCTS.map(product => [product.key, product.label])];
+      // 2026-11-13 用户拍板：机型切换只留两个产品档，不再提供「全部」（内部 all 逻辑保留供自检/兼容）
+      return PRODUCTS.map(product => [product.key, product.label]);
     }
     function productSwitch() {
       return productOptions().map(([key, label]) => `<button class="product-btn ${ui.product === key ? 'active' : ''}" data-product="${esc(key)}" aria-pressed="${ui.product === key}">${esc(label)}</button>`).join('');
@@ -973,9 +976,9 @@
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
       return `<header class="topbar">
         <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay 流量与广告看板</h1><p>${PRODUCTS.map(product => product.label).join(' · ')} ｜ Traffic + PLG + PLP + 关键词</p></div></div>
-        <div class="product-switch" role="group" aria-label="产品范围">${productSwitch()}</div>
         <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'} · ${FRONTEND_VERSION}</span></div>
       </header>
+      <div class="product-bar"><div class="product-switch" role="group" aria-label="产品范围">${productSwitch()}</div></div>
       <div class="workspace">
         <aside class="sidebar"><nav class="nav">${pages.map(([id, ico, label]) => `<button class="nav-btn ${ui.page === id ? 'active' : ''}" data-page="${id}">${icon(ico)}<span>${label}</span></button>`).join('')}</nav></aside>
         <main class="content">${content}</main>
@@ -1651,7 +1654,7 @@
       skuByItemId = new Map();
       applyProduct();
       await saveState();
-      ui = { page: 'import', product: PRODUCT_ALL, adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      ui = { page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'auto', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
       render();
       toast('数据已清空。');
     }
