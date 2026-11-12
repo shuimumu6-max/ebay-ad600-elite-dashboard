@@ -217,7 +217,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
-    const FRONTEND_VERSION = 'v20261112-剔除版';
+    const FRONTEND_VERSION = 'v20261112-剔除版3';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -298,11 +298,44 @@
       const label = PRODUCTS.find(product => product.key === ui.product)?.label || ui.product;
       return `<div class="product-notice">当前产品「${esc(label)}」暂无 PLP / 关键词 / 搜索词数据（现有广告快照仅覆盖 ${esc(PRODUCTS[0].label)}）；流量与 PLG 数据可正常查看。</div>`;
     }
+    // 换品历史自愈：旧版页面存进 IndexedDB 的状态可能没有 itemHistory 字段，
+    // 缺失时从现有报表行按「itemId ↔ 标题」重建，保证换品剔除在任何旧状态下都能生效。
+    function collectItemHistory(state) {
+      if (state.itemHistory && Object.keys(state.itemHistory).length) return state;
+      const itemHistory = new Map();
+      [state.plgRaw, state.trafficRaw, state.ads?.plpRows].forEach(rows => {
+        (rows || []).forEach(row => {
+          const itemId = String(row.itemId || '');
+          const title = String(row.title || '').trim();
+          const date = row.start || row.date || '';
+          if (!itemId || !title || !date) return;
+          let entry = itemHistory.get(itemId);
+          if (!entry) itemHistory.set(itemId, entry = new Map());
+          const norm = title.toLowerCase().replace(/\s+/g, ' ');
+          const known = entry.get(norm);
+          if (known) {
+            if (date < known.f) known.f = date;
+            if (date > known.l) known.l = date;
+            known.n += 1;
+          } else {
+            entry.set(norm, { t: title, p: row.product === PRODUCT_UNKNOWN ? null : row.product, f: date, l: date, n: 1 });
+          }
+        });
+      });
+      const out = {};
+      for (const [itemId, entry] of itemHistory) {
+        if (entry.size < 2) continue;
+        out[itemId] = [...entry.values()].sort((a, b) => a.f.localeCompare(b.f));
+      }
+      state.itemHistory = out;
+      return state;
+    }
     function normalizeState(state) {
       state.products = state.products?.length ? state.products : structuredClone(PRODUCTS);
       [state.plgRaw, state.trafficRaw, state.ads?.plpRows, state.activeListings?.items].forEach(rows => {
         (rows || []).forEach(row => { if (!row.product) row.product = productOf(row); });
       });
+      collectItemHistory(state);
       applyManualSoldCuts(state);
       return state;
     }
@@ -691,7 +724,17 @@
           const eraDays = Math.floor((Date.parse(end) - Date.parse(eraStart)) / 86400000) + 1;
           const eraRows = selected.filter(r => r.itemId === row.itemId && r.start >= eraStart);
           const eraCovered = new Set(eraRows.map(r => r.start)).size;
-          if (eraCovered === 0) { row.soldUncertain = true; row.soldRaw = raw; continue; }
+          if (eraCovered === 0) {
+            // 本体时期在窗口内但没有任何日报覆盖：无法用日报证实本体出单，
+            // 快照销量按「全部为前身出单」剔为 0 并标注不确定（2026-11-12 用户拍板：宁剔勿留）。
+            row.soldRaw = raw;
+            row.soldExcluded = raw;
+            row.quantitySold = 0;
+            row.soldUncertain = true;
+            soldAdjustedCount += 1;
+            soldExcludedTotal += Math.max(raw, 0);
+            continue;
+          }
           const eraSold = eraRows.reduce((s, r) => s + (Number(r.quantitySold) || 0), 0);
           row.soldRaw = raw;
           if (eraCovered < eraDays) row.soldUncertain = true; // 本体时期日报覆盖不全：暂按已覆盖日报剔除，标注或有偏差
@@ -1628,6 +1671,13 @@
         } else {
           fullState = await loadState();
           const seeded = window.EBAY_PRELOADED_DATA;
+          if (seeded) {
+            // 换品历史自愈：itemHistory 由构建端从全量原始报表算出（前身标题的行不在预置行里，
+            // 前端无法从行重建）。本地状态缺 itemHistory 或版本较旧时，用预置 bundle 的历史补全/覆盖。
+            if (seeded.itemHistory && Object.keys(seeded.itemHistory).length) {
+              fullState.itemHistory = { ...(fullState.itemHistory || {}), ...seeded.itemHistory };
+            }
+          }
           if (seeded && seeded.bundleId !== localStorage.getItem('ebay-preloaded-bundle')) {
             fullState = {
               plgRaw: seeded.plgRaw || [],
