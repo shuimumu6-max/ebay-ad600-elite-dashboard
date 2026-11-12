@@ -217,7 +217,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
-    const FRONTEND_VERSION = 'v20261112-剔除版3';
+    const FRONTEND_VERSION = 'v20261112-剔除版4';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -613,6 +613,14 @@
         item.trafficTop20Change = row.top20Change;
         item.trafficNonSearchChange = row.nonSearchChange;
       }
+      // 日报漏归因补足：Traffic 当日销量为 0 但同日 PLG 有出单 → 总销量按 PLG 补足（留痕 trafficSoldRaw）
+      for (const item of map.values()) {
+        if (item.hasDailyTraffic && (Number(item.trafficSold) || 0) === 0 && (Number(item.totalSold) || 0) > 0) {
+          item.trafficSoldRaw = item.trafficSold;
+          item.trafficSold = item.totalSold;
+          item.soldPlgFilled = item.totalSold;
+        }
+      }
       for (const row of dataState.ads.plpRows || []) {
         const candidates = [...map.entries()].filter(([, item]) => item.date === row.date && titleKey(item.title) === titleKey(row.title));
         const key = candidates.find(([, item]) => item.hasDailyTraffic)?.[0] || candidates[0]?.[0] || `${row.date}|${row.itemId}`;
@@ -659,12 +667,31 @@
         if (!covered.has(date)) missing.push(date);
       }
       const fields = ['totalImpressions','quantitySold','top20Promoted','top20Organic','restSearch','totalSearch','nonSearchPromoted','nonSearchOrganic','promotedEbayImpressions','promotedOffsiteImpressions','organicEbayImpressions','totalPageViews','promotedEbayViews','promotedExternalViews','organicEbayViews','organicExternalViews'];
+      // 日报漏归因补足（2026-11-12）：eBay 日报偶尔不给某笔订单归因（Traffic 当日销量 0），
+      // 但 PLG 按订单记录有销量（如 820216825374 的 10-20：Traffic 0 / PLG 1）。
+      // 规则：Traffic 当日销量为 0 且 PLG 有值 → 取 PLG 值并标记 soldPlgFilled，其余情况一律用 Traffic 原值。
+      const plgDailySold = new Map();
+      for (const row of dataState.plgRaw) {
+        const key = `${row.date}|${row.itemId}`;
+        plgDailySold.set(key, (plgDailySold.get(key) || 0) + (Number(row.totalSold) || 0));
+      }
+      const soldOf = row => {
+        const trafficSold = Number(row.quantitySold) || 0;
+        if (trafficSold > 0) return trafficSold;
+        const plgSold = plgDailySold.get(`${row.start}|${row.itemId}`) || 0;
+        return plgSold > 0 ? plgSold : 0;
+      };
       const items = new Map();
       for (const row of selected) {
         if (!items.has(row.itemId)) items.set(row.itemId, { ...row, key: `${start}|${end}|${row.itemId}`, start, end, top20Change: null, nonSearchChange: null, ...Object.fromEntries(fields.map(field => [field, 0])) });
         const item = items.get(row.itemId);
         item.title = row.title || item.title;
-        fields.forEach(field => item[field] += row[field] || 0);
+        const sold = soldOf(row);
+        if (sold !== (Number(row.quantitySold) || 0)) {
+          item.soldPlgFilled = (item.soldPlgFilled || 0) + sold;
+          (item.soldPlgFillDates = item.soldPlgFillDates || []).push(row.start);
+        }
+        fields.forEach(field => { if (field === 'quantitySold') item.quantitySold += sold; else item[field] += row[field] || 0; });
       }
       const coverage = missingCount ? `仅覆盖 ${covered.size}/${dayCount} 天，缺少日报：${missing.join('、')}${missingCount > 10 ? `等 ${missingCount} 天` : ''}；Traffic 合计不完整，缺失日期不补零。` : `已按日报汇总 ${covered.size} 天。`;
       const useSnapshot = snapshot.length > 0 && ui.trafficSource !== 'daily';
@@ -735,7 +762,7 @@
             soldExcludedTotal += Math.max(raw, 0);
             continue;
           }
-          const eraSold = eraRows.reduce((s, r) => s + (Number(r.quantitySold) || 0), 0);
+          const eraSold = eraRows.reduce((s, r) => s + soldOf(r), 0);
           row.soldRaw = raw;
           if (eraCovered < eraDays) row.soldUncertain = true; // 本体时期日报覆盖不全：暂按已覆盖日报剔除，标注或有偏差
           if (eraSold === raw) continue;
@@ -787,9 +814,13 @@
       const reconciliation = start === end ? '单日报表，不涉及区间累计对账。' : snapshot.length
         ? `同区间核对：${mismatchCount} 个 Item 的日报合计总PV与累计总PV不一致，明细见“PV核对”。日度数据不按累计值补写。${swapNote} ${soldAdjustNote}`
         : '没有同区间累计报表可供核对；日报合计尚未与累计报表对账，不能作为后台近30天Views的直接替代。';
+      const plgFillCount = [...items.values()].reduce((n, item) => n + (item.soldPlgFillDates?.length || 0), 0);
+      const plgFillNote = plgFillCount
+        ? ` 销量补足：${plgFillCount} 个 item-日 的 Traffic 日报销量为 0 但 PLG 记录了出单，已按 PLG 补足（明细见“每日记录”）。`
+        : '';
       const sourceNote = useSnapshot
         ? `Traffic：${start === end ? '单日报表' : '使用原始区间累计报表，起止日期与所选日期完全一致'}。${reconciliation}`
-        : `Traffic：日报汇总。${coverage} ${reconciliation}`;
+        : `Traffic：日报汇总。${coverage} ${reconciliation}${plgFillNote}`;
       return { rows: useSnapshot ? snapshot : [...items.values()], comparisons, swaps,
         note: `${sourceNote} 总PV包含站内和站外访问；站内PV仅计算站内来源。CTR按站内PV/曝光计算，转化率按销量/总PV计算。`,
         complete: useSnapshot || missingCount === 0 };
