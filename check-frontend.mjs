@@ -44,7 +44,7 @@ const context = vm.createContext({
   setTimeout: () => 0, clearTimeout: noop, setInterval: () => 0,
   alert: noop, confirm: () => false, requestAnimationFrame: noop
 });
-vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN };', context);
+vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN };', context);
 const api = context.__api;
 
 let passed = 0;
@@ -481,6 +481,86 @@ ok('换品剔除宁剔勿留：本体时期日报零覆盖时快照销量剔为 
   api.ui.end = '';
   api.setUiProduct('all');
   api.applyProduct();
+});
+
+ok('默认口径为「日报逐日相加」：范围=当前产品日报最早~最新，不锚定累计报表（2026-11-17 用户拍板）', () => {
+  const restore = () => api.setFullState({
+    plgRaw: bundle.plgRaw, trafficRaw: bundle.trafficRaw, itemHistory: bundle.itemHistory,
+    activeListings: bundle.activeListings, sources: bundle.sources, ads: bundle.ads,
+    products: bundle.products, productCounts: bundle.productCounts
+  });
+
+  // ① 默认 Traffic 来源应为日报（daily），而不是累计快照（auto）
+  //    这里直接断言 HTML 里的初始值，避免依赖 DOM 初始化。
+  const sourceHtml = readFileSync(join(repoDir, 'index.html'), 'utf8');
+  assert.ok(/trafficSource: 'daily'/.test(sourceHtml), "ui 初始 trafficSource 应为 'daily'");
+  assert.ok(!/trafficSource: 'auto'/.test(sourceHtml), "不应再有 trafficSource: 'auto' 的初始值");
+  assert.ok(/value="daily" \$\{ui\.trafficSource === 'daily' \? 'selected'/.test(sourceHtml), '来源下拉应把 daily 排在首位并默认选中');
+
+  // ② dailyDateRange 取的是当前产品日报的最早~最新
+  restore();
+  api.setUiProduct('AD600 Elite');
+  const range600 = api.dailyDateRange();
+  assert.ok(range600.days > 0, '600E 应有日报');
+  assert.equal(range600.start, '2026-09-20', `600E 日报最早应为 2026-09-20，实际 ${range600.start}`);
+  assert.equal(range600.end, '2026-11-15', `600E 日报最新应为 2026-11-15，实际 ${range600.end}`);
+
+  // ③ 900E 的日报范围与 600E 不同（各自推导，不共用同一个区间）
+  api.setUiProduct('UltraDiag900 E');
+  const range900 = api.dailyDateRange();
+  assert.ok(range900.days > 0, '900E 应有日报');
+  assert.ok(range900.days < range600.days, `900E 日报天数应少于 600E（${range900.days} vs ${range600.days}）`);
+
+  // ④ 用日报范围取数时，必须走日报分支、不得混入区间累计行
+  api.setUiProduct('AD600 Elite');
+  api.ui.start = range600.start;
+  api.ui.end = range600.end;
+  api.ui.trafficSource = 'daily';
+  const selection = api.trafficSelection();
+  assert.ok(selection.rows.length > 0, '日报范围应有数据行');
+  // 日报相加返回的是按 itemId 聚合行，其 start/end 被设为所选窗口，start !== end 恒成立，
+  // 不能用它判断是否走了快照分支；改为看口径说明：日报走「日报汇总」，快照走「使用原始区间累计报表」。
+  assert.ok(!(selection.note || '').includes('使用原始区间累计报表'), `日报口径不应使用累计快照：${selection.note}`);
+  assert.ok((selection.note || '').includes('日报汇总'), `口径说明应写明日报汇总：${selection.note}`);
+  assert.equal(selection.complete, true, `600E 日报范围应完整覆盖：${selection.note}`);
+
+  // ⑤ 反向校验：手动切回「同区间累计报表优先」时，必须真的走快照分支（否则选项等于选不动）。
+  //    注意：日报默认区间（最早~最新）通常没有对应的区间累计报表，所以这里要挑一份
+  //    真实存在的累计报表区间（start !== end 的行）来测，否则测的是「无快照可用」这条路径。
+  const snapshotRow = bundle.trafficRaw.find(row => row.start && row.end && row.start !== row.end);
+  assert.ok(snapshotRow, 'bundle 里应存在区间累计报表行');
+  api.ui.start = snapshotRow.start;
+  api.ui.end = snapshotRow.end;
+  api.ui.trafficSource = 'auto';
+  const snapshotSelection = api.trafficSelection();
+  assert.ok((snapshotSelection.note || '').includes('使用原始区间累计报表'),
+    `存在同区间累计报表时应走快照分支：${snapshotSelection.note}`);
+
+  restore();
+  api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
+  api.setUiProduct('all');
+  api.applyProduct();
+});
+
+ok('下拉选项：快捷区间首项为「日报逐日相加」，来源下拉默认项为日报（2026-11-17 新增）', () => {
+  api.setUiProduct('AD600 Elite');
+  const range = api.dailyDateRange();
+  // 让日期等于当前产品的日报最早~最新，「日报逐日相加」才会处于选中态。
+  api.ui.start = range.start;
+  api.ui.end = range.end;
+  api.ui.trafficPeriod = 'daily-range';
+  api.ui.trafficSource = 'daily';
+  const panel = api.filterPanel('PLG');
+  const periodSelect = panel.match(/<select class="input" id="trafficPeriodFilter">[\s\S]*?<\/select>/)?.[0] || '';
+  assert.ok(periodSelect.includes('日报逐日相加'), '快捷区间下拉应含「日报逐日相加」');
+  assert.ok(periodSelect.indexOf('daily-range') < periodSelect.indexOf('value="custom"'), '「日报逐日相加」应为第一项');
+  assert.ok(/value="daily-range"[^>]*selected/.test(periodSelect), '日期等于日报范围时，「日报逐日相加」应处于选中态');
+  // 来源下拉带 aria-describedby 等属性，正则不能写死 `id="..." >`。
+  const sourceSelect = panel.match(/<select[^>]*id="trafficSourceFilter"[^>]*>[\s\S]*?<\/select>/)?.[0] || '';
+  assert.ok(sourceSelect, '应渲染出来源下拉');
+  assert.ok(/value="daily"[^>]*selected/.test(sourceSelect), '来源下拉默认应选中日报（daily）');
+  assert.ok(sourceSelect.indexOf('value="daily"') < sourceSelect.indexOf('value="auto"'), '日报选项应排在累计快照之前');
+  api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
 });
 
 console.log(`\n全部通过：${passed} 项`);
