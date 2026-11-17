@@ -219,7 +219,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
-    const FRONTEND_VERSION = 'v20261117-日报默认';
+    const FRONTEND_VERSION = 'v20261117-刊登日起算';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -232,6 +232,23 @@
       '820216832219': { exclude: { '2026-10-08': 1, '2026-10-09': 4 }, reason: '人工核对（2026-11-12）：本体未出单；10-08/10-09 的出单为前身商品时期' }
     };
     // === MANUAL-SOLD-EXCLUSIONS-END ===
+    // 复用得来的链接归属（2026-11-17 用户拍板）：这些 itemId 曾以别的商品标题出现，
+    // 后来被改标题复用为 900E。用户要求「全部曝光/PV 都算在 900E 头上、时间线从刊登日连续」，
+    // 因此全历史行归 900E；前身时期的**出单**剔为 0（曝光/PV 保留），并留痕 foreignEra。
+    const REUSED_LINK_PRODUCT = {
+      '820289759002': 'UltraDiag900 E',
+      '820289778048': 'UltraDiag900 E'
+    };
+    // 前身时期判定：行标题/campaign/sku 都认不出该复用产品时，即为前身商品时期。
+    function isForeignEra(row) {
+      const target = REUSED_LINK_PRODUCT[String(row?.itemId ?? '')];
+      if (!target) return false;
+      const title = titleKey(row?.title);
+      if (title && PRODUCTS.find(p => p.key === target)?.titleTokens.some(t => title.includes(t))) return false;
+      const campaign = titleKey(row?.campaign);
+      if (campaign && PRODUCTS.find(p => p.key === target)?.titleTokens.some(t => campaign.includes(t))) return false;
+      return true;
+    }
     // === PRODUCTS-END ===
 
     const COVERAGE = [
@@ -272,6 +289,9 @@
       const campaign = titleKey(row?.campaign);
       const byCampaign = campaign && PRODUCTS.find(product => product.titleTokens.some(token => campaign.includes(token)));
       if (byCampaign) return byCampaign.key;
+      // 复用链接绑定（2026-11-17 用户拍板）：标题/campaign 认不出时，已登记的复用 itemId 归其产品。
+      const reused = REUSED_LINK_PRODUCT[String(row?.itemId ?? '')];
+      if (reused) return reused;
       const sku = String(row?.sku ?? skuByItemId.get(String(row?.itemId ?? '')) ?? '').toLowerCase();
       const bySku = sku && PRODUCTS.find(product => product.sku.toLowerCase() === sku);
       if (bySku) return bySku.key;
@@ -306,6 +326,17 @@
     function collectItemHistory(state) {
       if (state.itemHistory && Object.keys(state.itemHistory).length) return state;
       const itemHistory = new Map();
+      // 历史证据的归属只看「该行标题/campaign 本身」，刻意不带复用链接绑定：
+      // 复用链接全行虽归 900E，但前身标题（ONE Lite / EL-50448）必须仍记成 null，
+      // 否则换品检测与快照前身期剔除都认不出「这个链接曾卖过别的商品」。
+      const ownLabelProduct = row => {
+        const title = titleKey(row?.title);
+        const byTitle = title && PRODUCTS.find(product => product.titleTokens.some(token => title.includes(token)));
+        if (byTitle) return byTitle.key;
+        const campaign = titleKey(row?.campaign);
+        const byCampaign = campaign && PRODUCTS.find(product => product.titleTokens.some(token => campaign.includes(token)));
+        return byCampaign ? byCampaign.key : PRODUCT_UNKNOWN;
+      };
       [state.plgRaw, state.trafficRaw, state.ads?.plpRows].forEach(rows => {
         (rows || []).forEach(row => {
           const itemId = String(row.itemId || '');
@@ -321,7 +352,8 @@
             if (date > known.l) known.l = date;
             known.n += 1;
           } else {
-            entry.set(norm, { t: title, p: row.product === PRODUCT_UNKNOWN ? null : row.product, f: date, l: date, n: 1 });
+            const own = ownLabelProduct(row);
+            entry.set(norm, { t: title, p: own === PRODUCT_UNKNOWN ? null : own, f: date, l: date, n: 1 });
           }
         });
       });
@@ -340,6 +372,7 @@
       });
       collectItemHistory(state);
       applyManualSoldCuts(state);
+      applyReusedLinkForeignSold(state);
       return state;
     }
     // 手工核对剔除：日度行载入时直接按日期扣减（soldManualCut 留痕，防止重复扣减）
@@ -359,6 +392,27 @@
       };
       (state.trafficRaw || []).forEach(row => { if (row.start && row.start === row.end) cutRow(row, ['quantitySold'], row.start); });
       (state.plgRaw || []).forEach(row => cutRow(row, ['totalSold', 'organicSold', 'adSold'], row.date));
+      return state;
+    }
+    // 复用链接前身期出单剔除（2026-11-17 用户拍板）：全历史行归 900E，但前身商品时期的
+    // 出单不能冒充 900E 销量——按永久剔除规则剔为 0，留痕 foreignEra 与 soldForeignExcluded。
+    // 只动销量类字段；曝光/PV/点击等一律按用户要求保留（历史值不剔除）。
+    function applyReusedLinkForeignSold(state) {
+      const cutRow = (row, fields) => {
+        if (!isForeignEra(row) || row.soldForeignCut) return;
+        const applied = {};
+        fields.forEach(field => {
+          const value = Number(row[field]) || 0;
+          if (value > 0) { row[field] = 0; applied[field] = value; }
+        });
+        row.foreignEra = true;
+        if (Object.keys(applied).length) {
+          row.soldForeignCut = applied;
+          row.soldForeignExcluded = Object.values(applied).reduce((sum, value) => sum + value, 0);
+        }
+      };
+      (state.trafficRaw || []).forEach(row => { if (row.start && row.start === row.end) cutRow(row, ['quantitySold']); });
+      (state.plgRaw || []).forEach(row => cutRow(row, ['totalSold', 'organicSold', 'adSold']));
       return state;
     }
     function applyProduct() {
@@ -653,14 +707,38 @@
       }).sort((a, b) => Number(b.start !== b.end) - Number(a.start !== a.end) || b.end.localeCompare(a.end) || a.start.localeCompare(b.start));
     }
 
-    // 默认统计范围（2026-11-17 用户拍板）：不再锚定任何「报表快捷区间」，
-    // 一律取当前产品**已有日报的最早一天 ~ 最新一天**，口径为本日报表逐日相加。
-    // 两个产品的日报天数不同（600E 57 天 / 900E 18 天），切换产品后各自重新推导。
+    // 链接刊登开始日（2026-11-17 用户拍板）：取当前产品所有链接在后台报表
+    // 「Item Start Date」字段里的最早值。这是该产品的真实上架起点，而不是
+    // eBay 回溯生成的、链接当时还不存在时的空日报日期。
+    function listingStartDate() {
+      const dates = unique(dataState.trafficRaw
+        .filter(row => row.listingStartDate && inProduct(row))
+        .map(row => row.listingStartDate)).sort();
+      return dates[0] || '';
+    }
+
+    // 默认统计范围（2026-11-17 用户拍板）：
+    //   start = 当前产品**链接刊登开始日**（后台 Item Start Date），
+    //   end   = 当前产品**最新日报日**；口径为本日报表逐日相加。
+    // 起点用刊登日而非「最早日报日」：900E 有 09-23~09-29 共 6 天全 0 空行、
+    // 600E 有 09-20~09-22 前置空行，都是 eBay 回溯用「当前标题」回填出来的，
+    // 不代表该商品当时在售，不能拿来当统计起点。
+    // 两个产品起点不同（600E 09-23 / 900E 10-28），切换产品后各自重新推导。
     function dailyDateRange() {
       const dates = unique(dataState.trafficRaw
         .filter(row => row.start && row.start === row.end && inProduct(row))
         .map(row => row.start)).sort();
-      return { start: dates[0] || '', end: dates.at(-1) || '', days: dates.length };
+      return { start: listingStartDate() || dates[0] || '', end: dates.at(-1) || '', days: dates.length };
+    }
+
+    // 日期输入框可选范围（2026-11-17 用户拍板「没有报表的时间不需要能勾选」）：
+    // 下限 = 当前产品链接刊登开始日，上限 = 最新日报日。
+    // 未来日期（如 11-18）与刊登前的日期因此都无法勾选。
+    function reportBounds() {
+      const dates = unique(dataState.trafficRaw
+        .filter(row => row.start && row.start === row.end)
+        .map(row => row.start)).sort();
+      return { min: listingStartDate() || dates[0] || '', max: dates.at(-1) || '' };
     }
 
     function trafficSelection() {
@@ -998,6 +1076,7 @@
     function filterPanel(dateScope = 'PLG') {
       const periods = trafficPeriods();
       const dailyRange = dailyDateRange();
+      const bounds = reportBounds();
       // 「日报逐日相加」是默认口径（2026-11-17 用户拍板）：只要当前所选日期与日报范围一致，
       // 快捷区间就显示为它，而不是去匹配某份区间累计报表。
       const atDailyRange = dailyRange.start && ui.start === dailyRange.start && ui.end === dailyRange.end;
@@ -1006,12 +1085,13 @@
         : periods.find(period => period.start === ui.start && period.end === ui.end)?.key || 'custom';
       return `<div class="panel filters">
         <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
-        ${dateScope === '每日记录' ? '' : `<div class="field"><label>报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="daily-range" ${selectedPeriod === 'daily-range' ? 'selected' : ''}>日报逐日相加（最早 ~ 最新）</option><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
+        ${dateScope === '每日记录' ? '' : `<div class="field"><label>报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="daily-range" ${selectedPeriod === 'daily-range' ? 'selected' : ''}>日报逐日相加（刊登日 ~ 最新）</option><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
         <div class="field" style="${dateScope === '每日记录' ? 'display:none' : ''}"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter" aria-describedby="trafficSourceBrief"><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（默认）</option><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option></select><small class="field-help" id="trafficSourceBrief">默认按日报逐日相加；两种来源可能存在差额，不能仅凭差额判错。具体规则及原因见下方说明。</small></div>
-        <div class="field"><label>开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div>
-        <div class="field"><label>结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div>
+        <div class="field"><label>开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div>
+        <div class="field"><label>结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div>
+        <div class="field-help" style="grid-column:1/-1">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（下限＝当前产品链接刊登开始日，上限＝最新日报日；没有报表的日期不可选）。</div>
         <details class="traffic-source-help"><summary>Traffic 来源说明：${dateScope === '每日记录' ? '每日记录只使用单日报表' : '默认日报逐日相加，可切换累计快照'}（点击展开）</summary>
-          <p><strong>日报逐日相加（默认，2026-11-17 定）：</strong>按同一 Item 将所选日期内的原始日报相加，默认范围取当前产品已有日报的最早一天 ~ 最新一天（600E 与 900E 的日报天数不同，切换产品后各自重新推导）。缺失日期或缺失 Item 行不视为实际为零，也不会用累计差额补写每天的数据。</p>
+          <p><strong>日报逐日相加（默认，2026-11-17 定）：</strong>按同一 Item 将所选日期内的原始日报相加，默认范围取<strong>当前产品链接刊登开始日（后台 Item Start Date）~ 最新日报日</strong>（600E 与 900E 的起点不同，切换产品后各自重新推导）。起点用刊登日而不用「最早日报日」：eBay 在 11 月重新下载 9 月报表时，会用链接<strong>当前</strong>的标题回填历史行，产生一批「链接当时还不存在 / 当时在卖别的商品」的全 0 或 <code>-</code> 空行，它们不代表该商品当时在售。缺失日期或缺失 Item 行不视为实际为零，也不会用累计差额补写每天的数据。日期框的可选范围同样以刊登日为下限、最新日报日为上限，没有报表的日期（含未来日期）无法勾选。</p>
           <p><strong>同区间累计报表优先（可选）：</strong>把「报表快捷区间」或日期切到某份累计报表的起止范围时，才使用该区间快照。累计报表是某次导出时的快照，与日报相加可能存在差额，不能仅凭差额判错。每日记录页面始终使用单日报表。</p>
           <p><strong>为什么可能有差额？</strong></p>
           <ul>
@@ -1395,7 +1475,8 @@
     function advertisingPage() {
       const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词']];
       const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : ui.adTab === 'plp' ? adLinksTable('PLP') : adTermsTable(ui.adTab);
-      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。</p></div></div><div class="panel filters"><div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" /></div><div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" /></div></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
+      const bounds = reportBounds();
+      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。</p></div></div><div class="panel filters"><div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
     }
 
     function coveragePage() {
