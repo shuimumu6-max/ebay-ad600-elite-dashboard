@@ -44,7 +44,7 @@ const context = vm.createContext({
   setTimeout: () => 0, clearTimeout: noop, setInterval: () => 0,
   alert: noop, confirm: () => false, requestAnimationFrame: noop
 });
-vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN };', context);
+vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, listingStartDate, reportBounds, REUSED_LINK_PRODUCT, isForeignEra, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN };', context);
 const api = context.__api;
 
 let passed = 0;
@@ -483,7 +483,7 @@ ok('换品剔除宁剔勿留：本体时期日报零覆盖时快照销量剔为 
   api.applyProduct();
 });
 
-ok('默认口径为「日报逐日相加」：范围=当前产品日报最早~最新，不锚定累计报表（2026-11-17 用户拍板）', () => {
+ok('默认口径为「日报逐日相加」：范围=链接刊登日~最新日报，不锚定累计报表（2026-11-17 用户拍板）', () => {
   const restore = () => api.setFullState({
     plgRaw: bundle.plgRaw, trafficRaw: bundle.trafficRaw, itemHistory: bundle.itemHistory,
     activeListings: bundle.activeListings, sources: bundle.sources, ads: bundle.ads,
@@ -497,21 +497,34 @@ ok('默认口径为「日报逐日相加」：范围=当前产品日报最早~�
   assert.ok(!/trafficSource: 'auto'/.test(sourceHtml), "不应再有 trafficSource: 'auto' 的初始值");
   assert.ok(/value="daily" \$\{ui\.trafficSource === 'daily' \? 'selected'/.test(sourceHtml), '来源下拉应把 daily 排在首位并默认选中');
 
-  // ② dailyDateRange 取的是当前产品日报的最早~最新
+  // ② dailyDateRange 起点取「链接刊登开始日」（后台 Item Start Date 最早值），
+  //    而不是「最早日报日」——后者含 eBay 回溯用当前标题回填出来的前置空行。
   restore();
   api.setUiProduct('AD600 Elite');
   const range600 = api.dailyDateRange();
   assert.ok(range600.days > 0, '600E 应有日报');
-  assert.equal(range600.start, '2026-09-20', `600E 日报最早应为 2026-09-20，实际 ${range600.start}`);
-  assert.equal(range600.end, '2026-11-15', `600E 日报最新应为 2026-11-15，实际 ${range600.end}`);
+  assert.equal(api.listingStartDate(), '2026-09-23', `600E 刊登开始日应为 2026-09-23，实际 ${api.listingStartDate()}`);
+  assert.equal(range600.start, '2026-09-23', `600E 默认起点应为刊登日 2026-09-23，实际 ${range600.start}`);
+  assert.equal(range600.end, '2026-11-15', `600E 默认终点应为最新日报 2026-11-15，实际 ${range600.end}`);
 
-  // ③ 900E 的日报范围与 600E 不同（各自推导，不共用同一个区间）
+  // ③ 900E 的起点是它自己的刊登日 2026-10-28（复用链接的 itemId 创建日），与 600E 不同
   api.setUiProduct('UltraDiag900 E');
   const range900 = api.dailyDateRange();
   assert.ok(range900.days > 0, '900E 应有日报');
+  assert.equal(api.listingStartDate(), '2026-10-28', `900E 刊登开始日应为 2026-10-28，实际 ${api.listingStartDate()}`);
+  assert.equal(range900.start, '2026-10-28', `900E 默认起点应为刊登日 2026-10-28，实际 ${range900.start}`);
   assert.ok(range900.days < range600.days, `900E 日报天数应少于 600E（${range900.days} vs ${range600.days}）`);
 
-  // ④ 用日报范围取数时，必须走日报分支、不得混入区间累计行
+  // ④ 日期控件可选范围 = 刊登日 ~ 最新日报；未来/无报表日期不可选
+  const bounds900 = api.reportBounds();
+  assert.equal(bounds900.min, '2026-10-28', `900E 日期下限应为刊登日，实际 ${bounds900.min}`);
+  assert.equal(bounds900.max, '2026-11-15', `日期上限应为最新日报日，实际 ${bounds900.max}`);
+  const panelHtml = api.filterPanel('PLG');
+  assert.ok(/id="startFilter"[^>]*min="2026-10-28"[^>]*max="2026-11-15"/.test(panelHtml), '开始日期框应带 min/max 约束');
+  assert.ok(/id="endFilter"[^>]*min="2026-10-28"[^>]*max="2026-11-15"/.test(panelHtml), '结束日期框应带 min/max 约束');
+  assert.ok(!/max="2026-11-18"/.test(panelHtml), '未来日期不应出现在可选上限里');
+
+  // ⑤ 用默认范围取数时，必须走日报分支
   api.setUiProduct('AD600 Elite');
   api.ui.start = range600.start;
   api.ui.end = range600.end;
@@ -522,10 +535,10 @@ ok('默认口径为「日报逐日相加」：范围=当前产品日报最早~�
   // 不能用它判断是否走了快照分支；改为看口径说明：日报走「日报汇总」，快照走「使用原始区间累计报表」。
   assert.ok(!(selection.note || '').includes('使用原始区间累计报表'), `日报口径不应使用累计快照：${selection.note}`);
   assert.ok((selection.note || '').includes('日报汇总'), `口径说明应写明日报汇总：${selection.note}`);
-  assert.equal(selection.complete, true, `600E 日报范围应完整覆盖：${selection.note}`);
+  assert.equal(selection.complete, true, `600E 默认范围应完整覆盖：${selection.note}`);
 
-  // ⑤ 反向校验：手动切回「同区间累计报表优先」时，必须真的走快照分支（否则选项等于选不动）。
-  //    注意：日报默认区间（最早~最新）通常没有对应的区间累计报表，所以这里要挑一份
+  // ⑥ 反向校验：手动切回「同区间累计报表优先」时，必须真的走快照分支（否则选项等于选不动）。
+  //    注意：日报默认区间（刊登日~最新）通常没有对应的区间累计报表，所以这里要挑一份
   //    真实存在的累计报表区间（start !== end 的行）来测，否则测的是「无快照可用」这条路径。
   const snapshotRow = bundle.trafficRaw.find(row => row.start && row.end && row.start !== row.end);
   assert.ok(snapshotRow, 'bundle 里应存在区间累计报表行');
@@ -561,6 +574,54 @@ ok('下拉选项：快捷区间首项为「日报逐日相加」，来源下拉�
   assert.ok(/value="daily"[^>]*selected/.test(sourceSelect), '来源下拉默认应选中日报（daily）');
   assert.ok(sourceSelect.indexOf('value="daily"') < sourceSelect.indexOf('value="auto"'), '日报选项应排在累计快照之前');
   api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
+});
+
+ok('复用链接全计入 900E：曝光保留、前身期出单剔零并留痕（2026-11-17 用户拍板）', () => {
+  // 这两个 itemId 曾以 EL-50448 / ONE Lite 标题出现，后改标题复用为 900E。
+  // 用户要求「全部曝光/PV 都算在 900E 头上」，但前身商品时期的出单不能冒充 900E 销量。
+  const reused = ['820289759002', '820289778048'];
+  assert.deepEqual(Object.keys(api.REUSED_LINK_PRODUCT).sort(), reused.slice().sort(), '复用链接登记表应恰好是这两个 itemId');
+  for (const id of reused) {
+    assert.equal(api.REUSED_LINK_PRODUCT[id], 'UltraDiag900 E', `${id} 应绑定到 UltraDiag900 E`);
+  }
+
+  // ① 前身期（标题识别不出 900E）的行必须判为 foreignEra；本体期不得判为 foreignEra
+  assert.equal(api.isForeignEra({ itemId: '820289759002', title: 'NEW TOPDON ONE Lite OBD2 Scanner, Bidirectional Car Diagnostic Tool, ECU Coding' }), true, 'ONE Lite 期应判为前身期');
+  assert.equal(api.isForeignEra({ itemId: '820289759002', title: 'EL-50448 TPMS Relearn Tool Auto Tire Pressure Monitor Reset Tool For Vehicles' }), true, 'EL-50448 期应判为前身期');
+  assert.equal(api.isForeignEra({ itemId: '820289759002', title: '🔥TOPDON UD900E Lifetime Free Updates 39+ Resets OBD2 Scanner' }), false, 'UD900E 本体期不应判为前身期');
+  assert.equal(api.isForeignEra({ itemId: '999999999999', title: 'NEW TOPDON ONE Lite OBD2 Scanner' }), false, '未登记的链接不应判为前身期');
+
+  // ② 这两个 itemId 的全历史行都归 900E（而不是丢成 unknown）
+  api.setUiProduct('UltraDiag900 E');
+  api.applyProduct();
+  for (const id of reused) {
+    const rows = api.dataState.trafficRaw.filter(row => row.itemId === id);
+    assert.ok(rows.length > 0, `${id} 的行应进入 900E 视图`);
+    assert.ok(rows.every(row => row.product === 'UltraDiag900 E'), `${id} 存在未归入 900E 的行`);
+  }
+
+  // ③ 前身期行：曝光保留、出单剔零并留痕
+  const foreign = api.dataState.trafficRaw.filter(row => row.start === row.end && row.foreignEra);
+  assert.ok(foreign.length > 0, '应存在前身期行');
+  assert.equal(foreign.filter(row => (Number(row.quantitySold) || 0) !== 0).length, 0, '前身期出单应全部剔为 0');
+  const excluded = foreign.reduce((sum, row) => sum + (Number(row.soldForeignExcluded) || 0), 0);
+  assert.ok(excluded > 0, `前身期剔出的销量应留痕，实际 ${excluded}`);
+  const rep = foreign.find(row => row.itemId === '820289778048' && row.start === '2026-10-31');
+  assert.equal(rep?.soldForeignExcluded, 4, `10-31 的 4 台 ONE Lite 出单应留痕，实际 ${rep?.soldForeignExcluded}`);
+  assert.ok(foreign.some(row => (Number(row.totalImpressions) || 0) > 0), '前身期曝光不应被剔除');
+
+  // ④ 默认起点=刊登日时，覆盖必须完整（不再出现「仅覆盖 N/M 天」）
+  api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
+  const range = api.dailyDateRange();
+  api.ui.start = range.start; api.ui.end = range.end;
+  const selection = api.trafficSelection();
+  assert.equal(range.start, '2026-10-28', `900E 默认起点应为刊登日，实际 ${range.start}`);
+  assert.equal(selection.complete, true, `900E 默认范围应完整覆盖：${selection.note}`);
+  assert.equal(selection.rows.reduce((sum, row) => sum + (Number(row.quantitySold) || 0), 0), 0, '900E 默认范围销量应为 0（前身出单已剔、本体无出单）');
+
+  api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
+  api.setUiProduct('all');
+  api.applyProduct();
 });
 
 console.log(`\n全部通过：${passed} 项`);

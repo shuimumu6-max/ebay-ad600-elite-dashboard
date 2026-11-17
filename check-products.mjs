@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PRODUCTS, PRODUCT_UNKNOWN, productOf, buildBundleFromDirectory } from './update-dashboard.mjs';
+import { PRODUCTS, PRODUCT_UNKNOWN, productOf, buildBundleFromDirectory, REUSED_LINK_PRODUCT } from './update-dashboard.mjs';
 
 const repoDir = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = resolve(repoDir, '..');
@@ -70,11 +70,17 @@ ok('SKU 兜底在在售名单快照上生效（allowSku 默认开启）', () => 
 
 ok('SKU 不会倒推历史流量行（链接复用场景）', () => {
   // 820289759002 在 11-04 在售名单是 ONE Lite (TD52110549)，11-06 换成 900E (TD52110602)。
-  // 历史 Traffic 行的标题是 ONE Lite，按报表当时信息判定应落在 unknown，不算进任何产品。
+  // 2026-11-17 用户拍板：这些复用链接的全历史行都归 900E（曝光保留、前身期出单另行剔零），
+  // 因此已登记的 itemId 即使标题是 ONE Lite 也返回 900E——这是「复用绑定」生效，不是 SKU 倒推。
   const skuMap = new Map([['820289759002', 'td52110602']]);
   const row = { itemId: '820289759002', title: 'NEW TOPDON ONE Lite OBD2 Scanner, Bidirectional Car Diagnostic Tool, ECU Coding' };
-  assert.equal(productOf(row, skuMap, { allowSku: false }), PRODUCT_UNKNOWN);
+  assert.equal(productOf(row, skuMap, { allowSku: false }), 'UltraDiag900 E');
   assert.equal(productOf({ ...row, title: '🔥TOPDON UD900E Lifetime Free Updates 39+ Resets' }, skuMap, { allowSku: false }), 'UltraDiag900 E');
+  // SKU 不倒推的语义仍需守住：未登记复用的 itemId，在 allowSku:false 下标题认不出就只能落 unknown。
+  const unbound = { itemId: '820200000001', title: 'NEW TOPDON ONE Lite OBD2 Scanner' };
+  assert.equal(productOf(unbound, skuMap, { allowSku: false }), PRODUCT_UNKNOWN);
+  // 同一行若允许 SKU 兜底（仅在售名单快照路径），才会按最新 SKU 归到 900E
+  assert.equal(productOf({ ...unbound, itemId: '820289759002' }, skuMap, { allowSku: true }), 'UltraDiag900 E');
 });
 
 ok('campaign 名兜底识别产品', () => {
@@ -122,9 +128,27 @@ if (existsSync(dataDir)) {
     assert.ok(rows.length > 0);
     assert.ok(rows.every(row => PRODUCTS.some(p => p.key === row.product)), '存在未打产品标签的行');
   });
-  ok('ONE Lite 历史行未被错算成 900E', () => {
-    const wrong = [...bundle.plgRaw, ...bundle.trafficRaw].filter(row => row.product === 'UltraDiag900 E' && /ONE Lite/i.test(row.title));
-    assert.equal(wrong.length, 0, `有 ${wrong.length} 行 ONE Lite 被误判为 900E`);
+  ok('复用链接全计入 900E，但前身期出单已剔零并留痕（2026-11-17 用户拍板）', () => {
+    // 这两个 itemId 曾以 EL-50448 / ONE Lite 标题出现，后改标题复用为 900E。
+    // 用户要求「全部曝光/PV 都算在 900E 头上、时间线从刊登日连续」，
+    // 因此它们的前身行也应归 900E；但前身商品时期的出单不能冒充 900E 销量，必须剔零留痕。
+    const reused = ['820289759002', '820289778048'];
+    for (const id of reused) {
+      assert.equal(REUSED_LINK_PRODUCT[id], 'UltraDiag900 E', `${id} 应绑定到 UltraDiag900 E`);
+      assert.equal(productOf({ itemId: id, title: 'NEW TOPDON ONE Lite OBD2 Scanner, Bidirectional Car Diagnostic Tool, ECU Coding' }, new Map(), { allowSku: false }), 'UltraDiag900 E', `${id} 的前身行应归 900E`);
+    }
+    assert.equal(productOf({ itemId: '999999999999', title: 'NEW TOPDON ONE Lite OBD2 Scanner' }, new Map(), { allowSku: false }), PRODUCT_UNKNOWN, '未登记链接不应被带入 900E');
+
+    const rows = [...bundle.plgRaw, ...bundle.trafficRaw].filter(row => reused.includes(String(row.itemId)));
+    assert.ok(rows.length > 0, '复用链接应有数据行');
+    const foreign = rows.filter(row => row.foreignEra);
+    assert.ok(foreign.length > 0, '应存在前身期行');
+    assert.equal(foreign.filter(row => (Number(row.quantitySold) || 0) !== 0).length, 0, '前身期 Traffic 出单应剔为 0');
+    assert.equal(foreign.filter(row => (Number(row.totalSold) || 0) !== 0).length, 0, '前身期 PLG 出单应剔为 0');
+    const excludedTraffic = rows.reduce((sum, row) => sum + (Number(row.soldForeignExcluded) || 0), 0);
+    assert.ok(excludedTraffic > 0, `前身期剔出量应留痕，实际 ${excludedTraffic}`);
+    // 曝光/PV 按口径保留：前身期行仍应带曝光
+    assert.ok(foreign.some(row => (Number(row.totalImpressions) || 0) > 0), '前身期曝光不应被剔除');
   });
   console.log(`  数据分布：${PRODUCTS.map(p => `${p.label} ${bundle.productCounts[p.key]} 行`).join('，')}`);
 } else {
