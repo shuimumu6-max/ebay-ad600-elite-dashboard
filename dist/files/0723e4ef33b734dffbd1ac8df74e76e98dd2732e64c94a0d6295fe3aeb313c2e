@@ -18,15 +18,57 @@ const PORT_FILE = join(BOARD_DIR, '服务端口.txt');
 const LOG_FILE = join(BOARD_DIR, '服务日志.txt');
 
 // 多店铺：顶部「店铺」下拉切换数据目录。店铺来自 shops\<id>.json（没店时退回单店 数据\）。
+// 目录优先级与下载侧 shop-config.mjs 的 deriveDirs 保持一致，避免「下载落根目录、看板按店读空目录」：
+//   shops/<id>.json 显式 dataDir > local.json 该店 dataDir > 按店派生 店铺/<id>/数据 > 根目录 DATA_DIR。
+function dirHasCsv(dir, depth = 0) {
+  if (!dir || !existsSync(dir) || depth > 2) return false;
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isFile() && extname(e.name).toLowerCase() === '.csv') return true;
+      if (e.isDirectory() && dirHasCsv(join(dir, e.name), depth + 1)) return true;
+    }
+    return false;
+  } catch { return false; }
+}
+function expandDir(raw) {
+  let p = String(raw || '').trim();
+  if (!p) return '';
+  const tokens = {
+    '{{ROOT}}': ROOT,
+    '{{HOME}}': process.env.HOME || process.env.USERPROFILE || '',
+    '{{LOCALAPPDATA}}': process.env.LOCALAPPDATA || ''
+  };
+  for (const [token, base] of Object.entries(tokens)) {
+    if (p.startsWith(token)) { p = join(base, p.slice(token.length).replace(/^[\\/]+/, '')); break; }
+  }
+  return p;
+}
 function loadShops() {
   const list = [];
   const shopsDir = join(ROOT, 'shops');
   let ids = [];
   try { ids = readdirSync(shopsDir).filter(f => f.endsWith('.json') && !f.startsWith('_')).map(f => f.replace(/\.json$/, '')); } catch { /* 无 shops 目录 */ }
+  let local = {};
+  try { local = JSON.parse(readFileSync(join(ROOT, 'local.json'), 'utf8').replace(/^\uFEFF/, '')) || {}; } catch { /* 无 local.json */ }
+  let anyOwnData = false;
   for (const id of ids) {
-    let label = id;
-    try { label = String(JSON.parse(readFileSync(join(shopsDir, `${id}.json`), 'utf8').replace(/^\uFEFF/, '')).shopName || '').trim() || id; } catch { /* 读不动就用 id */ }
-    list.push({ id, label, dir: join(ROOT, '店铺', id, '数据') });
+    let cfg = {};
+    try { cfg = JSON.parse(readFileSync(join(shopsDir, `${id}.json`), 'utf8').replace(/^\uFEFF/, '')) || {}; } catch { /* 读不动用空配置 */ }
+    const label = String(cfg.shopName || '').trim() || id;
+    const derived = join(ROOT, '店铺', id, '数据');
+    const localDir = local.shops && local.shops[id] ? expandDir(local.shops[id].dataDir) : '';
+    const explicit = expandDir(cfg.dataDir) || localDir;
+    // 本店专属数据：显式配置目录或派生目录里有 CSV，才算这家店真正跑过。
+    if (dirHasCsv(explicit) || dirHasCsv(derived)) anyOwnData = true;
+    const dir = dirHasCsv(explicit) ? explicit : derived;
+    list.push({ id, label, dir });
+  }
+  // 没有任何店跑出自己的数据：当前是单店模式（数据落根目录 DATA_DIR，my-shop.json 还在用）。
+  // 这时只显示一个「本店」条目，避免 5 个空壳店都挂同一份数据、标签还是 au/uk 造成串店错觉。
+  if (!anyOwnData) {
+    let label = '本店';
+    try { label = String(JSON.parse(readFileSync(join(ROOT, 'my-shop.json'), 'utf8').replace(/^\uFEFF/, '')).shopName || '').trim() || '本店'; } catch { /* 用默认 */ }
+    return [{ id: 'default', label, dir: DATA_DIR }];
   }
   if (!list.length) list.push({ id: 'default', label: '本店', dir: DATA_DIR });
   return list;
