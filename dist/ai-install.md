@@ -97,14 +97,17 @@ cmd /c "$env:TEMP\installer.cmd" /quiet
 2. 把 **Allow remote debugging** 开关拨到开（Chrome 完全重启后才需要重新拨一次）；
 3. 保留至少一个**已登录 eBay 卖家后台**的标签页，别把标签页全关掉（全关会收回授权）。
 
-### 1.3 第一次下载（最小目标：昨天的流量报表 + 在售名单）
+### 1.3 第一次下载（最小目标：**只下昨天一份单日流量**，先让看板有数据）
+
+**别一上来就下「上周 + 本周」**（慢，还容易撞账号级限速）。先下一份单日报表，看板立刻有数据可以看；
+熟练了再补更多（在售名单、上周+本周等，见阶段二）。
 
 告诉我盯着浏览器看——接下来 Chrome 会自己开标签页去报表中心提交请求并下载 CSV，
 全程前台可见。执行：
 
 ```powershell
 Set-Location "$env:USERPROFILE\Desktop\eBay报表工具包"
-.\bin\node.exe app\quick-download.mjs --full --only trafficDaily,active
+.\bin\node.exe app\quick-download.mjs --full --only trafficDaily
 ```
 
 - 大约 2~5 分钟。下完自动把文件归档进 `数据\90-待处理`，原始副本留在 `下载结果\`。
