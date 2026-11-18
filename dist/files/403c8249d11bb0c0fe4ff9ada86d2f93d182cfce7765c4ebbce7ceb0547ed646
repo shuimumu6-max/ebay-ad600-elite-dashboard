@@ -1,0 +1,193 @@
+// 阶段 C 自检：站点行名站点化 / 未实测硬拦 / 店铺身份校验
+// 用法：node app/check-site-runtime.mjs
+// 原则：只用本地文件与临时目录模拟，不连 Chrome、不下载、不写正式数据目录。
+import { existsSync, readFileSync, readdirSync, mkdirSync, mkdtempSync, cpSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  rowNamesFor, siteReadiness, assertSiteReady, assertShopIdentity,
+  uiLanguageFromHost, loadSiteConfig
+} from './site-rows.mjs';
+import { APP_FILES, SITE_FILES } from './dist-packlist.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const checks = [];
+const check = (name, ok, detail = '') => {
+  checks.push({ name, ok: !!ok, detail: String(detail) });
+  console.log(`  ${ok ? '✔' : '✘'} ${name}${detail ? ` — ${detail}` : ''}`);
+};
+
+// US 基线回归夹具：9 种订单行名逐字写在这里，防止 sites/us.json 被误改后
+// 运行时行名漂移而没人发现（原值来自 2026-11-10 US 实采）。
+const US_ORDERS = [
+  'Orders All orders', 'Orders Awaiting payment', 'Orders Awaiting shipment',
+  'Orders Awaiting shipment - overdue', 'Orders Awaiting shipment — ship within 24 hours',
+  'Orders Awaiting expedited shipment', 'Orders Paid and shipped',
+  'Orders Paid - awaiting your feedback', 'Orders Shipped - awaiting your feedback'
+];
+const US_LISTINGS = {
+  active: 'all active listings',
+  unsold: '(inactive|unsold) listings',
+  scheduled: 'scheduled listings'
+};
+const US_MARKETING = {
+  'marketing.plg.listing': 'Advertising',
+  'marketing.priority.listing': 'Advertising Listing',
+  'marketing.priority.keyword': 'Advertising Keyword',
+  'marketing.priority.campaign': 'Advertising Campaign',
+  'marketing.priority.search': 'Advertising Search'
+};
+
+const cleanEnv = { ...process.env };
+delete cleanEnv.EBAY_SHOP_ID;
+delete cleanEnv.EBAY_SHOP_CONFIG;
+
+function loadReportsIn(cwd, env = cleanEnv, expr = 'm.REPORTS.map(r=>[r.id,r.rowMatch,r.rowName])') {
+  const code = `import('./app/reports.mjs').then(m=>console.log('RESULT'+JSON.stringify(${expr})))`;
+  const r = spawnSync(process.execPath, ['-e', code], { cwd, env, encoding: 'utf8', timeout: 30000 });
+  const line = String(r.stdout || '').split('\n').find(x => x.startsWith('RESULT'));
+  if (!line) return { ok: false, error: String(r.stderr || '').slice(-400) };
+  return { ok: true, value: JSON.parse(line.slice(6)) };
+}
+
+console.log('=== 阶段 C · 站点运行时自检 ===\n');
+
+// 1) US 默认态：22 类行名逐字不变
+const us = loadReportsIn(ROOT);
+if (us.ok) {
+  const rows = us.value;
+  const byId = Object.fromEntries(rows.map(([id, match, name]) => [id, { match, name }]));
+  const orders = Object.keys(US_ORDERS).map((_, i) => rows.filter(([id]) => /^orders\./.test(id))[i]);
+  let bad = [];
+  US_ORDERS.forEach((name, i) => { if (orders[i]?.[2] !== name) bad.push(`订单[${i}] ${orders[i]?.[2]}`); });
+  Object.entries(US_LISTINGS).forEach(([k, v]) => { if (byId[`listings.${k}`]?.match !== v) bad.push(`名单 ${k}`); });
+  Object.entries(US_MARKETING).forEach(([k, v]) => { if (byId[k]?.match !== v) bad.push(`广告 ${k}`); });
+  check('US 默认态 9+3+5 行名逐字回归', bad.length === 0, bad.length ? bad.join('、') : '17 类全部一致');
+} else check('US 默认态 9+3+5 行名逐字回归', false, us.error);
+
+// 2) 关键：证明运行时行名真的来自 sites/*.json，不是代码里写死的第二份
+//    在临时目录改 sites/us.json 一个值，看 reports.mjs 是否跟着变。
+let tmp = null;
+try {
+  tmp = mkdtempSync(join(tmpdir(), 'ebay-siterows-'));
+  mkdirSync(join(tmp, 'app'), { recursive: true });
+  mkdirSync(join(tmp, 'sites'), { recursive: true });
+  for (const f of ['reports.mjs', 'shop-config.mjs', 'config.mjs', 'site-rows.mjs']) {
+    cpSync(join(ROOT, 'app', f), join(tmp, 'app', f));
+  }
+  for (const f of SITE_FILES) cpSync(join(ROOT, 'sites', f), join(tmp, 'sites', f));
+  const cfgPath = join(tmp, 'sites', 'us.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  const SENTINEL = 'SENTINEL-ROW-NAME';
+  cfg.rowNames.orders[0] = SENTINEL;
+  cfg.rowNames.marketing['marketing.priority.search'].rowMatch = SENTINEL;
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+  const changed = loadReportsIn(tmp, cleanEnv, '({orders:m.REPORTS.find(r=>r.id==="orders.all").rowName, search:m.REPORTS.find(r=>r.id==="marketing.priority.search").rowMatch})');
+  check('行名来自 sites/*.json（改配置即改运行时）',
+    changed.ok && changed.value.orders === SENTINEL && changed.value.search === SENTINEL,
+    changed.ok ? `orders.all=${changed.value.orders} / search=${changed.value.search}` : changed.error);
+} catch (error) {
+  check('行名来自 sites/*.json（改配置即改运行时）', false, error.message.slice(0, 140));
+} finally {
+  if (tmp) try { rmSync(tmp, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }
+}
+
+// 3) 站点知识库状态：US 已验证，UK/AU 必须仍是 pending（禁止无证据标 verified）
+const usState = siteReadiness('us', ROOT, { host: 'https://www.ebay.com' });
+check('US 站点 verified 且字段齐全', usState.ready, usState.missing.join('；') || '无缺失');
+for (const site of ['uk', 'au']) {
+  const st = siteReadiness(site, ROOT, { host: 'https://www.ebay.com.hk' });
+  const cfg = loadSiteConfig(site, ROOT) || {};
+  const orders = cfg.rowNames?.orders || [];
+  const listingMatches = Object.values(cfg.rowNames?.listings || {}).map(v => v.rowMatch).filter(Boolean);
+  // 2026-11-14 起允许 pending 站点携带「实测繁中行名」（目录 API 采集，证据在 docs/报表目录-*.json），
+  // 但必须：① status 仍是 pending（assertSiteReady 依旧拦下载）② 行名是繁中实测值且 probeEvidence 非空，
+  // 防止从 us.json 翻译/继承的英文值混进来。
+  const rowsAreProbed = (!orders.length && !listingMatches.length)
+    || (!!cfg.probeEvidence && orders.concat(listingMatches).every(x => /[\u4e00-\u9fff]/.test(x)));
+  check(`${site} 仍为 pending（下载闸门有效）`, !st.ready && cfg.status === 'pending', `status=${cfg.status}｜缺 ${st.missing.length} 项`);
+  check(`${site} 行名为实测繁中且带证据`, rowsAreProbed, `orders=${orders.length}｜listings=${listingMatches.length}｜evidence=${cfg.probeEvidence ? '有' : '无'}`);
+  check(`${site} 界面语言已实测标注`, cfg.uiLanguage === 'zh-HK' && !!cfg.uiLanguageEvidence, String(cfg.uiLanguage));
+}
+
+// 4) 界面语言判定 + 一致性闸门（us-999 的真实隐患）
+check('host → 界面语言判定', uiLanguageFromHost('https://www.ebay.com.hk') === 'zh-HK'
+  && uiLanguageFromHost('https://www.ebay.com') === 'en-US'
+  && uiLanguageFromHost('https://example.com') === 'unknown', '繁中 / 英文 / 未知');
+const mismatch = siteReadiness('us', ROOT, { host: 'https://www.ebay.com.hk' });
+check('US 英文基线用到繁中后台会被拦', !mismatch.ready
+  && mismatch.missing.some(x => x.includes('界面语言不符')), mismatch.missing.find(x => x.includes('界面语言')) || '');
+
+// 5) 逐店下载闸门：只有完全实测且与后台界面一致才放行
+const defs = existsSync(join(ROOT, 'shops'))
+  ? readdirSync(join(ROOT, 'shops')).filter(f => f.endsWith('.json') && !f.startsWith('_'))
+  : [];
+// 通用规则（本机工程与目标机分发包都适用）：只有「英文 US 基线 + www.ebay.com 后台」
+// 才允许放行；pending 站点、繁中后台、site=unknown 一律拦下。
+const wantFor = (site, host) => site === 'us' && /^https:\/\/www\.ebay\.com$/i.test(host);
+let gateOk = true; const gateLines = [];
+for (const f of defs) {
+  const id = f.replace(/\.json$/, '');
+  const cfg = JSON.parse(readFileSync(join(ROOT, 'shops', f), 'utf8').replace(/^\uFEFF/, ''));
+  let host = '';
+  try { host = new URL(cfg.entryUrl).origin; } catch { /* 入口缺失照判失败 */ }
+  let passed = true;
+  try { assertSiteReady(cfg.site, { host }); } catch { passed = false; }
+  const want = wantFor(cfg.site, host);
+  if (passed !== want) gateOk = false;
+  gateLines.push(`${id}:${passed ? '放行' : '拦下'}`);
+}
+if (defs.length) {
+  check('逐店下载闸门（只有 us-scanner 放行）', gateOk && gateLines.length >= 4, gateLines.join(' / '));
+} else {
+  // 目标机分发态只有 shops/_模板.json：没有真实店铺可比，用内置反例证明闸门没被关掉。
+  let blocked = false;
+  try { assertSiteReady('us', { host: 'https://www.ebay.com.hk' }); } catch { blocked = true; }
+  let allowed = false;
+  try { assertSiteReady('us', { host: 'https://www.ebay.com' }); allowed = true; } catch { /* 应当放行 */ }
+  check('下载闸门（分发态 0 店：繁中拦下 / 英文放行）', blocked && allowed, '用内置反例验证');
+}
+
+// 6) 身份校验：大小写、不匹配、读不到、老单店兼容
+const ident = [];
+try { ident.push(assertShopIdentity('topdon_obd2', 'TOPDON_OBD2', { shopId: 'uk-obd2' }).ok === true ? 'ok' : 'bad'); }
+catch { ident.push('bad'); }
+let rejected = false;
+try { assertShopIdentity('topdon_obd2', 'topdon_obd2_uk', { shopId: 'uk-obd2' }); } catch { rejected = true; }
+ident.push(rejected ? 'ok' : 'bad');
+let noIdRejected = false;
+try { assertShopIdentity('topdon_obd2', { userId: '', href: '' }, { shopId: 'uk-obd2' }); } catch { noIdRejected = true; }
+ident.push(noIdRejected ? 'ok' : 'bad');
+ident.push(assertShopIdentity('', { userId: 'whatever' }).skipped === true ? 'ok' : 'bad');
+ident.push(assertShopIdentity('topdon_obd2', { userId: '' }, { strict: false }).ok === false ? 'ok' : 'bad');
+check('身份校验 5 例（匹配/大小写/不符/读不到/老店跳过）', ident.every(x => x === 'ok'), ident.join(','));
+
+// 7) 源码里不能再有第二份英文行名赋值
+const reportsSrc = readFileSync(join(ROOT, 'app', 'reports.mjs'), 'utf8');
+const hardCoded = [
+  ...reportsSrc.matchAll(/\browName:\s*['"]Orders [^'"]+['"]/g),
+  ...reportsSrc.matchAll(/\browMatch:\s*['"]Advertising[^'"]*['"]/g),
+  ...reportsSrc.matchAll(/\browMatch:\s*['"](?:all active|\(inactive|scheduled) listings[^'"]*['"]/g)
+];
+check('reports.mjs 不再写死英文行名', hardCoded.length === 0,
+  hardCoded.length ? hardCoded.slice(0, 3).map(m => m[0]).join('；') : '0 处赋值');
+
+// 8) 打包链必须带上新模块与站点知识库
+for (const f of ['site-rows.mjs', 'probe-rows.mjs', 'check-site-runtime.mjs']) {
+  check(`分发白名单含 ${f}`, APP_FILES.includes(f));
+}
+check('站点知识库随包', SITE_FILES.includes('us.json') && SITE_FILES.includes('uk.json') && SITE_FILES.includes('au.json'),
+  SITE_FILES.join(','));
+
+// 9) 没有证据就不许把 uk/au 标 verified（分发包没有 docs/，改用 pending 状态判定）
+const evidence = existsSync(join(ROOT, 'docs'))
+  ? readdirSync(join(ROOT, 'docs')).filter(f => /^站点探针行名-.*\.json$/.test(f)) : [];
+const stillPending = loadSiteConfig('uk')?.status === 'pending' && loadSiteConfig('au')?.status === 'pending';
+check('繁中证据 / 站点 pending 一致', evidence.length >= 4 || stillPending,
+  evidence.length ? `${evidence.length} 份原始证据` : '分发态无 docs/，uk/au 仍为 pending');
+
+const passed = checks.filter(c => c.ok).length;
+console.log(`\n阶段 C 运行时：${passed}/${checks.length} 通过`);
+if (passed !== checks.length) process.exitCode = 1;

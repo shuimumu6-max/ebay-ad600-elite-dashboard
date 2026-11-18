@@ -7,7 +7,7 @@ import {
   DATA_DIR, PENDING_DIR, REPO_DIR, HTML_SOURCE, RUNS_DIR,
   DEFAULT_DOWNLOAD_DIR, DASHBOARD_URL, PLP_CAMPAIGNS,
   PRIORITY_CAMPAIGNS, PRIORITY_DEFAULT_IDS,
-  PLG_CAMPAIGNS as SHOP_PLG_CAMPAIGNS, BRIDGE_PORT
+  PLG_CAMPAIGNS as SHOP_PLG_CAMPAIGNS, BRIDGE_PORT, SHOP_HOST, SHOP_ID
 } from './shop-config.mjs';
 
 export {
@@ -17,12 +17,17 @@ export {
 
 export const ROOT = dirname(fileURLToPath(import.meta.url));
 export const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}`;
+// 桥端口按店解析（每店独立 bridgePort），ensure-env / 桥服务 / 守护都从这里取，避免三处各写一遍。
+export { BRIDGE_PORT };
 // 指向守护进程：它会保证桥一直在线，桥崩了 3 秒内自动拉起，永不留下「没有桥」的状态
 export const BRIDGE_SCRIPT = join(ROOT, 'bridge-daemon.mjs');
 
-export const TRAFFIC_URL = 'https://www.ebay.com/sh/performance/traffic';
-export const REPORTS_URL = 'https://www.ebay.com/sh/reports/downloads';
-export const CAMPAIGN_URL = id => `https://www.ebay.com/sh/ads/dashboard/campaign/${id}`;
+// 多店铺：后台域名来自该店实测的入口快捷方式（shops/<id>.json 的 entryUrl），
+// 不再写死 www.ebay.com。默认单店没有 entryUrl 时仍是 www.ebay.com，行为不变。
+export { SHOP_HOST, SHOP_ID };
+export const TRAFFIC_URL = `${SHOP_HOST}/sh/performance/traffic`;
+export const REPORTS_URL = `${SHOP_HOST}/sh/reports/downloads`;
+export const CAMPAIGN_URL = id => `${SHOP_HOST}/sh/ads/dashboard/campaign/${id}`;
 
 // PLP campaign（链接 / 关键词 / 搜索词各 1 份）：来自店铺配置
 export const CAMPAIGNS = PLP_CAMPAIGNS;

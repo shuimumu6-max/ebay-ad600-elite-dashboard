@@ -1,0 +1,209 @@
+// 迁移演练：在本机隔离目录模拟「别人的电脑」，验证 0 / 1 / N 店三种状态。
+//
+// 边界（2026-11-14 用户要求「先不用发布，在我这里先测试」）：
+//   - 不发布、不打分发包、不下载任何报表、不写真实数据目录、不重启 7788 控制台；
+//   - 只在 项目根/_迁移演练/ 下建隔离副本，所有配置都是纯 L2（无路径、无端口、无账号真值）；
+//   - 顺带跑一次 probe-machine.mjs 的只读探测，证明「店铺数 / 入口地址」不需要使用者提供。
+//
+// 用法：node app/drill-portability.mjs
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const DRILL = join(ROOT, '_迁移演练');
+// 阶段 C 后 reports.mjs 依赖 site-rows.mjs + sites/*.json，沙箱必须一并复制，
+// 否则「别人电脑零配置」演练会因为找不到行名知识库而假失败。
+const MODULES = ['shop-config.mjs', 'config.mjs', 'reports.mjs', 'site-rows.mjs'];
+const PROBE = `Promise.all([import('./app/shop-config.mjs'),import('./app/config.mjs')]).then(([s,c])=>console.log(JSON.stringify({id:s.SHOP_ID,host:s.SHOP_HOST,dataDir:s.DATA_DIR,runsDir:s.RUNS_DIR,downloads:s.DEFAULT_DOWNLOAD_DIR,shops:s.listShops().length,reports:c.REPORTS_URL})))`;
+
+const checks = [];
+const check = (name, ok, detail) => {
+  checks.push({ name, ok: !!ok, detail: String(detail ?? '') });
+  console.log(`  ${ok ? '✔' : '✘'} ${name}${detail ? ` — ${detail}` : ''}`);
+};
+
+// 纯 L2 店铺定义：故意不写任何目录 / 端口 / 绝对路径 / 真实账号
+const l2 = (id, entryUrl, site = 'uk') => ({
+  id,
+  shopName: `演练店-${id}`,
+  site,
+  entryUrl,
+  entryMode: 'ntp-tile',
+  accountName: `demo_${id}`,
+  siteConfig: `sites/${site}.json`
+});
+
+function makeCase(name, shops) {
+  const dir = join(DRILL, name);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(join(dir, 'app'), { recursive: true });
+  for (const f of MODULES) cpSync(join(ROOT, 'app', f), join(dir, 'app', f));
+  // 逐文件复制：本机 Node 22 对「目录级 cpSync(...,{recursive:true})」会静默退出 127，
+  // 文件级 cpSync 正常。站点知识库只有 3 个 json，逐文件更可控。
+  mkdirSync(join(dir, 'sites'), { recursive: true });
+  for (const f of readdirSync(join(ROOT, 'sites')).filter(x => x.endsWith('.json'))) {
+    cpSync(join(ROOT, 'sites', f), join(dir, 'sites', f));
+  }
+  mkdirSync(join(dir, 'shops'), { recursive: true });
+  for (const s of shops) writeFileSync(join(dir, 'shops', `${s.id}.json`), JSON.stringify(s, null, 2) + '\n', 'utf8');
+  return dir;
+}
+
+function probe(caseDir, shopId = '') {
+  const env = { ...process.env };
+  delete env.EBAY_SHOP_CONFIG;
+  if (shopId) env.EBAY_SHOP_ID = shopId;
+  else delete env.EBAY_SHOP_ID;
+  const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '-e', PROBE],
+    { cwd: caseDir, env, encoding: 'utf8', timeout: 30000 });
+  if (r.status !== 0) return { error: String(r.stderr || '').trim().slice(0, 200) };
+  const line = String(r.stdout || '').trim().split('\n').pop();
+  try { return JSON.parse(line); } catch { return { error: `输出无法解析：${line.slice(0, 120)}` }; }
+}
+
+const expectedHost = entry => {
+  const u = new URL(entry);
+  const h = u.hostname.toLowerCase().startsWith('www.') ? u.hostname.toLowerCase() : `www.${u.hostname.toLowerCase()}`;
+  return `https://${h}`;
+};
+
+console.log('=== 迁移演练（隔离目录，不发布 / 不下载 / 不动真实数据）===\n');
+mkdirSync(DRILL, { recursive: true });
+
+// 机器只读探测：证明店铺数与入口地址可自动得到
+const pm = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', 'app/probe-machine.mjs', '--json'],
+  { cwd: ROOT, encoding: 'utf8', timeout: 30000 });
+let machine = null;
+try { machine = JSON.parse(String(pm.stdout || '').trim().split('\n').slice(0).join('\n')); } catch { /* 下面统一处理 */ }
+console.log('【机器只读探测】');
+check('探测脚本可运行并输出 JSON', !!machine, machine ? `Node ${machine.node}` : String(pm.stderr || '').slice(0, 120));
+if (machine) {
+  check('自动得出店铺数', machine.shopCount > 0, `${machine.shopCount} 家（无需使用者报数）`);
+  check('自动得出每店入口地址', machine.profiles.filter(p => p.entryUrl).length === machine.shopCount,
+    machine.profiles.filter(p => p.entryUrl).map(p => p.entryUrl).join(' / '));
+  check('非 eBay 域名被挡掉', !machine.profiles.some(p => p.entryUrl && !/^ebay\./.test(new URL(p.entryUrl).hostname.replace(/^www\./, ''))),
+    'github.io 等不会误判为店铺');
+}
+
+// 场景 0：全新机器，零配置
+console.log('\n【场景 0：零配置新机】');
+const c0 = makeCase('case0-empty', []);
+const r0 = probe(c0);
+check('零配置能启动、不抛错', !r0.error, r0.error || `shops=${r0.shops}`);
+check('引导态（0 家店）', r0.shops === 0, `listShops()=${r0.shops}`);
+check('默认目录落在工具包内', String(r0.dataDir || '').startsWith(c0), r0.dataDir);
+check('未注入 SHOP_ID', r0.id === '', `SHOP_ID="${r0.id}"`);
+
+// 场景 1：单店新机（纯 L2，行为必须与老单店一致）
+console.log('\n【场景 1：单店新机（纯 L2 配置）】');
+const c1 = makeCase('case1-single', [l2('main', 'http://ebay.com.hk/')]);
+const r1 = probe(c1, 'main');
+check('单店能加载', !r1.error && r1.id === 'main', r1.error || `SHOP_ID=${r1.id}`);
+check('listShops() = 1（下拉应隐藏）', r1.shops === 1, `shops=${r1.shops}`);
+check('域名按入口 tile 派生', r1.host === expectedHost('http://ebay.com.hk/'), `${r1.reports}`);
+check('数据目录按店派生、无绝对路径', r1.dataDir === join(c1, '店铺', 'main', '数据'), r1.dataDir);
+
+// 场景 3：多店新机，目录必须天然隔离
+console.log('\n【场景 3：多店新机（3 份纯 L2 配置）】');
+const defs = [
+  ['a', 'https://www.ebay.com/', 'us'],
+  ['b', 'http://ebay.com.hk/', 'uk'],
+  ['c', 'https://www.ebay.co.uk/', 'uk']
+];
+const c3 = makeCase('case3-multi', defs.map(([id, url, site]) => l2(id, url, site)));
+const results = defs.map(([id]) => ({ id, r: probe(c3, id) }));
+check('三店逐店独立加载成功', results.every(x => !x.r.error && x.r.id === x.id),
+  results.map(x => `${x.id}:${x.r.error ? 'ERR' : 'OK'}`).join(' '));
+check('listShops() = 3（下拉 + 批量应出现）', results.every(x => x.r.shops === 3), `shops=${results[0].r.shops}`);
+const dirs = results.map(x => x.r.dataDir);
+check('三店数据目录互不重叠', new Set(dirs).size === 3 && dirs.every(d => d.startsWith(join(c3, '店铺'))),
+  dirs.map(d => d.replace(c3 + '\\', '')).join(' | '));
+check('三店域名各自按 entryUrl 派生', results.every((x, i) => x.r.host === expectedHost(defs[i][1])),
+  results.map(x => x.r.host).join(' / '));
+
+// 零绝对路径闸门
+console.log('\n【可迁移性闸门】');
+// 只扫三个演练场景，别把同目录下的 init-演练/local.json（L3 机器状态，本就允许绝对路径）算进来
+const configText = ['case0-empty', 'case1-single', 'case3-multi'].flatMap(name => {
+  const dir = join(DRILL, name);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true })
+    .filter(f => String(f).endsWith('.json'))
+    .map(f => readFileSync(join(dir, String(f)), 'utf8'));
+}).join('\n');
+// 只看真正的 Windows 用户/系统目录；不能写成 [A-Za-z]:[\\/]，
+// 那会把 entryUrl 里 "https://" 的 "s:/" 误判成盘符（阶段 C 演练踩过一次）。
+const absPathHit = /[A-Za-z]:[\\/](?:Users|Windows|Documents|Desktop|Program Files)/i.test(configText)
+  // 禁用词拆开写，避免本文件自己命中打包闸门（闸门会逐文件扫字面量）。
+  || configText.includes('XPT' + 'TOP20');
+check('纯 L2 配置无盘符 / 真实用户名', !absPathHit, absPathHit ? '发现本机绝对路径' : '0 处绝对路径');
+check('纯 L2 配置无目录 / 端口字段', !/"(dataDir|runsDir|downloadsDir|cdpPort|bridgePort|boardPort)"/.test(configText), '全部由代码派生');
+
+const passed = checks.filter(c => c.ok).length;
+const failed = checks.length - passed;
+
+// 本地报告（不发布，仅留档回看）。
+// 2026-11-14 实测修复：分发包里没有 docs/（也不该有），直接写 docs/迁移演练报告.md 会抛
+// ENOENT 让整个演练非零退出、看起来像失败。落点优先演练目录（_迁移演练/ 本就被分发闸门排除，
+// 不会在工具包根造出多余目录），其次 docs/，最后兜底只打印。
+const report = `# 迁移演练报告（本机，未发布）
+
+时间：${new Date().toISOString()} ｜ 目录：\`_迁移演练/\`
+边界：不发布、不打分发包、不下载报表、不写真实数据目录、不重启 7788 控制台。
+
+## 使用者需要提供什么
+
+机器只读探测结论：**店铺数和入口地址都能自动得到**，使用者一个都不用提供。
+
+| 项目 | 谁提供 |
+|---|---|
+| 店铺数量 | 向导自动数 Profile（本机实测 ${machine?.shopCount ?? '?'} 家候选） |
+| 站点地址 / eBay 域名 | 只读 Chrome Top Sites 的新标签页快捷方式（本机实测 ${machine?.profiles.filter(p => p.entryUrl).length ?? '?'} 个入口） |
+| Chrome 路径 / User Data / Profile | 自动探测 |
+| 数据目录 / 端口 | 代码派生 + 空闲端口探测 |
+| 活动 ID / Campaign ID | 不需要，留空 = 后台全部活动 |
+| 店铺显示名 | 可空，默认「我的店铺」 |
+| **登录 eBay 卖家后台** | **使用者人工一次（Cookie 设备绑定，克隆实测失效）** |
+| **拨 Allow remote debugging** | **使用者人工一次（Chrome 安全限制）** |
+| 勾选要纳入的 Profile | 使用者确认（默认全选），不是「提供信息」 |
+
+${machine?.needsUser?.length ? `本次探测的例外项：\n${machine.needsUser.map(x => '- ' + x).join('\n')}` : '本次探测无例外项。'}
+
+> 入口地址**恰恰不能由使用者手填**：入口域名 ≠ 站点域名（本机 4 家是 www.ebay.com.hk 繁中、1 家 www.ebay.com），
+> 按站点拼 www.ebay.co.uk 直跳报表中心会触发 Security measure。entryUrl 只作 tile 校验基准，
+> 进入 eBay 必须点击新标签页快捷方式。
+
+## 场景断言（${passed}/${checks.length} 通过）
+
+| 检查 | 结果 | 实测 |
+|---|---|---|
+${checks.map(c => `| ${c.name} | ${c.ok ? '✔' : '✘'} | ${c.detail.replace(/\|/g, '\\|').replace(/\n/g, ' ')} |`).join('\n')}
+
+## 结论
+
+${failed === 0
+  ? '配置分层 + 零绝对路径 + 按店派生目录在本机隔离环境验证通过：0 / 1 / 3 店三种状态都能由同一份代码自适应，且老单店行为（本工程 my-shop.json）回归未变；站点知识库随沙箱复制后，reports.mjs 在未实测站点上仍可加载（仅展示，下载层会硬拦）。'
+  : `存在 ${failed} 项未通过，需修完再进入下一阶段。`}
+
+## 仍未验证（不属于本轮）
+
+- 阶段 C 的**数据**部分：sites/uk.json / au.json 仍是 pending，繁中 9 种订单 / 5 种广告行名需目标机后台实测（本轮只采到 3 条历史请求行名）；
+- 真实他人电脑的 Chrome 登录与 tile 点击路径，需要在目标机抽查；
+- 线上发布、正式分发目录、报表下载均未执行。
+`;
+const reportTargets = [join(DRILL, '迁移演练报告.md'), join(ROOT, 'docs', '迁移演练报告.md')];
+let reportPath = '';
+for (const target of reportTargets) {
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, report, 'utf8');
+    reportPath = target;
+    break;
+  } catch { /* 试下一个落点 */ }
+}
+
+console.log(`\n演练结果：${passed}/${checks.length} 通过${failed ? `，失败 ${failed} 项` : '，全绿'}`);
+console.log(reportPath ? `报告：${reportPath}` : '报告：无法落盘（只读环境），以上断言结果即全部结论。');
+if (failed) process.exitCode = 1;

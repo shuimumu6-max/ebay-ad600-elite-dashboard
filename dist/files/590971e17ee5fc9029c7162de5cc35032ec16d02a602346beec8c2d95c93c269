@@ -149,6 +149,7 @@ for (const r of REPORTS) {
 // 2) 与真实 CSV 表头比对
 // 找不到文件 = 这一类根本没核对，绝不能算「全部一致」（换机/换店铺后最容易假绿）
 const uncovered = [];
+let checked = 0;   // 真正拿真实 CSV 表头核对过的类数
 for (const r of REPORTS) {
   if (!r.csvVerified) continue;
   const t = TARGETS[r.id];
@@ -157,6 +158,7 @@ for (const r of REPORTS) {
   if (!path) { uncovered.push(`${r.id}：找不到 ${t.folder}/${t.file} 的 CSV`); continue; }
   const header = headerOf(path);
   if (!header.length) { uncovered.push(`${r.id}：读不到表头`); continue; }
+  checked++;
   const fields = reportFields(r);
   const covered = new Set();
   for (const f of fields) for (const c of f.csv) covered.add(c);
@@ -185,6 +187,17 @@ if (uncovered.length) {
   console.log(`\n[未覆盖] ${uncovered.length} 类没有真实 CSV 可核对（换机 / 换店铺后请先跑一次全量下载）:`);
   uncovered.forEach(x => console.log('   ' + x));
 }
-const failed = problems + uncovered.length;
-console.log(failed ? `\n共 ${problems} 处不一致 / ${uncovered.length} 类未覆盖` : '\n全部一致：19 类注册表 ↔ 真实 CSV 表头（其中 17 类另有页面实采三方核对）');
+// 全新机器（分发包刚解压、还没下载过任何报表）本来就没有 CSV，19 类全未覆盖
+// 属正常引导态，不该判失败让使用者以为装坏了；只要有一类开始核对就恢复严格口径。
+const freshMachine = checked === 0 && problems === 0;
+if (freshMachine) {
+  console.log('\n全新环境：尚无任何真实 CSV 可核对（还没下载报表）。这不是错误；'
+    + '跑通第一次下载并归档后，本自检会逐类核对注册表 ↔ CSV 表头。');
+}
+const failed = problems + (freshMachine ? 0 : uncovered.length);
+console.log(failed
+  ? `\n共 ${problems} 处不一致 / ${uncovered.length} 类未覆盖`
+  : freshMachine
+    ? '\n字段自检：全新环境，待首次下载归档后复跑逐类核对'
+    : '\n全部一致：19 类注册表 ↔ 真实 CSV 表头（其中 17 类另有页面实采三方核对）');
 process.exit(failed ? 1 : 0);

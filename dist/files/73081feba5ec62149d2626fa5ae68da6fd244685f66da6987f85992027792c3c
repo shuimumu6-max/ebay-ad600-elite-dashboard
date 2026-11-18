@@ -1,0 +1,147 @@
+// 可迁移性闸门：打包前后必跑，防止「代码改了但没进包 / 本机身份混进包 / 零配置打不开」。
+// 用法：node app/check-portability.mjs [分发包目录]
+//   默认检查 分发/eBay报表工具包。失败退出码 1。
+import { existsSync, readdirSync, readFileSync, mkdirSync, mkdtempSync, cpSync, rmSync } from 'node:fs';
+import { dirname, join, relative, posix } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// 维护者工程里默认查「分发/eBay报表工具包」；在目标机解压出来的包里没有这层目录，
+// 直接把包根当检查对象（使用者按说明.txt 裸跑也必须全绿，不能报 6 项假失败）。
+const MAINTAINER_DIST = join(ROOT, '分发', 'eBay报表工具包');
+const DIST = process.argv[2] || (existsSync(MAINTAINER_DIST) ? MAINTAINER_DIST : ROOT);
+const checks = [];
+const check = (name, ok, detail) => {
+  checks.push({ name, ok: !!ok, detail: String(detail ?? '') });
+  console.log(`  ${ok ? '✔' : '✘'} ${name}${detail ? ` — ${detail}` : ''}`);
+};
+const slash = p => String(p).replace(/\\/g, '/');
+
+function walk(dir, base = '') {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+    const rel = base ? `${base}/${e.name}` : e.name;
+    return e.isDirectory() ? walk(join(dir, e.name), rel) : [rel];
+  });
+}
+
+console.log(`=== 可迁移性闸门：${DIST} ===\n`);
+const files = walk(DIST).map(slash);
+check('分发包存在且有内容', files.length > 0, `${files.length} 个文件`);
+
+// 1) 本机真实身份绝不能进包。禁用词在源码里拆开写，避免本文件自己命中自己。
+const bad = ['XPT' + 'TOP20', 'ebay ad' + '600 Elite',
+  'Desktop' + '\\测试下载', 'Desktop' + '/测试下载'];
+const textFiles = files.filter(f => /\.(mjs|js|json|html|md|txt|cmd|ps1)$/i.test(f));
+const leaks = [];
+for (const f of textFiles) {
+  if (f === 'app/check-portability.mjs') continue; // 规则文件自身含禁用词字面量，跳过
+  let t = '';
+  try { t = readFileSync(join(DIST, f), 'utf8'); } catch { continue; }
+  for (const token of bad) if (t.includes(token)) leaks.push(`${f} → ${token}`);
+}
+check('包内无本机用户名 / 真实路径', leaks.length === 0, leaks.slice(0, 3).join('；') || '0 处泄漏');
+
+// 2) 店铺私有数据与机器状态绝不能进包
+const bannedExact = ['priority-campaigns.json', 'my-shop.json', 'local.json'];
+const bannedHits = files.filter(f =>
+  bannedExact.some(b => f === b || f.endsWith('/' + b)) ||
+  /\.csv$/i.test(f) || /\.log$/i.test(f) ||
+  /^店铺实例\//.test(f) || /^数据\//.test(f) || /^下载结果\//.test(f) ||
+  /^_迁移演练\//.test(f) || f.startsWith('.git/'));
+check('包内无 CSV / 活动快照 / 机器状态 / 数据目录', bannedHits.length === 0,
+  bannedHits.slice(0, 3).join('；') || '0 个违规文件');
+
+// 3) 分发包只带店铺定义模板，且定义里不能有绝对路径 / 端口
+//    正则只看真正的 Windows 用户/系统目录；不能写成 [A-Za-z]:[\\/]，
+//    那会把 entryUrl 里 "https://" 的 "s:/" 误判成盘符（drill-portability 已踩过同样的坑）。
+const defs = files.filter(f => /^shops\/.*\.json$/i.test(f));
+const absHits = defs.filter(f => /[A-Za-z]:[\\/](?:Users|Windows|Documents|Desktop|Program Files)/i.test(readFileSync(join(DIST, f), 'utf8')));
+check(' shops/ 店铺定义无绝对路径', absHits.length === 0, absHits.join('；') || `${defs.length} 份定义`);
+const portHits = defs.filter(f => /"(cdpPort|bridgePort|boardPort|dataDir|runsDir|downloadsDir|userDataDir)"/.test(readFileSync(join(DIST, f), 'utf8')));
+check(' shops/ 店铺定义无端口 / 目录字段', portHits.length === 0, portHits.join('；') || '全部由代码 + local.json 派生');
+
+// 4) 迁移能力必需文件齐备
+const must = [
+  'shops/_模板.json', 'sites/us.json', 'sites/uk.json', 'sites/au.json',
+  'app/console.json', 'app/init.mjs', 'app/probe-machine.mjs', 'app/drill-portability.mjs',
+  'app/launch-shop.mjs', 'app/open-entry.mjs', 'app/prepare-login.mjs',
+  'app/probe-site.mjs', 'app/gen-site-baseline.mjs',
+  'app/check-shops.mjs', 'app/check-sites.mjs', 'app/check-portability.mjs',
+  'app/export-migration.mjs', 'app/dist-packlist.mjs',
+  'ui/index.html', 'ui/server.mjs', 'AI-安装说明.md', '说明.txt'
+];
+const absent = must.filter(f => !files.includes(f));
+check('迁移能力文件齐备', absent.length === 0, absent.slice(0, 5).join('；') || `${must.length}/${must.length}`);
+
+// 5) 静态 import 图：白名单一漏，分发包在别人电脑就会 import 失败
+const { APP_FILES, UI_FILES } = await import('./dist-packlist.mjs');
+const has = new Set([...APP_FILES.map(f => `app/${f}`), ...UI_FILES.map(f => `ui/${f}`)]);
+const queue = ['app/download.mjs', 'ui/server.mjs', 'app/quick-download.mjs', 'app/init.mjs',
+  'app/probe-machine.mjs', 'app/drill-portability.mjs', 'app/check-portability.mjs'];
+const seen = new Set();
+const missing = [];
+while (queue.length) {
+  const cur = queue.shift();
+  if (seen.has(cur)) continue;
+  seen.add(cur);
+  const p = join(DIST, cur);
+  if (!existsSync(p)) { missing.push(cur); continue; }
+  const src = readFileSync(p, 'utf8');
+  // 只认静态 from 相对导入：动态 import(...) 里可能是探针用的模板字符串，不能当模块解析
+  for (const m of src.matchAll(/\bfrom\s*['"](\.[^'"]+)['"]/g)) {
+    const target = slash(posix.normalize(posix.join(dirname(cur), m[1]))).replace(/^\.\//, '');
+    queue.push(target);
+  }
+}
+const notInPack = [...seen].filter(f => !missing.includes(f) && !has.has(f));
+check('静态 import 图全部在包内', missing.length === 0 && notInPack.length === 0,
+  `扫描 ${seen.size} 个模块｜缺失 ${missing.length}｜白名单外 ${notInPack.length}${missing.length ? '：' + missing.slice(0, 3).join('、') : ''}`);
+
+// 6) 零配置启动模拟：全新机器解压后不能崩，必须进引导态
+let tmp = null;
+try {
+  tmp = mkdtempSync(join(tmpdir(), 'ebay-portability-'));
+  mkdirSync(join(tmp, 'app'), { recursive: true });
+  mkdirSync(join(tmp, 'shops'), { recursive: true });
+  // reports.mjs 已改为按 sites/*.json 加载行名，零配置模拟必须把站点知识库一并带过去，
+  // 否则新机解压后连控制台都打不开（阶段 C 新增依赖）。
+  for (const f of ['shop-config.mjs', 'config.mjs', 'reports.mjs', 'site-rows.mjs']) cpSync(join(DIST, 'app', f), join(tmp, 'app', f));
+  // 逐文件复制（目录级 cpSync recursive 在本机 Node 22 会静默退出 127）
+  if (existsSync(join(DIST, 'sites'))) {
+    mkdirSync(join(tmp, 'sites'), { recursive: true });
+    for (const f of readdirSync(join(DIST, 'sites')).filter(x => x.endsWith('.json'))) {
+      cpSync(join(DIST, 'sites', f), join(tmp, 'sites', f));
+    }
+  }
+  const env = { ...process.env };
+  delete env.EBAY_SHOP_ID; delete env.EBAY_SHOP_CONFIG;
+  const probe = `Promise.all([import('./app/shop-config.mjs'),import('./app/config.mjs'),import('./app/reports.mjs')]).then(([s,c,r])=>console.log(JSON.stringify({shops:s.listShops().length,id:s.SHOP_ID,dataDir:s.DATA_DIR,host:s.SHOP_HOST,siteReady:r.SITE_CONTEXT.ready,orders:r.REPORTS.filter(x=>x.group==='orders').length})))`;
+  const r = spawnSync(process.execPath, ['-e', probe], { cwd: tmp, env, encoding: 'utf8', timeout: 30000 });
+  const line = String(r.stdout || '').trim().split('\n').pop();
+  let got = null;
+  try { got = JSON.parse(line); } catch { /* 下面统一报错 */ }
+  check('零配置启动不抛错', r.status === 0 && !!got, r.status === 0 ? '引导态' : String(r.stderr || '').slice(0, 120));
+  check('零配置 shops=0 且无 SHOP_ID', got && got.shops === 0 && got.id === '', `shops=${got?.shops} id=${got?.id}`);
+  check('零配置目录落在解压目录内', got && slash(got.dataDir).startsWith(slash(tmp)), got?.dataDir || '');
+  check('零配置站点基线可用（9 种订单行名已加载）', got && got.siteReady === true && got.orders === 9,
+    `siteReady=${got?.siteReady} orders=${got?.orders}`);
+} catch (error) {
+  check('零配置启动模拟', false, error.message.slice(0, 120));
+} finally {
+  if (tmp) try { rmSync(tmp, { recursive: true, force: true }); } catch { /* 临时目录清理失败不影响结论 */ }
+}
+
+// 7) 文案口径必须与「自适应单/多店」一致
+let readme = '', ai = '';
+try { readme = readFileSync(join(DIST, '说明.txt'), 'utf8'); } catch { /* 缺失已在第 4 项报错 */ }
+try { ai = readFileSync(join(DIST, 'AI-安装说明.md'), 'utf8'); } catch { /* 同上 */ }
+check('说明.txt 已改为自适应版', /自适应版/.test(readme) && !/单店铺版/.test(readme), '标题与口径');
+check('AI 提示词改用 init 加店', ai.includes('init --add-shop') && !ai.includes('整包复制'), '不再教复制代码目录');
+
+const passed = checks.filter(c => c.ok).length;
+const failed = checks.length - passed;
+console.log(`\n可迁移性：${passed}/${checks.length} 通过${failed ? `，失败 ${failed} 项` : '，全绿'}`);
+if (failed) process.exitCode = 1;

@@ -1,7 +1,11 @@
 // 常驻 CDP 桥：整个系统只在浏览器重新启动后需要授权一次。
 // 桥自己永不退出、永不主动断开，连着的时候每 20 秒发一次心跳，
 // 让 Chrome 认为调试会话一直活跃，不会因为闲置把调试开关关掉。
-// 所有脚本都通过 http://127.0.0.1:9233 转发，不再各自新建 9222 连接，也就不会重复弹授权。
+// 所有脚本都通过 http://127.0.0.1:<桥端口> 转发，不再各自新建 9222 连接，也就不会重复弹授权。
+//
+// 2026-11-14 多店铺隔离：桥端口不能再写死 9233 —— 每店在 local.json 里有独立 bridgePort
+// （9300/9310/…），下载侧按店连的是自己那个端口。桥必须监听同一个端口、并只读本店实例的
+// DevToolsActivePort，否则多店下载连不上桥（或用错店的浏览器）。
 import { createServer } from 'node:http';
 import { Socket } from 'node:net';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -9,24 +13,54 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const PORT = 9233;
+const PROJECT_ROOT = dirname(root);
+const SHOP_ID = String(process.env.EBAY_SHOP_ID || '').trim();
+
+// 按店解析机器状态（与 app/shop-config.mjs 的 L3 读取规则一致，但不依赖它，
+// 保持桥可以独立启动、且不受下载侧单例影响）：
+//   EBAY_BRIDGE_PORT 显式覆盖 > local.json 的 shops/<id>.bridgePort > 默认 9233。
+function readLocal() {
+  try {
+    const f = join(PROJECT_ROOT, 'local.json');
+    if (!existsSync(f)) return {};
+    return JSON.parse(readFileSync(f, 'utf8').replace(/^\uFEFF/, ''));
+  } catch { return {}; }
+}
+const local = readLocal();
+const shopLocal = SHOP_ID && local.shops ? (local.shops[SHOP_ID] || {}) : {};
+const PORT = Number(process.env.EBAY_BRIDGE_PORT || shopLocal.bridgePort || 9233);
 // 0 = 不兜底。9222 是历史上给「手动 --remote-debugging-port=9222」的旧 Chrome 留的，
 // 但那个端口也常被别的工具占用，连过去会「界面显示已连接、下载却不是这个浏览器」，
 // 比连不上更难查。默认只认 Chrome 自己写的 DevToolsActivePort。
 const FALLBACK_PORT = Number(process.env.EBAY_FALLBACK_CDP_PORT || 0);
-const DOWNLOAD_DIR = join(root, 'downloads');
-const logFile = join(root, 'bridge.log');
+// 下载目录按店派生，别让 A 店的浏览器下载落进 B 店目录（单店仍落 app/downloads）。
+const DOWNLOAD_DIR = SHOP_ID
+  ? join(PROJECT_ROOT, '店铺', SHOP_ID, 'downloads')
+  : join(root, 'downloads');
+// 日志按店分开，多店同时排障时不会互相覆盖。
+const logFile = join(root, SHOP_ID ? `bridge-${SHOP_ID}.log` : 'bridge.log');
 
 // 只保留最近的日志，避免文件无限增长（长期常驻）
 const LOG_MAX_BYTES = 1024 * 1024;
 
-// Chrome 144+ 的原地调试服务不暴露 /json/*，真正的 WS 地址只在 DevToolsActivePort 里，
-// 且每次启动 UUID 都会变，所以每次连接都要重新读取。
+// Chrome 144+ 的原地调试服务不暴露 /json/*，WS 地址有三种可靠来源，按新→旧依次尝试：
+//   1) 本店独立实例的 endpoint.json（launch-shop.mjs 从 stderr 解析后写入，最准）；
+//   2) app/launch-<shop>.log 的最后一条 "DevTools listening on ws://…"（endpoint 未写入时的兜底）；
+//   3) 实例目录的 DevToolsActivePort（Chrome 157 实测不写这个文件，仅作老版本兼容）；
+//   4) /json/version 的 webSocketDebuggerUrl（新实例首次启动、上面三处都还没落盘时）。
+// 2026-11-14 实测：Chrome 157 只把 WS 地址打到 stderr，不写 DevToolsActivePort，
+// 只认端口文件会让桥永远连不上独立实例 → 多店下载链路直接断。
+// 只认"用户自己的日常 Chrome"（2026-11-18 实测）：克隆到独立 user-data-dir 起新实例，
+// 会被 eBay 当"新设备" → captcha → 卖家页要重登 → 下不了。
+// 多店靠"日常 Chrome 里的不同 Profile"（各自登录），不再用 local.json 的 shops/<id>.userDataDir。
 const USER_DATA_DIRS = [
   process.env.CDP_USER_DATA_DIR,
   process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data') : null,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome Beta', 'User Data') : null,
 ].filter(Boolean);
 
+// 端点候选：只从"日常 Chrome 的 user-data-dir"读 DevToolsActivePort（原地调试）。
+// 不再使用 endpoint.json / launch-<shop>.log / 独立 cdpPort 这些"克隆实例"来源。
 function listCdpCandidates() {
   const found = [];
   for (const dir of USER_DATA_DIRS) {
@@ -40,10 +74,23 @@ function listCdpCandidates() {
       found.push({ url: `ws://127.0.0.1:${port}${wsPath}`, port, from: dir, mtime: statSync(file).mtimeMs });
     } catch { /* 继续找下一个 */ }
   }
-  // 多个配置目录都可能留着端口文件，最新写入的更可能是当前活跃实例
+  // 多个候选目录并存时，最新写入的更可能是当前活跃实例
   return found.sort((a, b) => b.mtime - a.mtime);
 }
 
+// 连接路径专用：同步来源探一次 TCP 即可（只连日常 Chrome，无 HTTP 兜底）。
+// 用户自己的 Chrome 用"原地调试"，DevToolsActivePort 一直在。
+async function resolveLiveEndpoint() {
+  const list = listCdpCandidates();
+  for (const item of list) {
+    if (await portOpen(item.port)) return { ...item, ageMs: Date.now() - item.mtime };
+  }
+  if (!FALLBACK_PORT) return { url: null, port: 0, from: 'none', ageMs: null, mtime: 0 };
+  return { url: `ws://127.0.0.1:${FALLBACK_PORT}/devtools/browser`, port: FALLBACK_PORT, from: 'fallback', ageMs: null, mtime: 0 };
+}
+
+// 同步来源：endpoint.json / launch 日志 / DevToolsActivePort。
+// /health 与「端口刚就绪」轻量轮询都走这里（不能再走网络 I/O）。
 function resolveCdpUrl() {
   const list = listCdpCandidates();
   if (list.length) return { ...list[0], ageMs: Date.now() - list[0].mtime };
@@ -63,15 +110,6 @@ function portOpen(port, timeoutMs = 400) {
     sock.once('error', () => finish(false));
     sock.connect(port, '127.0.0.1');
   });
-}
-
-async function resolveLiveEndpoint() {
-  const list = listCdpCandidates();
-  for (const item of list) {
-    if (await portOpen(item.port)) return { ...item, ageMs: Date.now() - item.mtime };
-  }
-  if (!FALLBACK_PORT) return { url: null, port: 0, from: 'none', ageMs: null, mtime: 0 };
-  return { url: `ws://127.0.0.1:${FALLBACK_PORT}/devtools/browser`, port: FALLBACK_PORT, from: 'fallback', ageMs: null, mtime: 0 };
 }
 
 const log = text => {
@@ -351,7 +389,7 @@ const server = createServer(async (req, res) => {
 server.on('error', error => {
   if (error.code === 'EADDRINUSE') {
     // 已经有桥在跑，直接正常退出，让守护去等待，不要在这里死循环
-    log('端口 9233 已被占用（已有桥在运行），本进程退出。');
+    log(`端口 ${PORT} 已被占用（已有桥在运行），本进程退出。`);
     process.exit(0);
   }
   log('桥服务启动失败：' + error.message);
@@ -359,7 +397,7 @@ server.on('error', error => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  log(`本地常驻桥已启动：http://127.0.0.1:${PORT}/health（pid ${process.pid}）`);
+  log(`本地常驻桥已启动：http://127.0.0.1:${PORT}/health（pid ${process.pid}${SHOP_ID ? `，店铺 ${SHOP_ID}` : ''}）`);
 });
 
 // 未连接时轻量盯着 DevToolsActivePort：用户在 Chrome 里把开关打开后，

@@ -1,0 +1,56 @@
+// 从现有代码注册表派生 sites/us.json 基线，避免手抄行名出错。
+// 用法：node app/gen-site-baseline.mjs
+// 只写 sites/us.json（已存在则覆盖），不碰任何现有代码与数据。
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { REPORTS } from './reports.mjs';
+import { RC_RANGES, ORDER_RANGES } from './config.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const OUT = join(ROOT, 'sites', 'us.json');
+
+const orders = REPORTS.filter(r => r.group === 'orders').map(r => r.rowName);
+const listings = Object.fromEntries(
+  REPORTS.filter(r => r.group === 'listings').map(r => [r.key, { rowMatch: r.rowMatch, rowName: r.rowName || null }])
+);
+const marketing = Object.fromEntries(
+  REPORTS.filter(r => r.group === 'marketing' || r.strategy).map(r => [r.id, { rowMatch: r.rowMatch, type: r.type }])
+);
+
+const baseline = {
+  site: 'us',
+  status: 'verified',
+  verifiedAt: new Date().toISOString(),
+  verifiedBy: 'code-baseline: reports.mjs（2026-11-07 US 店实采）+ config.mjs；UK/AU 不得继承本文件的行名/域名，必须各自探针实测',
+  hosts: {
+    traffic: 'https://www.ebay.com/sh/performance/traffic',
+    reports: 'https://www.ebay.com/sh/reports/downloads',
+    campaign: 'https://www.ebay.com/sh/ads/dashboard/campaign/{id}'
+  },
+  timezone: 'America/Los_Angeles',
+  reportTimezone: 'America/Los_Angeles',
+  reportLagDays: 1,
+  currency: 'USD',
+  listingSite: 'US',
+  dateFormats: {
+    displayDate: 'M/D/YYYY',
+    acceptedCsvPatterns: ['MMM D, YYYY', 'D-MMM-YY', 'YYYY-M-D', 'M/D/YYYY'],
+    actualCsvDate: null,
+    actualCsvDateNote: '从已归档 US CSV 抽样填写，不能用解析器支持的格式冒充实际格式'
+  },
+  rowNames: {
+    orders,
+    listings,
+    marketing,
+    note: '订单 9 种含长破折号写法（Awaiting shipment — ship within 24 hours），精确行名禁通配'
+  },
+  rcRanges: RC_RANGES.map(r => r.value),
+  orderRanges: ORDER_RANGES.map(r => r.value),
+  csvHeaders: { listingSite: 'Listing site', currency: 'Currency' }
+};
+
+mkdirSync(dirname(OUT), { recursive: true });
+writeFileSync(OUT, JSON.stringify(baseline, null, 2) + '\n', 'utf8');
+console.log(`已生成 ${OUT}`);
+console.log(`  订单行名 ${orders.length} 种 / 名单 ${Object.keys(listings).length} 种 / 广告 ${Object.keys(marketing).length} 种 / 区间 ${baseline.rcRanges.length}+${baseline.orderRanges.length} 个`);

@@ -5,13 +5,13 @@
 // 报表中心是账号级请求队列，PLG / 优先促刊 / 名单 / 订单这几类统一串行提交，避免认错文件；
 // Traffic 与 PLP 不共享该队列，仍可并行。
 // 默认：把选中的报表下载到独立 runs/<时间>/ 目录并校验，不写正式目录、不更新看板。
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   RUNS_DIR, FOLDERS, FAST, PLP_POLL, RC_POLL, CAMPAIGNS, RC_REQUESTS, ACTIVE_TYPES, PLG_CAMPAIGNS,
   ORDER_TYPES, ORDER_RANGES, PRIORITY_TYPES, PRIORITY_DEFAULT_IDS,
-  TRAFFIC_URL, REPORTS_URL, CAMPAIGN_URL, DEFAULT_DOWNLOAD_DIR,
+  TRAFFIC_URL, REPORTS_URL, CAMPAIGN_URL, DEFAULT_DOWNLOAD_DIR, SHOP_ID, SHOP_HOST,
   yesterdayPacific, monthStart, toUsPeriodStart
 } from './config.mjs';
 import {
@@ -23,6 +23,8 @@ import { retry, recoverIfBlocked, clickDownload, discard, assertLoggedIn, Blocke
 import { inspectCsv, checkExpected, sha256File } from './inspect.mjs';
 import { applyFiles, publishDashboard, dataDirState } from './publish.mjs';
 import { getReport } from './reports.mjs';
+import { PROJECT_ROOT, SHOP } from './shop-config.mjs';
+import { assertSiteReady, assertShopIdentity, READ_USER_ID_EXPR } from './site-rows.mjs';
 
 // ---------- 参数 ----------
 const raw = process.argv.slice(2);
@@ -31,9 +33,46 @@ const value = (name, fallback) => {
   const i = raw.indexOf(`--${name}`);
   return i >= 0 && raw[i + 1] && !raw[i + 1].startsWith('--') ? raw[i + 1] : fallback;
 };
+
+// ---------- 多店铺入口（2026-11-14） ----------
+// --shop <id> 单店 / --shops a,b,c 批量串行。每店在**独立进程**里跑，注入 EBAY_SHOP_ID，
+// 配置、后台域名、下载目录、CDP 桥端口全部按店隔离；其余参数原样透传。
+// 不做成「同进程切换配置」是因为 config.mjs / shop-config.mjs 在 import 时就固化了单例，
+// 同进程切换必然串店；进程级隔离是最小改动且最稳的做法。
+const shopIds = [...new Set(`${value('shop', '')},${value('shops', '')}`.split(',').map(s => s.trim()).filter(Boolean))];
+if (shopIds.length && !flag('help')) {
+  const cleaned = raw.filter((arg, i) => {
+    if (arg === '--shop' || arg === '--shops') return false;
+    const prev = raw[i - 1];
+    return !(prev === '--shop' || prev === '--shops');
+  });
+  let failed = 0;
+  for (const id of shopIds) {
+    const cfg = join(PROJECT_ROOT, 'shops', `${id}.json`);
+    if (!existsSync(cfg)) {
+      console.error(`[错误] 找不到店铺配置：shops/${id}.json`);
+      failed++;
+      continue;
+    }
+    console.log(`\n===== 店铺 ${id} 开始（EBAY_SHOP_ID=${id}） =====`);
+    const result = spawnSync(process.execPath, [process.argv[1], ...cleaned], {
+      stdio: 'inherit',
+      cwd: process.cwd(),
+      env: { ...process.env, EBAY_SHOP_ID: id }
+    });
+    const code = result.status ?? 1;
+    console.log(`===== 店铺 ${id} 结束，退出码 ${code} =====`);
+    if (code !== 0) failed++;
+  }
+  console.log(`\n多店铺下载完成：${shopIds.length - failed}/${shopIds.length} 家成功${failed ? `，失败 ${failed} 家` : ''}`);
+  process.exit(failed ? 1 : 0);
+}
+
 if (flag('help')) {
   console.log(`eBay AD600 Elite 报表一键下载
   node download.mjs --date 2026-11-05 [--range-start 2026-11-01]
+  --shop          指定店铺 ID（shops/<id>.json），在独立进程里按该店配置下载
+  --shops         批量店铺 ID，逗号分隔，严格串行逐店下载（一家失败不影响下一家）
   --date          目标统计日，默认按太平洋时间取昨天
   --range-start   累计 Traffic 起始日，默认目标月 1 日
   --range-end     累计 Traffic 结束日，默认等于 --date
@@ -77,6 +116,17 @@ const abort = message => {
   console.error(`[错误] ${message}`);
   process.exit(1);
 };
+
+// ---------- 站点实测闸门（2026-11-14 阶段 C） ----------
+// 报表中心行名按界面语言而变：4 家繁中店用英文正则去认领「下載報告」列表必然拿错文件。
+// 站点未实测就在这里明确失败，绝不静默降级；批量多店时一家失败不影响下一家继续跑。
+// 老单店（my-shop.json 无 site）落 us 已 verified，行为完全不变。
+try {
+  const siteState = assertSiteReady(SHOP.site, { where: '下载', host: SHOP_HOST });
+  if (SHOP_ID) console.log(`[站点] ${SHOP_ID} → ${siteState.site} 已实测，行名来自 sites/${siteState.site}.json`);
+} catch (error) {
+  abort(error.message);
+}
 
 if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(rangeStart) || !/^\d{4}-\d{2}-\d{2}$/.test(rangeEnd)) {
   abort('日期格式必须为 YYYY-MM-DD');
@@ -325,6 +375,18 @@ function folderFor(kind, task) {
   return FOLDERS.pending;
 }
 
+// campaign 页导出名只带「生成日期」（同批全部 _20261115），不带报表覆盖的日期。
+// 按天补齐时 11-13 与 11-14 会得到完全同名的文件 → 运行目录里 copyFileSync 互相覆盖，
+// 90-待处理 也会按 sha256 判成「内容已存在」而跳过后一天（2026-11-16 实证）。
+// 所以多天模式下把覆盖日期写进文件名；单天模式保持原名，行为逐字不变。
+function plpNameWithDate(name, targetDate) {
+  if (!targetDate) return name;
+  const compact = targetDate.replace(/-/g, '');
+  if (name.includes(targetDate) || name.includes(compact)) return name;
+  const m = /^(.*?)(\.[^.]*)$/.exec(name);
+  return m ? `${m[1]}-${targetDate}${m[2]}` : `${name}-${targetDate}`;
+}
+
 function recordFiles(task, names, meta = {}) {
   const recorded = [];
   for (const name of names) {
@@ -335,9 +397,12 @@ function recordFiles(task, names, meta = {}) {
     const endForCheck = task === 'trafficRange'
       ? rangeEnd
       : (meta.targetDate || (task === 'plp' ? plpEnd : date));
+    // PLP 的校验下界：默认全局 plpStart；按天补（--plp-days）时用该任务自己的 start，
+    // 否则 11-13 的文件会被判成「早于全局窗口」而误伤。
+    const plpStartForCheck = task === 'plp' ? (meta.plpStart || plpStart) : plpStart;
     let problem = task === 'any'
       ? (info.valid ? null : `结构不合格：缺字段 ${info.missingHeader.join(',') || '未识别表头'}，行数 ${info.rowCount}`)
-      : checkExpected(info, task, endForCheck, meta.rangeStart || rangeStart, plpStart, {
+      : checkExpected(info, task, endForCheck, meta.rangeStart || rangeStart, plpStartForCheck, {
           plgRange, plgCustomStart, plgCustomEnd
         });
     // 0 行不是错误：这类状态下确实可能没有数据，但要记一条警告，免得以为是漏抓
@@ -354,13 +419,15 @@ function recordFiles(task, names, meta = {}) {
       if (['trafficDaily', 'trafficRange'].includes(task) && info.kind !== 'traffic') problem = problem || `类型不符：${info.label || info.kind}`;
     }
     // 直接按类型归档（只有完全无法识别的才进 99-待核验），问题只记在结果里不拦文件
-    const dest = join(runDir, info.kind === 'unknown' ? FOLDERS.pending : folderFor(info.kind, task), name);
+    // meta.dayTag 只在「按天补齐」时给值：把覆盖日期写进文件名，避免跨天同名互相覆盖
+    const destName = task === 'plp' ? plpNameWithDate(name, meta.dayTag) : name;
+    const dest = join(runDir, info.kind === 'unknown' ? FOLDERS.pending : folderFor(info.kind, task), destName);
     copyFileSync(src, dest);
     if (info.kind === 'unknown' && problem) writeFileSync(`${dest}.原因.txt`, `${problem}\n`, 'utf8');
     let hash = null;
     try { hash = sha256File(src); } catch { /* ignore */ }
     const item = {
-      task, ...meta, name, path: dest, kind: info.kind, label: info.label,
+      task, ...meta, name: destName, inboxName: name, path: dest, kind: info.kind, label: info.label,
       valid: info.valid && !problem, problem,
       period: info.period, coverage: info.coverage, dates: info.dates,
       rowCount: info.rowCount, itemCount: info.itemCount, size: info.size,
@@ -487,6 +554,7 @@ function drainTabQueue(reason) {
 }
 
 let loginChecked = false;
+let identityChecked = false;
 async function newPage(key) {
   const cached = opened.get(key);
   if (cached && !cached.closed) return cached;
@@ -513,8 +581,17 @@ async function newPage(key) {
     loginChecked = true;
     try {
       await assertLoggedIn(page);
+      // 身份主键 GHpre.userId：5 家店的后台 URL 可能完全相同（都走 www.ebay.com.hk），
+      // 问候语 fn 还会重复，只有账号名能证明「这个浏览器就是本店」。
+      // A 店报表绝不能写进 B 店目录，所以配置了 accountName 就必须逐店比对。
+      if (!identityChecked) {
+        identityChecked = true;
+        const observed = await page.eval(READ_USER_ID_EXPR);
+        const verdict = assertShopIdentity(SHOP.accountName, observed, { shopId: SHOP_ID });
+        if (!verdict.skipped) console.log(`[身份] 后台账号 ${verdict.actual} = ${SHOP_ID || '当前店铺'} 配置，放行`);
+      }
     } catch (error) {
-      // 登录态失败时页面已经占了槽位，必须关掉，否则并发度永久 -1
+      // 登录态/身份失败时页面已经占了槽位，必须关掉，否则并发度永久 -1
       await page.close().catch(() => {});
       throw error;
     }
@@ -774,7 +851,7 @@ const RC_SUBMIT = `(() => {
   const v = n => n.getClientRects().length > 0;
   const t = ${LABEL};
   const dlg = [...document.querySelectorAll('.lightbox-dialog__window')].filter(v)[0];
-  const b = [...(dlg || document).querySelectorAll('button')].filter(v).find(n => /^(下载|下载报告|Download)$/i.test(t(n)));
+  const b = [...(dlg || document).querySelectorAll('button')].filter(v).find(n => /^(下载|下载报告|下載|下載報告|Download)$/i.test(t(n)));
   if (!b) return { ok: false, reason: '找不到下载按钮' };
   if (b.disabled) return { ok: false, reason: '下载按钮未启用' };
   b.click(); return { ok: true };
@@ -783,7 +860,8 @@ const RC_SUBMIT = `(() => {
 const RC_ROWS = `(() => [...document.querySelectorAll('tr')].map(r => {
   const text = (r.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 190);
   const ref = (text.match(/\\b(\\d{11})\\b/) || [])[1] || '';
-  return { ref, text, status: /Completed/.test(text) ? 'Completed' : (/Failed/.test(text) ? 'Failed' : 'Other') };
+  // 行状态：2026-11-14 实测繁中后台状态列是「已完成」（docs/报表目录-重放v2.json），只认英文会永远匹配不上。
+  return { ref, text, status: /Completed|已完成/.test(text) ? 'Completed' : (/Failed|失敗/.test(text) ? 'Failed' : 'Other') };
 }).filter(r => r.ref))()`;
 
 // ---------- 活动多选（Campaigns 卡片） ----------
@@ -1655,7 +1733,7 @@ async function runPlpCampaign(task) {
   // PLP 偶发「We couldn't process your download」，整条任务自动再走一遍
   return retry(`PLP ${tag}`, async attempt => {
     if (attempt > 1) {
-      const page = await newPage(`plp_${id}`);
+      const page = await newPage(task.key);
       await page.eval(`(() => { location.href = ${JSON.stringify(CAMPAIGN_URL(id))}; return true; })()`).catch(() => {});
       await sleep(5000);
     }
@@ -1666,7 +1744,7 @@ async function runPlpCampaign(task) {
 async function runPlpCampaignOnce(task) {
   const { id, start, end } = task;
   const tag = task.label || id;
-  const page = await newPage(`plp_${id}`);
+  const page = await newPage(task.key);
   try {
     let submittedAt = await queuePlpSubmit(async () => {
       const at = await submitPlp(page, id, start, end);
@@ -1751,7 +1829,14 @@ async function runPlpCampaignOnce(task) {
       }));
       const fresh = grabbed.files;
       if (!fresh.length) { warnings.push(`campaign ${id} Download now 后未等到文件`); await sleep(PLP_POLL.intervalMs); continue; }
-      const recorded = recordFiles('plp', fresh, { campaignId: id });
+      // 必须把本次任务的 [start, end] 当校验窗口传下去：
+      // --plp-days 按天补时 plpStart/plpEnd 仍是全局值，会把「11-13 的单日文件」
+      // 判成「日期超出 11-14 ~ 11-14」，valid=false 进而被归档步骤整个跳过（2026-11-16 实证）。
+      // dayTag 只在多天模式给值：把覆盖日期写进文件名，否则 11-13/11-14 同名互相覆盖。
+      const recorded = recordFiles('plp', fresh, {
+        campaignId: id, targetDate: end, plpStart: start,
+        dayTag: plpRanges.length > 1 ? end : null
+      });
       // 空报表（0 条记录）在 CSV 里认不出类型，按文件名回推它属于哪一类，
       // 否则会误报「只拿到 keyword,listing,unknown」——其实三份都拿到了。
       const plpKindOf = name => (/search-?query/i.test(name) ? 'search'
@@ -1795,7 +1880,12 @@ if (runPlg) plan.push({ key: 'rc_plg', url: REPORTS_URL });
 if (runActive) plan.push({ key: 'rc_active', url: REPORTS_URL });
 if (runOrders) plan.push({ key: 'rc_orders', url: REPORTS_URL });
 if (runPriority) plan.push({ key: 'rc_priority', url: REPORTS_URL });
-if (runPlp) for (const t of plpTasks) plan.push({ key: `plp_${t.id}`, url: CAMPAIGN_URL(t.id) });
+// 标签页 key 必须用 t.key（含覆盖日期），不能用 plp_<活动ID>：
+// --plp-days 按天补时同一活动会有「11-13 / 11-14」两个任务，共用同一个 page 对象
+// 会互相 reload/重配日期，A 任务点到的 Download now 其实是 B 任务生成的别天结果
+// （2026-11-16 实证：11-13 任务拿到 11-14 的文件、反过来也是）。
+// 单天运行时 t.key 就是 plp_<活动ID>，与历史行为逐字一致。
+if (runPlp) for (const t of plpTasks) plan.push({ key: t.key, url: CAMPAIGN_URL(t.id) });
 
 for (const { key, url } of plan) planUrl.set(key, url);
 await trimOldTabs().catch(e => console.log(`[标签页] 历史页收敛失败（不阻断下载）：${e.message}`));
@@ -1861,16 +1951,23 @@ if (runPlp) {
       return all;
     }]);
   } else if (plpRanges.length > 1) {
-    // 多天补齐：按天分组——同一天的 3 个 campaign 并行，跨天串行。
-    // 实测 2026-11-08：6 个标签同时等 Download now 会互相抢文件（一个任务点击后
-    // 文件被别的任务认领，另一个任务等 60 秒拿不到），所以天与天之间必须排队。
-    for (const r of plpRanges) {
-      const group = plpTasks.filter(t => t.start === r.start);
-      jobs.push([`plp_day_${r.start}`, async () => {
+    // 多天补齐：同一天的几个 campaign 并行，跨天严格串行。
+    // 必须包成「一个 job + 内部 for 循环」——原来是把每天各做成一个 job 丢进外层
+    // Promise.all，那其实是所有天一起并发（当天标签页够用时），注释写的串行根本没生效。
+    // campaign 页文件名不带覆盖日期（只有生成日期，全部 _20261115），跨天同名，
+    // 一旦有任务超时补点就会认领到别天已落盘的文件（2026-11-16 实证），所以天与天必须排队。
+    jobs.push(['plp_multiDay', async () => {
+      const all = [];
+      for (const r of plpRanges) {
+        const group = plpTasks.filter(t => t.start === r.start);
+        console.log(`[PLP] ${r.start} 组开始（${group.length} 个活动，本组内并行、组间串行）`);
         const outs = await Promise.all(group.map(t => runTask(t.key, () => runPlpCampaign(t))));
-        return outs.flat().filter(Boolean);
-      }]);
-    }
+        all.push(...outs.flat().filter(Boolean));
+        // 组间留一点间隔，让 eBay 侧把上一组的下载队列收尾，避免跨组串文件
+        await sleep(1500);
+      }
+      return all;
+    }]);
   } else {
     for (const t of plpTasks) jobs.push([t.key, () => runPlpCampaign(t)]);
   }

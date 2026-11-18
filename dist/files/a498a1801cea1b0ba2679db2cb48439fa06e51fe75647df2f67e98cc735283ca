@@ -1,0 +1,52 @@
+// 导出可迁移件：L1 代码 + 通用站点知识库（+ 可选 L2 店铺定义）。
+// 绝不导出 L3 机器状态（local.json / Chrome Profile / 端口）、登录态、CSV 数据、活动快照。
+//
+// 用法：node app/export-migration.mjs [--out <dir>] [--include-shops]
+//   --include-shops 才带上本机 shops/*.json 的真实店铺定义；默认只带模板，最干净。
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const iOut = argv.indexOf('--out');
+const out = iOut >= 0 && argv[iOut + 1] ? argv[iOut + 1] : join(ROOT, '迁移导出');
+const includeShops = argv.includes('--include-shops');
+const src = join(ROOT, '分发', 'eBay报表工具包');
+
+if (!existsSync(src)) {
+  console.error('找不到分发包，请先跑 node app\\build-dist.mjs（只打包，不发布）。');
+  process.exit(2);
+}
+
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out, { recursive: true });
+cpSync(src, out, { recursive: true });
+
+let added = 0;
+if (includeShops) {
+  const dir = join(ROOT, 'shops');
+  mkdirSync(join(out, 'shops'), { recursive: true });
+  for (const f of readdirSync(dir).filter(f => f.endsWith('.json') && !f.startsWith('_'))) {
+    cpSync(join(dir, f), join(out, 'shops', f));
+    added++;
+  }
+}
+
+// 导出后自检：可迁移件里不能混入机器状态或数据
+const banned = [];
+function scan(dir, base = '') {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const rel = base ? `${base}/${e.name}` : e.name;
+    if (e.isDirectory()) scan(join(dir, e.name), rel);
+    else if (/^(local\.json|my-shop\.json|priority-campaigns\.json)$/i.test(e.name) || /\.csv$/i.test(e.name)) banned.push(rel);
+  }
+}
+scan(out);
+
+console.log(`迁移导出：${out}`);
+console.log(`  L1 代码 + 站点知识库：已复制分发包全部内容`);
+console.log(`  L2 店铺定义：${includeShops ? `已带 ${added} 家（不含 _模板）` : '未带（只有 _模板.json）'}`);
+console.log(`  L3 机器状态 / 登录态 / CSV：${banned.length ? '✘ 混入 ' + banned.join('、') : '✔ 0 项'}`);
+console.log('目标机拿到后：解压 → node app\\init.mjs --apply --auto → 人工登录一次 eBay 后台。');
+if (banned.length) process.exitCode = 1;

@@ -1,0 +1,134 @@
+// 多店铺配置自检：身份 / 入口 / 站点引用 / 端口唯一 / 目录不重叠。
+// 用法：node app/check-shops.mjs
+//
+// 2026-11-14 阶段 B：支持两套配置格式，老工程零回归。
+//   V1（本机 5 店显式绝对路径）：严格校验，身份必须已实测；
+//   V2（init.mjs 生成的纯 L2 + 本机 local.json）：目录 / 端口由代码派生或 L3 提供，
+//      身份实测延后到运行时 assertShop / probe-site，这里只标「待实测」不判失败；
+//   0 家店：全新机器的引导态，合法，不报错。
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const DIR = join(ROOT, 'shops');
+const files = existsSync(DIR)
+  ? readdirSync(DIR).filter(f => f.endsWith('.json') && !f.startsWith('_'))
+  : [];
+let localShops = {};
+try {
+  const lf = join(ROOT, 'local.json');
+  if (existsSync(lf)) localShops = JSON.parse(readFileSync(lf, 'utf8').replace(/^\uFEFF/, '')).shops || {};
+} catch { /* local.json 损坏时按「未分配」处理 */ }
+
+const problems = [];
+const warnings = [];
+const shops = [];
+const norm = p => resolve(String(p || '').replace(/\\/g, '/')).toLowerCase();
+
+if (!files.length) console.log('shops/ 为空：全新机器的引导态（合法），跑 init.mjs 生成店铺定义。');
+
+for (const f of files) {
+  const id = f.replace(/\.json$/, '');
+  let s;
+  try { s = JSON.parse(readFileSync(join(DIR, f), 'utf8').replace(/^\uFEFF/, '')); }
+  catch (error) { problems.push(`${id}: JSON 解析失败 ${error.message}`); continue; }
+  const v2 = s.configVersion === 2;
+  const l3 = localShops[id] || {};
+
+  if (s.id !== id) problems.push(`${id}: id 字段与文件名不一致（${s.id}）`);
+  const required = v2
+    ? ['id', 'site', 'entryUrl', 'entryMode', 'profileSource']
+    : ['shopName', 'site', 'profileSource', 'entryUrl', 'entryMode', 'accountName',
+       'userDataDir', 'cdpPort', 'bridgePort', 'boardPort', 'dataDir', 'runsDir', 'downloadsDir', 'siteConfig'];
+  for (const k of required) if (s[k] === undefined || s[k] === null || s[k] === '') problems.push(`${id}: 缺字段 ${k}`);
+
+  // 入口必须是「点击新标签页快捷方式」的站点首页，禁止按 site 拼域名或直跳内部页。
+  if (s.entryMode && s.entryMode !== 'ntp-tile') problems.push(`${id}: entryMode 只能是 ntp-tile（当前 ${s.entryMode}）`);
+  if (s.entryUrl) {
+    if (!/^https?:\/\//i.test(s.entryUrl)) problems.push(`${id}: entryUrl 非法 ${s.entryUrl}`);
+    if (/signin|sign-in|captcha|\/sh\/|reports|performance/i.test(s.entryUrl)) problems.push(`${id}: entryUrl 必须是站点首页，不能是登录页或报表页 ${s.entryUrl}`);
+  }
+  if (!s.entryEvidence?.source) problems.push(`${id}: entryUrl 缺实测证据 entryEvidence.source`);
+  if (!s.accountEvidence?.source) problems.push(`${id}: accountName 缺实测证据 accountEvidence.source`);
+
+  if (v2) {
+    // init 生成的店：身份实测延后，站点可待采；目录 / 端口来自 L3 或代码派生
+    if (!s.sellerVerified) warnings.push(`${id}: 账号身份待实测（init 生成，运行时 assertShop 会校验）`);
+    if (!String(s.accountName || '').trim()) warnings.push(`${id}: accountName 待 probe-site 回填`);
+    if (s.site === 'unknown' && !s.sitePending) problems.push(`${id}: site=unknown 必须同时标 sitePending`);
+    if (s.site !== 'unknown' && !['us', 'uk', 'au'].includes(s.site)) problems.push(`${id}: 站点 ${s.site} 未支持`);
+    // 域名歧义（如 uk/au 同走 www.ebay.com.hk）：必须标 sitePending 且留候选清单，
+    // 由 probe-site 用 CSV 的 Currency / Listing site 列自证；不接受「猜一个」。
+    if (s.site === 'unknown') {
+      const cands = Array.isArray(s.siteCandidates) ? s.siteCandidates.filter(Boolean) : [];
+      if (cands.length) warnings.push(`${id}: 站点待 CSV 自证（域名同时命中 ${cands.join('/')}）`);
+    }
+    if (s.siteConfig && !existsSync(join(ROOT, s.siteConfig))) problems.push(`${id}: 站点配置 ${s.siteConfig} 不存在`);
+    for (const k of ['userDataDir', 'cdpPort', 'bridgePort', 'boardPort']) {
+      if (s[k]) problems.push(`${id}: V2 店铺定义里禁止写机器状态 ${k}（应放 local.json）`);
+    }
+  } else {
+    if (!s.sellerVerified || !String(s.sellerName || '').trim()) problems.push(`${id}: sellerName 未实测（禁止按快捷方式名猜身份）`);
+    if (!['us', 'uk', 'au'].includes(s.site)) problems.push(`${id}: 站点 ${s.site} 未支持`);
+    if (s.siteConfig && !existsSync(join(ROOT, s.siteConfig))) problems.push(`${id}: 站点配置 ${s.siteConfig} 不存在`);
+  }
+
+  // 合并视图：L3 覆盖 / 补齐机器状态；V2 没写目录就用代码派生值参与重叠校验
+  shops.push({
+    id, v2,
+    site: s.site,
+    accountName: s.accountName || '',
+    userDataDir: s.userDataDir || l3.userDataDir || '',
+    cdpPort: s.cdpPort ?? l3.cdpPort,
+    bridgePort: s.bridgePort ?? l3.bridgePort,
+    boardPort: s.boardPort ?? l3.boardPort,
+    dataDir: s.dataDir || join(ROOT, '店铺', id, '数据'),
+    runsDir: s.runsDir || join(ROOT, '店铺', id, '下载结果'),
+    downloadsDir: s.downloadsDir || join(ROOT, '店铺', id, 'downloads')
+  });
+  console.log(`  ${id.padEnd(12)} ${String(s.site).padEnd(8)} ${v2 ? 'V2' : 'V1'} ${String(s.profileSource || '').padEnd(10)} cdp=${s.cdpPort ?? l3.cdpPort ?? '-'} seller=${s.sellerVerified ? s.sellerName : '(待实测)'}`);
+}
+
+// 账号名是跨店唯一身份主键：重复会让运行时身份校验认错店（待实测的空值跳过）
+const seenAccounts = new Map();
+for (const s of shops) {
+  const a = String(s.accountName || '').trim();
+  if (!a) continue;
+  if (seenAccounts.has(a)) problems.push(`accountName ${a} 被 ${seenAccounts.get(a)} 与 ${s.id} 同时占用`);
+  seenAccounts.set(a, s.id);
+}
+
+for (const key of ['cdpPort', 'bridgePort', 'boardPort']) {
+  const seen = new Map();
+  for (const s of shops) {
+    const v = Number(s[key]);
+    if (!v) continue;   // 端口未分配：V2 允许由 init 后补
+    if (!Number.isInteger(v) || v <= 0) { problems.push(`${s.id}: ${key} 非法`); continue; }
+    if (seen.has(v)) problems.push(`${key} ${v} 被 ${seen.get(v)} 与 ${s.id} 同时占用`);
+    seen.set(v, s.id);
+  }
+}
+
+// 目录不得互相包含，防止 A 店文件落进 B 店目录
+for (let i = 0; i < shops.length; i++) {
+  for (let j = i + 1; j < shops.length; j++) {
+    for (const k of ['userDataDir', 'dataDir', 'runsDir', 'downloadsDir']) {
+      const a = norm(shops[i][k]), b = norm(shops[j][k]);
+      if (!a || !b) continue;
+      if (a === b || a.startsWith(b + '/') || b.startsWith(a + '/')) {
+        problems.push(`${shops[i].id} 与 ${shops[j].id} 的 ${k} 重叠：${a} / ${b}`);
+      }
+    }
+  }
+}
+
+console.log(`\n店铺配置 ${shops.length} 家${warnings.length ? `｜待办 ${warnings.length} 项` : ''}`);
+warnings.forEach(w => console.log('  · ' + w));
+if (problems.length) {
+  console.log('店铺自检未通过：');
+  problems.forEach(p => console.log('  ✗ ' + p));
+  process.exitCode = 1;
+} else {
+  console.log('全部店铺：入口合规、端口唯一、目录不重叠、站点引用有效。');
+}

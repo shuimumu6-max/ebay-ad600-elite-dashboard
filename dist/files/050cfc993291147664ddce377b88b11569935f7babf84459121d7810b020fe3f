@@ -1,0 +1,69 @@
+// 分发白名单：打进分发包 / 在线更新清单的文件（相对项目根）。
+// 调试残留（_probe/_shot/_dbg/log 等）、店铺私有数据（priority-campaigns.json、CSV）、
+// bin\node.exe（83MB，只随 zip 一次性分发，不进在线更新）都不在清单里。
+export const APP_FILES = [
+  'archive-publish.mjs',
+  'auto-scan.mjs',
+  'bridge-daemon.mjs',
+  'campaign-scan.mjs',
+  'cdp-bridge.mjs',
+  'cdp-endpoint.mjs',
+  'cdp.mjs',
+  'check-fields.mjs',
+  'check-gap-plan.mjs',
+  'check-classify.mjs',
+  'check-options.mjs',
+  'check-scan-window.mjs',
+  'check-ui.mjs',
+  'classify.mjs',
+  'config.mjs',
+  'dashboard-server.mjs',
+  'download.mjs',
+  'engine.mjs',
+  'ensure-env.mjs',
+  'env-check.mjs',
+  'fields-raw.json',
+  'inspect.mjs',
+  'launch-env.mjs',
+  'online-update.mjs',
+  'open-dashboard.mjs',
+  'pages.mjs',
+  'probe-fields.mjs',
+  'probe-priority-campaigns.mjs',
+  'publish-only.mjs',
+  'publish.mjs',
+  'quick-download.mjs',
+  'reports.mjs',
+  'run-download.mjs',
+  'scan-gaps.mjs',
+  'shop-config.mjs',
+  // 2026-11-14 阶段 B：多店铺 / 迁移能力模块（此前只在本机工程里，分发包缺失）
+  'console.json',
+  'launch-shop.mjs',
+  'open-entry.mjs',
+  'prepare-login.mjs',
+  'probe-site.mjs',
+  'probe-all.mjs',
+  'probe-machine.mjs',
+  'gen-site-baseline.mjs',
+  'init.mjs',
+  'export-migration.mjs',
+  'check-shops.mjs',
+  'check-sites.mjs',
+  // 2026-11-14 阶段 C：站点行名运行时加载 + 只读采集 + 身份校验自检
+  'site-rows.mjs',
+  'probe-rows.mjs',
+  'check-site-runtime.mjs',
+  'check-portability.mjs',
+  'drill-portability.mjs',
+  'dist-packlist.mjs'
+];
+// 店铺定义：分发包只带模板，绝不带本机 5 家店的真实身份；目标机由 init.mjs 生成
+export const SHOP_FILES = ['_模板.json'];
+// 站点知识库是跨店铺通用规则（行名 / 表头 / 币种 / 时区），不是店铺身份，可随包
+export const SITE_FILES = ['us.json', 'uk.json', 'au.json'];
+export const UI_FILES = ['index.html', 'server.mjs', 'gap-plan.mjs'];
+// 后两个是 build-dist 生成的（同时写一份到项目根，这样在线更新也能下发它们的修复）
+export const CMD_FILES = ['一键下载.cmd', '报表控制台.cmd', '启动下载环境.cmd', '打开看板.cmd', '检查更新.cmd'];
+export const ROOT_FILES = ['新店铺配置示例.json', '看板更新提示词.md'];
+export const DASHBOARD_FILES = ['ebay-shop-dashboard.html'];

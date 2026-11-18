@@ -1,0 +1,343 @@
+// 阶段 C · 报表中心行名只读采集器（零下载、零提交）
+//
+// 用法：
+//   node app/probe-rows.mjs                 # 静态模式：采集桥上全部已打开的 Seller Hub 页（同源 GET）
+//   node app/probe-rows.mjs --shop uk-obd2  # 只采指定店铺（按 GHpre.userId 认店）
+//   node app/probe-rows.mjs --raw           # 额外保存报表中心 HTML 前 60KB 供人工判读
+//   node app/probe-rows.mjs --catalog       # 目录模式：重放 create_update_download_report 目录 API
+//   node app/probe-rows.mjs --catalog --shop uk-obd2-b
+//
+// 为什么必须先采再改代码：
+//   sites/*.json 的 9 种订单 / 3 种名单 / 5 种广告行名按后台界面语言而变
+//   （英文 "all active listings" ↔ 繁中「所有出售中的物品」）。行名只能从目标站点
+//   真实页面逐字采，禁止从 us.json 翻译或继承。
+//
+// 目录模式原理（2026-11-14 实测）：
+//   报表中心「下載報告」弹窗的目录是异步 API：POST /sh/reports/create_update_download_report
+//   （pageName=download + srt 令牌 + searchParameters）。这是**查询目录**，不提交任何报表请求。
+//   原生 UI 打开弹窗时会自己发一次（带 srt）；注入 XHR/fetch 钩子截下这枚 srt，
+//   即可用同样的请求枚举 SOURCE=ORDERS/LISTINGS/MARKETING 的类型目录与日期预设。
+//   边界：只做 GET 导航到报表页、点开弹窗（不点「下載/建立」提交键）、重放目录查询；
+//   结束时核对下载表 ref 集合前后一致，自证零报表提交。
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { cdp, evaluate, targets } from './cdp.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const onlyShop = argv.includes('--shop') ? argv[argv.indexOf('--shop') + 1] : '';
+const saveRaw = argv.includes('--raw');
+const catalogMode = argv.includes('--catalog');
+const DOCS = join(ROOT, 'docs');
+
+// 页面上只读：读身份 + 同源 GET 报表中心 HTML，再在页面里把文本结构化。
+// 不做 DOM 导航；fetch 的结果只用来解析字符串，不插回页面。
+const COLLECT = `(async () => {
+  const html0 = document.documentElement ? document.documentElement.outerHTML : '';
+  const pick = (re) => { const m = html0.match(re); return m ? m[1] : ''; };
+  const gh = (typeof window.GHpre === 'object' && window.GHpre) ? window.GHpre : null;
+  const userId = (gh && gh.userId) || pick(/"userId"\\s*:\\s*"([^"]+)"/i) || pick(/\\buserId\\s*[:=]\\s*['"]([^'"]+)['"]/i);
+  const fn = (gh && gh.fn) || pick(/"fn"\\s*:\\s*"([^"]+)"/i);
+  let status = 0, html = '', fetchError = null;
+  try {
+    const r = await fetch('/sh/reports/downloads', { credentials: 'same-origin' });
+    status = r.status;
+    html = await r.text();
+  } catch (e) { fetchError = String(e && e.message || e); }
+  const doc = html ? new DOMParser().parseFromString(html, 'text/html') : null;
+  const t = n => ((n && (n.innerText || n.textContent)) || '').trim().replace(/\\s+/g, ' ');
+  const uniq = a => [...new Set(a.map(t).filter(x => x && x.length < 200))];
+  const nodes = doc ? [...doc.querySelectorAll('option, label, button, [role="tab"], [role="radio"], [role="option"], th, summary, legend')] : [];
+  const rows = doc ? [...doc.querySelectorAll('tr, li[role="row"], [role="row"]')]
+    .map(r => r.querySelector('td, [role="gridcell"], .textual-display') || r.firstElementChild || r) : [];
+  const clone = doc ? doc.body.cloneNode(true) : null;
+  if (clone) for (const n of clone.querySelectorAll('script, style, noscript')) n.remove();
+  const bodyText = clone ? t(clone) : '';
+  const i18n = [];
+  const i18nRe = /"([A-Za-z0-9_.-]{2,60})"\\s*:\\s*"([^"\\\\]{1,120})"/g;
+  for (const m of html.matchAll(i18nRe)) {
+    const v = m[2];
+    if (!/[\\u4e00-\\u9fff]/.test(v)) continue;
+    if (!/報告|報表|訂單|刊登|廣告|促銷|關鍵字|搜尋|日期|範圍|來源|類型|下載|請求|活動|流量|付款|出貨|評價|促刊/.test(v)) continue;
+    i18n.push({ key: m[1], value: v });
+  }
+  const seen = new Set();
+  const i18nHints = i18n.filter(x => !seen.has(x.value) && seen.add(x.value)).slice(0, 300);
+  return {
+    pageUrl: location.href,
+    pageTitle: document.title,
+    identity: { userId, fn, source: gh && gh.userId ? 'window.GHpre.userId' : (userId ? '初始 HTML 正则' : '未读到') },
+    reportsCenter: {
+      httpStatus: status, htmlLength: html.length, fetchError,
+      title: doc && doc.title || '',
+      textLength: bodyText.length,
+      textHead: bodyText.slice(0, 12000),
+      i18nHints,
+      optionLabels: uniq(nodes.filter(n => n.tagName === 'OPTION')),
+      controlLabels: uniq(nodes.filter(n => n.tagName !== 'OPTION')).slice(0, 240),
+      rowLabels: uniq(rows).slice(0, 200),
+      dateHints: [...new Set((bodyText.match(/(?:今天|昨天|本週|上週|本月|上個月|過去\\s*90\\s*日|自訂|TODAY|YESTERDAY|LAST\\s*90|自訂範圍|日期範圍)/gi) || []))].slice(0, 40),
+      currencyHints: [...new Set((html.match(/\\b(USD|GBP|AUD|EUR|HKD|US\\$|£|A\\$|HK\\$)\\b/g) || []))].slice(0, 20),
+      listingSiteHints: [...new Set((html.match(/Listing site[:\\s]+([A-Z]{2})/gi) || []))].slice(0, 10),
+      signInish: /sign in|log in|登入或註冊|security measure|pardon our interruption/i.test(html.slice(0, 20000)),
+      rawHtmlHead: null
+    }
+  };
+})()`;
+
+function shopDefs() {
+  const dir = join(ROOT, 'shops');
+  const out = [];
+  if (!existsSync(dir)) return out;
+  for (const f of readdirSync(dir).filter(x => x.endsWith('.json') && !x.startsWith('_'))) {
+    try {
+      const j = JSON.parse(readFileSync(join(dir, f), 'utf8').replace(/^\uFEFF/, ''));
+      out.push({ id: f.replace(/\.json$/, ''), site: j.site, accountName: j.accountName, entryUrl: j.entryUrl });
+    } catch { /* 损坏的定义跳过 */ }
+  }
+  return out;
+}
+
+async function findTabByUser(uid) {
+  const ts = (await targets()).filter(x => x.type === 'page' && /ebay\.[a-z.]+\/sh\//i.test(x.url));
+  for (const t of ts) {
+    const { sessionId } = await cdp('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+    const u = await evaluate(sessionId, 'window.GHpre && window.GHpre.userId').catch(() => null);
+    await cdp('Target.detachFromTarget', { sessionId }).catch(() => {});
+    if (u && String(u).toLowerCase() === String(uid).toLowerCase()) return t;
+  }
+  return null;
+}
+
+// ---------------- 目录模式 ----------------
+
+// XHR + fetch 双钩子：原生打开弹窗时会自己 POST 一次目录查询（带 srt 令牌），截下来即可重放。
+const HOOK = `(() => {
+  if (window.__catCapture) return 'already';
+  window.__catCapture = { posts: [] };
+  const push = (url, body) => {
+    if (String(url).includes('create_update_download_report')) window.__catCapture.posts.push(String(body));
+  };
+  const of = window.fetch;
+  window.fetch = function (...a) {
+    const url = String(a[0] && a[0].url || a[0] || '');
+    if (a[1] && a[1].body) push(url, a[1].body);
+    return of.apply(this, a);
+  };
+  const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, u, ...r) { this.__catUrl = String(u); return oo.call(this, m, u, ...r); };
+  XMLHttpRequest.prototype.send = function (b) { if (this.__catUrl) push(this.__catUrl, b); return os.call(this, b); };
+  return 'hooked';
+})()`;
+
+async function clickAt(sessionId, x, y) {
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await cdp('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: type === 'mousePressed' ? 1 : 0 }, sessionId).catch(() => {});
+  }
+}
+
+const BTN_DL_REPORT = `(() => {
+  const t = n => ((n && (n.textContent || n.innerText)) || '').trim().replace(/\\s+/g, ' ');
+  const vis = e => !!(e.offsetParent !== null || e.getClientRects().length);
+  const b = [...document.querySelectorAll('button')].filter(vis)
+    .find(e => /^(下載報告|下载报告|Download report)$/i.test(t(e)));
+  if (!b) return null;
+  const r = b.getBoundingClientRect();
+  return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+})()`;
+
+// 首次访问报表页的欢迎引导 lightbox（2026-11-14 实测会挡住整页点击）
+const DISMISS_WELCOME = `(() => {
+  const t = n => ((n && (n.textContent || n.innerText)) || '').trim().replace(/\\s+/g, ' ');
+  const vis = e => !!(e.offsetParent !== null || e.getClientRects().length);
+  const dlg = [...document.querySelectorAll('div')].filter(vis).find(d => {
+    const s = getComputedStyle(d);
+    return (s.position === 'fixed' || s.position === 'absolute') && parseFloat(s.zIndex) >= 100000 && d.offsetWidth > 500 && d.offsetHeight > 300;
+  });
+  if (!dlg) return 'no-dialog';
+  const b = [...dlg.querySelectorAll('button')].filter(vis)
+    .find(e => /^(立即開始|立即开始|Get started|關閉|Close)$/i.test(t(e)));
+  if (!b) return 'dialog-but-no-button';
+  const r = b.getBoundingClientRect();
+  return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+})()`;
+
+// 下载表 ref 集合（零提交自证用）
+const TABLE_REFS = `(() => {
+  const t = n => ((n && (n.textContent || n.innerText)) || '').trim().replace(/\\s+/g, ' ');
+  const vis = e => !!(e.offsetParent !== null || e.getClientRects().length);
+  return [...document.querySelectorAll('tr')].filter(vis)
+    .map(r => (t(r).match(/\\b(\\d{11})\\b/) || [])[1])
+    .filter(Boolean);
+})()`;
+
+const REPLAY = (srt, searchParameters) => `(async () => {
+  try {
+    const res = await fetch('/sh/reports/create_update_download_report', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include',
+      body: ${JSON.stringify(JSON.stringify({ searchParameters, pageName: 'download', srt }))}
+    });
+    const text = await res.text();
+    return { ok: true, status: res.status, text: text.slice(0, 150000) };
+  } catch (e) { return { ok: false, err: String(e && e.message || e) }; }
+})()`;
+
+function summarizeCatalog(j) {
+  if (!j || !j.modules) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(j.modules)) {
+    if (v && Array.isArray(v.options)) {
+      out[k] = v.options.map(o => ({
+        value: o.paramValue,
+        params: o.additionalParamKeyValues || {},
+        label: o.label && o.label.textSpans ? o.label.textSpans.map(s => s.text).join('') : null
+      }));
+    } else if (v && v._type) {
+      out[k] = v._type;
+    }
+  }
+  return out;
+}
+
+async function catalogShop(shop) {
+  const tab = await findTabByUser(shop.accountName);
+  if (!tab) { console.log(`  · ${shop.id}：桥上没有已登录的后台页，跳过`); return null; }
+  const { sessionId } = await cdp('Target.attachToTarget', { targetId: tab.targetId, flatten: true });
+  try {
+    // 1) 到报表页（GET 导航）并刷新重置 SPA
+    if (!/sh\/reports\/downloads/i.test(tab.url)) {
+      await cdp('Page.navigate', { url: new URL('/sh/reports/downloads', new URL(tab.url).origin).href }, sessionId);
+    } else {
+      await cdp('Page.reload', {}, sessionId);
+    }
+    await sleep(7000);
+    const refsBefore = await evaluate(sessionId, TABLE_REFS).catch(() => []);
+
+    // 2) 注入钩子 → 关欢迎弹窗 → 点「下載報告」开目录弹窗（原生请求带出 srt）
+    await evaluate(sessionId, HOOK).catch(() => {});
+    const dlg = await evaluate(sessionId, DISMISS_WELCOME).catch(() => 'no-dialog');
+    if (dlg && typeof dlg === 'object') { await clickAt(sessionId, dlg.x, dlg.y); await sleep(1200); }
+    let srt = null;
+    for (let attempt = 0; attempt < 4 && !srt; attempt++) {
+      await cdp('Page.bringToFront', {}, sessionId).catch(() => {});
+      const btn = await evaluate(sessionId, BTN_DL_REPORT).catch(() => null);
+      if (!btn) break;
+      await clickAt(sessionId, btn.x, btn.y);
+      for (let i = 0; i < 12 && !srt; i++) {
+        await sleep(600);
+        const posts = await evaluate(sessionId, 'window.__catCapture ? window.__catCapture.posts : []').catch(() => []);
+        for (const p of posts || []) { try { const b = JSON.parse(p); if (b.srt) srt = b.srt; } catch { /* 忽略非 JSON 体 */ } }
+      }
+    }
+    if (!srt) { console.log(`  · ${shop.id}：未截到原生目录请求（面板没打开或会话超时），跳过`); return null; }
+
+    // 3) 重放各来源目录（查询，不提交报表）
+    const result = { shopId: shop.id, site: shop.site, accountName: shop.accountName, probedAt: new Date().toISOString(), srt, sources: {} };
+    const probes = [
+      ['ORDERS', [{ key: 'SOURCE', value: 'ORDERS' }]],
+      ['ORDERS_ALL_ORDERS', [{ key: 'SOURCE', value: 'ORDERS' }, { key: 'TYPE', value: 'ALL_ORDERS' }]],
+      ['LISTINGS', [{ key: 'SOURCE', value: 'LISTINGS' }]],
+      ['MARKETING', [{ key: 'SOURCE', value: 'MARKETING' }]]
+    ];
+    for (const [name, sp] of probes) {
+      const r = await evaluate(sessionId, REPLAY(srt, sp)).catch(e => ({ ok: false, err: 'EVAL:' + e.message }));
+      if (r && r.ok) {
+        let j = null; try { j = JSON.parse(r.text); } catch { /* 非 JSON */ }
+        result.sources[name] = { status: r.status, summary: summarizeCatalog(j), raw: j };
+        const s = summarizeCatalog(j) || {};
+        const types = s.typeSlider ? s.typeSlider.map(o => o.value).join(' / ') : '(无 typeSlider)';
+        const ranges = s.dateRangeSlider ? s.dateRangeSlider.map(o => (o.params || {}).DATE_RANGE).join(',') : '(无 dateRangeSlider)';
+        console.log(`  · ${shop.id} [${name}] ${r.status} 类型：${types}｜日期：${ranges}`);
+      } else {
+        result.sources[name] = { failed: r && r.err };
+        console.log(`  · ${shop.id} [${name}] 失败：${r && r.err}`);
+      }
+      await sleep(1200);
+    }
+
+    // 4) 下载表地面真值 + 零提交自证
+    result.downloadTableRefs = await evaluate(sessionId, TABLE_REFS).catch(() => []);
+    const before = new Set(refsBefore || []);
+    const added = (result.downloadTableRefs || []).filter(x => !before.has(x));
+    result.zeroSubmissionProof = added.length === 0
+      ? { ok: true, note: '下载表 ref 集合前后一致，全程零报表提交' }
+      : { ok: false, added, note: '出现了新 ref！请人工核对是否误提交' };
+    console.log(`  · ${shop.id} 零提交自证：${result.zeroSubmissionProof.ok ? '通过' : 'FAIL ' + added.join(',')}`);
+    return result;
+  } finally {
+    await cdp('Target.detachFromTarget', { sessionId }).catch(() => {});
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function catalogMain() {
+  const defs = shopDefs().filter(s => !onlyShop || s.id === onlyShop);
+  if (onlyShop && !defs.length) throw new Error(`找不到店铺 ${onlyShop}`);
+  console.log(`目录模式｜待采店铺 ${defs.length} 家（重放目录查询，零报表提交）`);
+  mkdirSync(DOCS, { recursive: true });
+  let n = 0;
+  for (const shop of defs) {
+    const result = await catalogShop(shop);
+    if (!result) continue;
+    writeFileSync(join(DOCS, `报表目录-${shop.id}.json`), JSON.stringify(result, null, 2) + '\n', 'utf8');
+    console.log(`  · 已写入 docs/报表目录-${shop.id}.json`);
+    n++;
+  }
+  console.log(`\n完成 ${n} 家。判读后回填 sites/*.json；marketing 若仍失败多半是 eBay 服务端故障（page_not_responding），过段时间复测。`);
+}
+
+// ---------------- 静态模式（原有） ----------------
+
+async function main() {
+  const defs = shopDefs().filter(s => !onlyShop || s.id === onlyShop);
+  if (onlyShop && !defs.length) throw new Error(`找不到店铺 ${onlyShop}`);
+  const pages = (await targets()).filter(t => /\/sh\/ovw/i.test(t.url) && /ebay\./i.test(t.url));
+  console.log(`桥上 Seller Hub 页面 ${pages.length} 个｜待认店 ${defs.length} 家`);
+  if (!pages.length) throw new Error('桥上没有已打开的 Seller Hub 页；请先在 Chrome 里打开后台（不要由脚本导航）');
+
+  const byAccount = new Map(defs.filter(d => d.accountName).map(d => [String(d.accountName).toLowerCase(), d]));
+  const seen = new Map();
+  mkdirSync(DOCS, { recursive: true });
+
+  for (const p of pages) {
+    const { sessionId } = await cdp('Target.attachToTarget', { targetId: p.targetId, flatten: true });
+    let snap;
+    try { snap = await evaluate(sessionId, COLLECT); }
+    catch (error) {
+      console.log(`  · ${p.url} → 读取失败：${error.message.slice(0, 90)}`);
+      continue;
+    }
+    const userId = String(snap.identity?.userId || '').trim();
+    const shop = byAccount.get(userId.toLowerCase()) || null;
+    const label = shop ? `${shop.id} (${shop.site})` : `未认领账号 ${userId || '?'}`;
+    const rc = snap.reportsCenter || {};
+    console.log(`  · ${label} | ${p.url} | fetch ${rc.httpStatus} / ${rc.htmlLength} 字 | 选项 ${(rc.optionLabels || []).length} / 控件 ${(rc.controlLabels || []).length} / 行 ${(rc.rowLabels || []).length}`);
+    if (!shop) continue;
+    if (saveRaw) {
+      const raw = await evaluate(sessionId, `(async()=>{const r=await fetch('/sh/reports/downloads',{credentials:'same-origin'});return (await r.text()).slice(0,60000);})()`);
+      writeFileSync(join(DOCS, `站点探针行名-${shop.id}.html.txt`), raw, 'utf8');
+    }
+    const outPath = join(DOCS, `站点探针行名-${shop.id}.json`);
+    const evidence = {
+      shopId: shop.id, site: shop.site, accountName: shop.accountName, configuredEntry: shop.entryUrl,
+      probedAt: new Date().toISOString(),
+      mode: 'read-only-same-origin-fetch',
+      note: '只在已打开的 /sh/ovw 页面做同源 GET；未导航、未新建标签、未点击任何提交/下载按钮、未产生报表请求。',
+      identity: snap.identity,
+      reportsCenter: rc,
+      judgement: '原始证据，尚未判读；sites/*.json 保持 pending，禁止据此推断或翻译行名。'
+    };
+    writeFileSync(outPath, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
+    seen.set(shop.id, outPath);
+  }
+
+  console.log(`\n已写入 ${seen.size} 份原始证据：docs/站点探针行名-<shopId>.json`);
+  const missing = defs.filter(d => !seen.has(d.id)).map(d => d.id);
+  if (missing.length) console.log(`未采到（后台页未打开或账号对不上）：${missing.join('、')}`);
+  console.log('提示：静态 HTML 不含弹窗目录（异步 API 拉取），采行名请用 --catalog 目录模式。');
+}
+
+if (catalogMode) catalogMain().catch(error => { console.error(`[probe-rows --catalog] ${error.stack || error.message}`); process.exitCode = 1; });
+else main().catch(error => { console.error(`[probe-rows] ${error.stack || error.message}`); process.exitCode = 1; });

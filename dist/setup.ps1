@@ -121,6 +121,20 @@ try {
     Line '      配置已自动生成（不需要你填任何东西）。' 'Green'
   }
 
+  # 3b) 店铺自举：只读探测本机 Chrome 的 Profile 与新标签页快捷方式，
+  #     生成 shops\*.json（店铺定义）和 local.json（本机状态）。不下载、不启动浏览器。
+  #     探测不到店铺也没关系：控制台会进引导态，点「自动识别并添加店铺」可随时补。
+  Line '[3b] 识别本机店铺（只读，不下载）...' 'White'
+  $node = Join-Path $Dest 'bin\node.exe'
+  $init = Join-Path $Dest 'app\init.mjs'
+  if ((Test-Path $node) -and (Test-Path $init)) {
+    & $node '--disable-warning=ExperimentalWarning' $init '--apply' '--auto' '--root' $Dest 2>&1 | ForEach-Object { Line "      $_" }
+    if ($LASTEXITCODE -ne 0) { Line '      店铺识别未完成，可在控制台点「自动识别并添加店铺」重试。' 'Yellow' }
+    else { Line '      店铺定义与本机状态已生成。' 'Green' }
+  } else {
+    Line '      未找到 init.mjs，跳过自举（控制台里可点「自动识别并添加店铺」）。' 'Yellow'
+  }
+
   Line ''
   Line '==================================================' 'Green'
   Line '   安装完成！' 'Green'

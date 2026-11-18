@@ -80,26 +80,30 @@ console.log('— 流量 + PLP 合并到一个进程 —');
   });
   ok('流量 + PLP 合并成一步', steps.length === 1, `实际 ${steps.length}`);
   ok('一个进程同时跑 trafficDaily,plp', steps[0].args[steps[0].args.indexOf('--only') + 1] === 'trafficDaily,plp');
-  ok('PLP 用起止区间（不按天拆）', (() => {
-    const a = steps[0].args.indexOf('--plp-start');
-    const b = steps[0].args.indexOf('--plp-end');
-    return steps[0].args[a + 1] === '2026-11-06' && steps[0].args[b + 1] === '2026-11-07';
+  // campaign 页 PLP 报表只有 Start date/End date（没有 Date 列），体检与看板构建端都只取
+  // Start date ⇒ 一份区间报表只覆盖 1 天。必须按天各出一份，否则缺口永远清不掉。
+  ok('PLP 按天出（--plp-days），不再用起止区间', (() => {
+    const i = steps[0].args.indexOf('--plp-days');
+    if (i < 0) return false;
+    const days = steps[0].args[i + 1].split(',');
+    return days.length === 2 && days[0] === '2026-11-06' && days[1] === '2026-11-07';
   })());
-  ok('PLP 只下物品列表', steps[0].args[steps[0].args.indexOf('--plp-types') + 1] === 'listing');
+  ok('PLP 不再传 --plp-start/--plp-end', !steps[0].args.includes('--plp-start') && !steps[0].args.includes('--plp-end'));
+  // 只下 listing 的话关键词/搜索词两类从来没被提交过，缺的是必然的
+  ok('PLP 三类一起下', steps[0].args[steps[0].args.indexOf('--plp-types') + 1] === 'listing,keyword,search');
   ok('带了活动列表', steps[0].args.includes('--campaigns'));
 }
 
-console.log('— PLP 缺口不连续也只发一个区间 —');
+console.log('— PLP 缺口不连续也按天逐日提交 —');
 {
   const { steps } = planGapFill({
     trafficDays: [], plgDays: [], plpDays: ['2026-11-02', '2026-11-04', '2026-11-08'], plgPreset: '',
     outDir: OUT, campaigns: IDS, gapSec: 8
   });
-  ok('三段缺口合并成一步', steps.length === 1, `实际 ${steps.length}`);
-  ok('区间 = min ~ max', (() => {
-    const a = steps[0].args.indexOf('--plp-start');
-    const b = steps[0].args.indexOf('--plp-end');
-    return steps[0].args[a + 1] === '2026-11-02' && steps[0].args[b + 1] === '2026-11-08';
+  ok('只产生一步（同一天内并行、跨天串行）', steps.length === 1, `实际 ${steps.length}`);
+  ok('不连续的天原样列进 --plp-days，不折成 min~max', (() => {
+    const i = steps[0].args.indexOf('--plp-days');
+    return i >= 0 && steps[0].args[i + 1] === '2026-11-02,2026-11-04,2026-11-08';
   })());
   ok('纯 PLP 那步不带 --dates', !steps[0].args.includes('--dates'));
 }
@@ -117,7 +121,7 @@ console.log('— 流量 + PLP + PLG 三路合并一个进程 —');
     return steps[0].args[steps[0].args.indexOf('--plg-unit') + 1] === 'DAILY'
       && steps[0].args[a + 1] === 'CURRENTWEEK';
   })());
-  ok('PLP 仍是起止区间写法', steps[0].args[steps[0].args.indexOf('--plp-start') + 1] === '2026-11-07');
+  ok('PLP 仍是按天写法', steps[0].args[steps[0].args.indexOf('--plp-days') + 1] === '2026-11-07');
 }
 
 console.log('— 没有缺口 —');

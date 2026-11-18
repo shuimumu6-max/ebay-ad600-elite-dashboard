@@ -6,13 +6,16 @@
 //     报表 CSV 里本来就带 Campaign 列，看板直接读报表，不需要先知道活动 ID；
 //   - 只有三个目录（dataDir / runsDir / downloadsDir）必须落盘，安装器已经自动填好。
 //
-// 两种方式（任选其一）：
+// 三种方式（任选其一）：
 //   1. 直接改下面 DEFAULTS 里的值；
 //   2. 程序目录放一份 my-shop.json（安装器会自动生成），或用环境变量
-//      EBAY_SHOP_CONFIG=C:\path\to\my-shop.json 指向它。
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+//      EBAY_SHOP_CONFIG=C:\path\to\my-shop.json 指向它；
+//   3. 多店铺（2026-11-14）：EBAY_SHOP_ID=<id> 指向 shops/<id>.json。
+//      每个下载进程启动时注入该变量，进程级隔离，互不串店；控制台不带此变量时
+//      仍走 my-shop.json，保持单店老用法完全兼容。
+import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,7 +50,7 @@ function normalizeCampaigns(list) {
 // 当前店铺的默认值。
 // 关键：这里的路径必须是「相对于本工具包」的，不能写死某台电脑的目录 ——
 // 分发包发到别人电脑上时没有 my-shop.json，全靠这份默认值，写死维护者路径会在
-// 运营机器上建出 C:\Users\xxx\Desktop\ebay ad600 Elite... 这种莫名其妙的目录。
+// 运营机器上建出 C:\Users\xxx\Desktop\<维护者目录名>... 这种莫名其妙的目录。
 // 维护者本机用自己的 my-shop.json 覆盖（不进分发包），想改默认行为就改那里。
 const DEFAULTS = {
   shopName: '',
@@ -63,25 +66,92 @@ const DEFAULTS = {
   chromeExe: ''
 };
 
+// ---------- 迁移能力（2026-11-14 阶段 A）：配置分层 + 零绝对路径 ----------
+// L2 店铺定义 shops/<id>.json 可以随包迁移；L3 机器状态 local.json 绝不随包。
+// 老配置（含绝对路径的 shops/*.json / my-shop.json）继续原样生效，本段只补缺省值。
+const SHOP_ID = String(process.env.EBAY_SHOP_ID || '').trim();
+const LOCAL_FILE = join(PROJECT_ROOT, 'local.json');
+
+function readLocal() {
+  try {
+    if (!existsSync(LOCAL_FILE)) return {};
+    const j = JSON.parse(readFileSync(LOCAL_FILE, 'utf8').replace(/^\uFEFF/, ''));
+    if (!j || typeof j !== 'object') return {};
+    // 全局机器状态 + 按店细分（init.mjs 为每店分配独立 Profile / 端口）。
+    // shops 是容器不是配置值，不能浅合并进 SHOP。
+    const globalPart = Object.fromEntries(Object.entries(j).filter(([k]) => k !== 'shops'));
+    const shopPart = SHOP_ID && j.shops && typeof j.shops === 'object' ? (j.shops[SHOP_ID] || {}) : {};
+    return { ...globalPart, ...shopPart };
+  } catch { return {}; }
+}
+
+// 配置里只允许具名占位符，不允许出现盘符 / 真实用户名。
+// {{ROOT}} = 工具包根目录，{{HOME}} = 用户目录，{{LOCALAPPDATA}} = Chrome 数据根。
+const TOKENS = {
+  '{{ROOT}}': PROJECT_ROOT,
+  '{{HOME}}': homedir(),
+  '{{LOCALAPPDATA}}': process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
+};
+function expandPath(raw) {
+  let p = String(raw || '').trim();
+  if (!p) return '';
+  for (const [token, base] of Object.entries(TOKENS)) {
+    if (p.startsWith(token)) {
+      p = join(base, p.slice(token.length).replace(/^[\\/]+/, ''));
+      break;
+    }
+  }
+  // 绝对路径原样保留（兼容老配置）；相对路径一律按工具包根解析
+  if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || isAbsolute(p)) return p;
+  return join(PROJECT_ROOT, p);
+}
+
+// 目录派生优先级：shops/<id>.json 显式值 > local.json > 按店派生 > 包内默认。
+// 按店派生是「一份代码 N 家店」不串店的关键：每店天然独占 店铺/<id>/ 子树。
+function deriveDirs(override, local) {
+  const out = {};
+  for (const [key, leaf] of [['dataDir', '数据'], ['runsDir', '下载结果'], ['downloadsDir', 'downloads']]) {
+    const v = override[key] ?? local[key];
+    const explicit = v === undefined || v === null ? '' : String(v).trim();
+    out[key] = explicit
+      ? expandPath(explicit)
+      : (SHOP_ID ? join(PROJECT_ROOT, '店铺', SHOP_ID, leaf) : DEFAULTS[key]);
+  }
+  return out;
+}
+
 // 当前实际生效的配置文件路径（改名、自动扫描都写回这里）
 let activeConfigPath = '';
 
 function readOverride() {
-  // 优先级：环境变量 EBAY_SHOP_CONFIG → 程序目录下的 my-shop.json → 内置默认值。
-  // 第二个入口专为「不懂环境变量」的运营准备：安装目录里放一个 my-shop.json 就生效。
+  // 优先级：EBAY_SHOP_CONFIG → EBAY_SHOP_ID（shops/<id>.json）→ my-shop.json → 内置默认值。
+  // EBAY_SHOP_CONFIG 保留最高优先级，方便临时用外部 JSON 覆盖；不设任何变量时
+  // 行为与单店版本完全一致（仍读 my-shop.json）。
   const envPath = process.env.EBAY_SHOP_CONFIG;
+  const shopId = String(process.env.EBAY_SHOP_ID || '').trim();
   const localPath = join(PROJECT_ROOT, 'my-shop.json');
-  if (!activeConfigPath) activeConfigPath = envPath || localPath;
-  const candidates = envPath ? [envPath, localPath] : [localPath];
+  const shopPath = shopId ? join(PROJECT_ROOT, 'shops', `${shopId}.json`) : '';
+  if (!activeConfigPath) activeConfigPath = envPath || shopPath || localPath;
+  const candidates = envPath
+    ? [envPath, shopPath, localPath].filter(Boolean)
+    : shopPath ? [shopPath, localPath] : [localPath];
   for (const path of candidates) {
     if (!existsSync(path)) {
-      if (path === envPath) console.warn(`[店铺配置] EBAY_SHOP_CONFIG 指向的文件不存在：${path}，继续找安装目录的 my-shop.json`);
+      if (path === envPath || path === shopPath) console.warn(`[店铺配置] 指定的文件不存在：${path}，继续找下一份配置`);
       continue;
     }
     try {
       const data = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
       activeConfigPath = path;
-      console.log(`[店铺配置] 已读取：${path}`);
+      console.log(`[店铺配置] 已读取：${path}${path === shopPath ? `（EBAY_SHOP_ID=${shopId}）` : ''}`);
+      // 多店铺首次运行：配置里的目录可能还没建，先建好，否则 resolveDir 会
+      // 退回包内默认目录，把 A 店报表写进默认店目录（串店事故）。
+      if (path === shopPath) {
+        for (const key of ['dataDir', 'runsDir', 'downloadsDir']) {
+          const dir = String(data[key] || '').trim();
+          if (dir) { try { mkdirSync(dir, { recursive: true }); } catch { /* 交给 resolveDir 兜底 */ } }
+        }
+      }
       return data;
     } catch (error) {
       console.warn(`[店铺配置] 读取失败（${error.message}）：${path}`);
@@ -106,6 +176,10 @@ export function saveConfigPatch(patch) {
 }
 
 const override = readOverride();
+const local = readLocal();
+// L3 机器状态优先级低于 L2 店铺定义：目标机向导只写 local.json，不碰店铺定义。
+const effective = { ...local, ...override };
+const derived = deriveDirs(override, local);
 const shopName = override.shopName === undefined
   ? DEFAULTS.shopName
   : (String(override.shopName).trim() || '我的店铺');
@@ -117,6 +191,12 @@ const sellerName = String(override.sellerName || '').trim();
 function resolveDir(value, fallback, label) {
   const raw = String(value || '').trim();
   if (!raw) return fallback;
+  // 派生 / 相对路径落在工具包内：直接信任并按需建目录，不受「父目录必须已存在」限制。
+  // 老绝对路径仍走下面的存在性检查（换机失效时回退包内目录，行为不变）。
+  if (raw.toLowerCase().startsWith(PROJECT_ROOT.toLowerCase())) {
+    try { mkdirSync(raw, { recursive: true }); } catch { /* 只读环境下交给后续流程 */ }
+    return raw;
+  }
   const parent = dirname(raw.replace(/[\\/]+$/, ''));
   if (parent && existsSync(parent)) return raw;
   console.warn(`[店铺配置] ${label} 指向的目录不存在：${raw}`);
@@ -126,12 +206,12 @@ function resolveDir(value, fallback, label) {
 
 export const SHOP = {
   ...DEFAULTS,
-  ...override,
+  ...effective,
   shopName,
   sellerName,
-  dataDir: resolveDir(override.dataDir, DEFAULTS.dataDir, 'dataDir'),
-  runsDir: resolveDir(override.runsDir, DEFAULTS.runsDir, 'runsDir'),
-  downloadsDir: resolveDir(override.downloadsDir, DEFAULTS.downloadsDir, 'downloadsDir'),
+  dataDir: resolveDir(derived.dataDir, DEFAULTS.dataDir, 'dataDir'),
+  runsDir: resolveDir(derived.runsDir, DEFAULTS.runsDir, 'runsDir'),
+  downloadsDir: resolveDir(derived.downloadsDir, DEFAULTS.downloadsDir, 'downloadsDir'),
   // 数组类字段不做浅合并，避免半份旧店铺活动混进新店铺。
   // 空数组是**有效值**，意思是「后台默认的全部活动」——不要回退成 DEFAULTS 里的固定几个。
   plpCampaigns: override.plpCampaigns ?? DEFAULTS.plpCampaigns,
@@ -142,6 +222,21 @@ export const SHOP = {
   // 优先促刊默认勾选：没配就走 plpCampaigns（空 = 后台默认全部）
   priorityDefaultCampaigns: override.priorityDefaultCampaigns ?? (override.plpCampaigns ?? DEFAULTS.plpCampaigns)
 };
+
+// 后台域名按店取自「新标签页快捷方式入口」的实测值（2026-11-14）：
+//   4 家店是 www.ebay.com.hk（繁中界面），只有 US 老店是 www.ebay.com（英文界面）。
+// 绝不能按 site 字段猜域名——站点（US/UK/AU）是账号属性，不是后台域名；
+// 之前按 site 拼 www.ebay.co.uk 直跳报表中心，正是反复触发 Security measure 的根因。
+function backendOrigin(entryUrl) {
+  if (!entryUrl) return 'https://www.ebay.com';
+  try {
+    const u = new URL(entryUrl);
+    const host = u.hostname.toLowerCase().startsWith('www.') ? u.hostname.toLowerCase() : `www.${u.hostname.toLowerCase()}`;
+    return `https://${host}`;
+  } catch { return 'https://www.ebay.com'; }
+}
+export const SHOP_HOST = backendOrigin(SHOP.entryUrl);
+export { SHOP_ID };
 
 // 路径类统一导出，其余模块只引用这里
 export const DATA_DIR = SHOP.dataDir;
@@ -169,11 +264,38 @@ export const PRIORITY_DEFAULT_IDS = SHOP.priorityDefaultCampaigns
 export const CONSOLE_PORT = SHOP.consolePort;
 export const BRIDGE_PORT = SHOP.bridgePort;
 
+// 控制台用的店铺清单（只读取 shops/*.json，不含 _模板.json）。
+// id 是稳定主键；sellerVerified=false 的店仍可选，但运行时身份校验会拦下未实测的账号。
+export function listShops() {
+  const dir = join(PROJECT_ROOT, 'shops');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter(f => f.endsWith('.json') && !f.startsWith('_'))
+    .map(f => {
+      try {
+        const j = JSON.parse(readFileSync(join(dir, f), 'utf8').replace(/^\uFEFF/, ''));
+        return {
+          id: j.id || f.replace(/\.json$/, ''),
+          shopName: j.shopName || j.id || f.replace(/\.json$/, ''),
+          site: j.site || '',
+          entryUrl: j.entryUrl || '',
+          sellerName: j.sellerName || '',
+          sellerVerified: !!j.sellerVerified
+        };
+      } catch { return null; }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 // 启动体检：把生效配置打出来，迁移时一眼看出有没有读对文件
 export function shopSummary() {
   return {
+    shopId: SHOP_ID || '(默认单店)',
     shopName: SHOP.shopName,
     sellerName: SHOP.sellerName,
+    entryUrl: SHOP.entryUrl || '(未配置)',
+    backendHost: SHOP_HOST,
     configFile: configFilePath(),
     dataDir: DATA_DIR,
     runsDir: RUNS_DIR,

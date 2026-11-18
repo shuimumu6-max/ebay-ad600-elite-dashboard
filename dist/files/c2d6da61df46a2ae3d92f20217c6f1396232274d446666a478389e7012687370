@@ -1,7 +1,8 @@
 // 选项完整性自检：后台 download.mjs 的每一个参数，控制台都必须能选到。
 // 用法：node app/check-options.mjs
 // 以后往 download.mjs 加 --xxx 参数，先跑这里；缺 UI 控件或候选值不全会直接失败。
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -17,6 +18,8 @@ const html = readFileSync(join(ROOT, 'ui/index.html'), 'utf8');
 // PLP campaign 页通道已从控制台下线（PLP 统一走「优先促销刊登」），底层 CLI 保留供手动回退。
 const CLI_ONLY_PLP = '@doc:PLP campaign 页通道已从控制台下线，仅 CLI 手动回退入口';
 const UI_MAP = {
+  'shop': 'shopSelect',
+  'shops': 'shopBatch',
   'date': 'trafficDate',
   'range-start': 'rangeStart',
   'range-end': 'rangeEnd',
@@ -129,7 +132,50 @@ const unnamed = PRIORITY_CAMPAIGNS.filter(c => !c.name || c.name === c.id);
 if (unnamed.length) problems.push(`${unnamed.length} 个活动缺名称（界面会退化成显示 ID）`);
 lines.push(`活动默认集合 ${PRIORITY_DEFAULT_IDS.length} 个 · 全部有名称 ${PRIORITY_CAMPAIGNS.length - unnamed.length}/${PRIORITY_CAMPAIGNS.length}`);
 
+// ---------- 多店铺逐店自检（2026-11-14） ----------
+// 新增 --shop / --shops 后不能只验「参数有一个控件」：必须逐店验证配置能独立加载，
+// 且后台域名、数据目录确实按店切换，否则 A 店报表会落进 B 店目录。
+const shopsDir = join(ROOT, 'shops');
+const shopFiles = existsSync(shopsDir)
+  ? readdirSync(shopsDir).filter(f => f.endsWith('.json') && !f.startsWith('_'))
+  : [];
+const shopLines = [];
+const expectedHost = entryUrl => {
+  if (!entryUrl) return 'https://www.ebay.com';
+  try {
+    const u = new URL(entryUrl);
+    const h = u.hostname.toLowerCase().startsWith('www.') ? u.hostname.toLowerCase() : `www.${u.hostname.toLowerCase()}`;
+    return `https://${h}`;
+  } catch { return 'https://www.ebay.com'; }
+};
+for (const f of shopFiles) {
+  const id = f.replace(/\.json$/, '');
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(join(shopsDir, f), 'utf8').replace(/^\uFEFF/, '')); }
+  catch (error) { problems.push(`${id}: shops 配置 JSON 解析失败 ${error.message}`); continue; }
+  const probe = spawnSync(process.execPath, ['-e',
+    `Promise.all([import('./app/shop-config.mjs'),import('./app/config.mjs')]).then(([s,c])=>console.log(JSON.stringify({id:s.SHOP_ID,host:s.SHOP_HOST,dataDir:s.DATA_DIR,reports:c.REPORTS_URL})))`
+  ], { cwd: ROOT, env: { ...process.env, EBAY_SHOP_ID: id }, encoding: 'utf8', timeout: 30000 });
+  let got = null;
+  try { got = JSON.parse(String(probe.stdout || '').trim().split('\n').pop()); } catch { /* 下面统一报错 */ }
+  if (!got || probe.status !== 0) {
+    problems.push(`${id}: 按 EBAY_SHOP_ID 独立加载失败 ${String(probe.stderr || '').trim().slice(0, 120)}`);
+    continue;
+  }
+  if (got.id !== id) problems.push(`${id}: 加载后的 SHOP_ID 是 ${got.id}，店铺配置没生效`);
+  if (got.host !== expectedHost(cfg.entryUrl)) problems.push(`${id}: 后台域名 ${got.host} 与入口 ${cfg.entryUrl || '(默认)'} 不一致`);
+  if (!String(got.reports).startsWith(got.host)) problems.push(`${id}: 报表中心 URL 没用本店域名 ${got.reports}`);
+  shopLines.push(`  ${id.padEnd(12)} ${got.host.padEnd(26)} ${got.dataDir}`);
+}
+// 0 家店是全新机器的合法引导态（分发包只带 _模板.json），不算失败。
+if (!shopFiles.length) console.log('shops/ 为空：引导态（全新机器合法），--shop / --shops 暂无可选店铺。');
+if (!/listShops\(\)/.test(server)) problems.push('服务端没把店铺清单透给前端（/api/state.shops）');
+if (!/form\.shopIds/.test(server) || !/form\.shopId/.test(server)) problems.push('服务端 buildArgs 没接收前端的店铺选择');
+if (!/EBAY_SHOP_ID/.test(cli)) problems.push('download.mjs 没有按店注入 EBAY_SHOP_ID');
+
 console.log(`CLI 参数 ${params.length} 个 | 已登记 UI 映射 ${Object.keys(UI_MAP).length} 个（其中 ${Object.values(UI_MAP).filter(v => v.startsWith('@doc')).length} 个为说明性/CLI 保留）`);
+console.log('— 多店铺逐店加载 —');
+shopLines.forEach(l => console.log(l));
 console.log('— 候选值核对 —');
 lines.forEach(l => console.log('  ' + l));
 console.log(`— 动态渲染：订单 ${ORDER_TYPES.length} 种 / 优先促刊 ${PRIORITY_TYPES.length} 种 / 活动 ${PRIORITY_CAMPAIGNS.length} 个 —`);

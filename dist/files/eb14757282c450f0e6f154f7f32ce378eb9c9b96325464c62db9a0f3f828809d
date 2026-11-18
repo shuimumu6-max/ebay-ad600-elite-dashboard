@@ -1,7 +1,7 @@
 // eBay 报表控制台：本地网页界面 + 后台调用 download.mjs
 // 只监听 127.0.0.1，不对外暴露；职责：环境体检、参数拼装、启动下载、实时日志、结果读取。
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { DATA_DIR, yesterdayPacific, monthStart, PLG_CAMPAIGNS, RC_RANGES, ACTIV
 import { dataDirState, dashboardMode } from '../app/publish.mjs';
 import { scanGaps, pacificToday, clampScanRange, weekWindow, daySpan } from '../app/scan-gaps.mjs';
 import { catalogSnapshot } from '../app/reports.mjs';
-import { SHOP, shopSummary, configFilePath, saveConfigPatch } from '../app/shop-config.mjs';
+import { SHOP, shopSummary, configFilePath, saveConfigPatch, listShops } from '../app/shop-config.mjs';
 import { planGapFill, tailSteps, waitBeforeStep, clampGapSec, groupPlgByPreset, GAP_DEFAULT_SEC } from './gap-plan.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -260,6 +260,8 @@ async function envState() {
       campaignsMode: (plgList.length || priorityList.length) ? '指定活动' : '后台全部活动'
     },
     defaults: defaultForm(),
+    // 多店铺清单：控制台顶栏下拉 + 批量勾选的数据源（只在服务端读 shops/*.json）
+    shops: listShops(),
     // 程序文件在运行期间被「检查更新」换掉了：内存里跑的还是旧代码，
     // 不重启窗口就会一直看到旧行为（比如明明连上了还提示去拨开关）。
     staleBuild: buildStale(),
@@ -394,6 +396,15 @@ function buildArgs(form) {
   if (out && !isAbsolute(out)) throw new Error('结果目录要填 Windows 绝对路径');
   if (out.includes('..')) throw new Error('结果目录不能包含 ..');
   const args = ['run-download.mjs', '--out', out || OUT_DIR];
+  // 多店铺：批量勾选优先，其次单店下拉；都不选 = 默认单店（老行为完全不变）。
+  // ID 必须在 shops/*.json 里，避免把任意字符串拼进配置路径。
+  const knownShops = new Set(listShops().map(s => s.id));
+  const batch = Array.isArray(form.shopIds)
+    ? [...new Set(form.shopIds.map(String).filter(id => knownShops.has(id)))]
+    : [];
+  const single = String(form.shopId || '').trim();
+  if (batch.length) args.push('--shops', batch.join(','));
+  else if (single && knownShops.has(single)) args.push('--shop', single);
   const only = [];
   const tm = form.trafficMode || 'daily';
   if (tm === 'daily') only.push('trafficDaily');
@@ -733,6 +744,25 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, readFileSync(file, 'utf8'), 'text/html; charset=utf-8');
     }
     if (path === '/api/state') return send(res, 200, await envState());
+
+    // 引导态「自动识别并添加店铺」：只跑只读探测 + 生成配置，不下载、不启动浏览器。
+    // 界面上要有这个入口，避免运营去手填店铺数 / 地址（入口地址恰恰不能手填）。
+    if (path === '/api/init-shop' && req.method === 'POST') {
+      const body = await readBody(req);
+      const profile = String(body.profile || '').trim().slice(0, 60);
+      const args = [join(APP_DIR, 'init.mjs'), '--apply', '--json'];
+      args.push(profile ? '--add-shop' : '--auto');
+      if (profile) args.push(profile);
+      const r = spawnSync(NODE, ['--disable-warning=ExperimentalWarning', ...args],
+        { cwd: join(here, '..'), encoding: 'utf8', timeout: 60000 });
+      let out = null;
+      try { out = JSON.parse(String(r.stdout || '').trim()); } catch { /* 下面统一报错 */ }
+      if (r.status !== 0 || !out) {
+        return send(res, 500, { ok: false, error: `识别失败：${String(r.stderr || r.stdout || '').trim().slice(0, 200)}` });
+      }
+      say(`[控制台] 店铺自举：写入 ${out.written.length} 项，跳过 ${out.skipped.length} 项`);
+      return send(res, 200, { ok: true, shopCount: listShops().length, written: out.written, skipped: out.skipped, needsUser: out.needsUser });
+    }
 
     // 改店铺名：名字只是个标签，界面上随手改，写回 my-shop.json
     if (path === '/api/shop-name' && req.method === 'POST') {

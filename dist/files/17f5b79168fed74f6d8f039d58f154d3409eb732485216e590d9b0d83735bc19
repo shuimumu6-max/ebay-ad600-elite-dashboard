@@ -2,8 +2,15 @@
 import { spawn } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
-import { BRIDGE, BRIDGE_SCRIPT } from './config.mjs';
+import { BRIDGE, BRIDGE_SCRIPT, SHOP_HOST } from './config.mjs';
 import { resolveCdpEndpoint, wsProbe } from './cdp-endpoint.mjs';
+
+// 后台域名按店铺入口派生（4 家店走 www.ebay.com.hk 繁中后台）。
+// 原先写死 www.ebay.com 会让繁中店找不到已打开的标签，转而新开并直接导航内部 URL。
+const EXPECTED_HOST = (() => {
+  try { return new URL(SHOP_HOST).hostname.toLowerCase(); }
+  catch { return 'www.ebay.com'; }
+})();
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -109,7 +116,7 @@ export async function session(urlIncludes) {
   const list = await targets();
   const target = list.find(t => {
     try {
-      return /^(www\.)?ebay\.com$/i.test(new URL(t.url).hostname) && t.url.includes(urlIncludes);
+      return new URL(t.url).hostname.toLowerCase() === EXPECTED_HOST && t.url.includes(urlIncludes);
     } catch { return false; }
   });
   if (!target) throw new Error(`未找到包含「${urlIncludes}」的 eBay 标签页；当前标签：${list.map(t => t.url).join(' | ')}`);

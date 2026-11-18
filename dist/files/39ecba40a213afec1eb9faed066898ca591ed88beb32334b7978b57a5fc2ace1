@@ -1,0 +1,31 @@
+// 阶段 0 · 每店首次人工登录前的「干净入口」准备。
+//
+// 用法：node app/prepare-login.mjs --shop uk-obd2
+//
+// 2026-11-14 改版：不再按 site 拼 eBay 首页、不再直跳 signin/reports。
+// 实测这两个动作会触发 Akamai「Security measure」；正确做法是打开
+// chrome://new-tab-page/ 后用真实鼠标事件点该店 eBay 首页快捷方式（见 app/open-entry.mjs）。
+// 当前 UK 独立实例实测：点击后落地 https://www.ebay.com.hk/，captcha=false，首页正常。
+//
+// 边界：只操作该店独立实例的浏览器会话；不碰日常 Chrome、不提交任何报表下载、不改磁盘 Profile 文件。
+import { loadShopContext, connectCdp, openEntry } from './open-entry.mjs';
+
+const argv = process.argv.slice(2);
+const shopId = argv[argv.indexOf('--shop') + 1];
+if (!shopId) { console.error('用法：node app/prepare-login.mjs --shop <id> [--no-keep]'); process.exit(2); }
+
+const { shop, endpoint } = loadShopContext(shopId);
+const { cdp, ws } = await connectCdp(endpoint.wsUrl);
+try {
+  const out = await openEntry(cdp, shop, { keepExisting: !argv.includes('--no-keep') });
+  const s = out.snapshot || {};
+  console.log(JSON.stringify({
+    shopId, site: shop.site, entryMode: 'ntp-tile', configuredEntry: shop.entryUrl, ...out,
+    note: '只用新标签页快捷方式进入；本脚本从不填写 eBay 地址、不直跳登录页或报表中心。',
+    next: s.captcha
+      ? '入口被风控拦截：请在窗口里手动完成 Security measure，再用 --no-keep 重试。'
+      : (s.seller
+        ? `已登录：${s.seller}。直接跑 node app/probe-all.mjs 采站点字段。`
+        : '首页正常且免验证：请在窗口右上角点「登入 / Sign in」登录该店账号，登录后跑 node app/probe-all.mjs。')
+  }, null, 2));
+} finally { ws.close(); }

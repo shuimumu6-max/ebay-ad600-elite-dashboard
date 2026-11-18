@@ -1,0 +1,93 @@
+// 阶段 0 · 多店探针编排：登录完成后一条命令跑完全部只读探针并回填卖家名。
+//
+// 用法：
+//   node app/probe-all.mjs                # 跑所有已启动独立实例的店
+//   node app/probe-all.mjs --shop a,b     # 只跑指定店
+//   node app/probe-all.mjs --dry-run      # 只列计划，不连浏览器
+//
+// 边界：只做只读探针 + sellerName 回填 + 自检；不自动克隆 Profile、不启动 Chrome、
+//       不提交任何报表下载、不自动填写 sites/*.json（站点字段必须人工判读原始证据）。
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const only = argv.includes('--shop') ? argv[argv.indexOf('--shop') + 1].split(',').map(s => s.trim()).filter(Boolean) : null;
+const dryRun = argv.includes('--dry-run');
+const readJson = f => JSON.parse(readFileSync(f, 'utf8').replace(/^\uFEFF/, ''));
+
+const shops = readdirSync(join(ROOT, 'shops'))
+  .filter(f => f.endsWith('.json') && !f.startsWith('_'))
+  .map(f => ({ file: f, id: f.replace(/\.json$/, ''), ...readJson(join(ROOT, 'shops', f)) }))
+  .filter(s => !only || only.includes(s.id));
+
+const siteStatus = {};
+for (const f of readdirSync(join(ROOT, 'sites')).filter(x => x.endsWith('.json'))) {
+  const cfg = readJson(join(ROOT, 'sites', f));
+  siteStatus[cfg.site] = cfg.status;
+}
+
+const rows = [];
+console.log(`店铺 ${shops.length} 家${dryRun ? '（dry-run，不连浏览器）' : ''}`);
+for (const s of shops) {
+  const epFile = join(ROOT, '店铺实例', s.id, 'endpoint.json');
+  const hasEp = existsSync(epFile);
+  const siteVerified = siteStatus[s.site] === 'verified';
+  const needProbe = !(s.sellerVerified && siteVerified);
+  const plan = !needProbe ? '已验收，跳过' : hasEp ? '执行只读探针' : '未启动实例，跳过';
+  rows.push({ id: s.id, site: s.site, profile: s.profileSource, hasEp, siteVerified, sellerVerified: !!s.sellerVerified, seller: s.sellerName || '(未实测)', needProbe, plan });
+  console.log(`  ${s.id.padEnd(12)} ${s.site.padEnd(3)} ${String(s.profileSource).padEnd(10)} 端点=${hasEp ? '有' : '无'} 站点=${siteVerified ? 'verified' : 'pending'} seller=${s.sellerVerified ? s.sellerName : '(未实测)'} → ${plan}`);
+}
+
+if (dryRun) {
+  console.log('\n计划完毕，未执行任何探针。');
+  process.exit(0);
+}
+
+const results = [];
+for (const r of rows) {
+  if (!r.needProbe) { results.push({ ...r, result: 'skipped-verified' }); continue; }
+  if (!r.hasEp) {
+    results.push({ ...r, result: 'skipped-no-instance' });
+    console.log(`\n[${r.id}] 跳过：没有独立实例。先跑 node app/launch-shop.mjs --shop ${r.id} --clone-only，再 --daemon 常驻启动。`);
+    continue;
+  }
+  const proc = spawnSync(process.execPath, [join(ROOT, 'app', 'probe-site.mjs'), '--shop', r.id, '--record-seller'], {
+    cwd: ROOT, encoding: 'utf8', timeout: 150000
+  });
+  const text = (proc.stdout || '') + (proc.stderr || '');
+  const loggedIn = /登录态：已登录/.test(text);
+  const sellerLine = text.split('\n').find(l => l.includes('卖家名回填：')) || '';
+  console.log(`\n[${r.id}] ${loggedIn ? '已登录' : '未登录（站点字段仍待人工判读）'}  ${sellerLine}`);
+  if (proc.status !== 0) console.log(`  探针异常 exit=${proc.status} ${text.slice(-300)}`);
+  results.push({ ...r, result: loggedIn ? 'probed' : 'blocked' });
+}
+
+// 站点证据按 site 去重：同站点只需任一已登录店提供原始证据。
+console.log('\n===== 汇总 =====');
+const bySite = {};
+for (const r of results) (bySite[r.site] ||= []).push(r);
+for (const [site, list] of Object.entries(bySite)) {
+  const provider = list.find(x => x.result === 'probed');
+  const done = siteStatus[site] === 'verified';
+  const pendingSellers = list.filter(x => !x.sellerVerified).map(x => x.id);
+  const fieldStatus = done
+    ? '站点配置 verified（无需再采）'
+    : provider
+      ? `证据来源 ${provider.id}（docs/站点探针原始-${provider.id}.json，待人工判读）`
+      : '站点配置仍 pending：无已登录实例';
+  console.log(`  ${site}: ${fieldStatus}；sellerName 待实测 ${pendingSellers.length ? pendingSellers.join(', ') : '（无）'}`);
+}
+const blocked = results.filter(r => r.result === 'blocked' || r.result === 'skipped-no-instance');
+if (blocked.length) {
+  console.log(`\n  未完成 ${blocked.length} 家：${blocked.map(r => r.id + '(' + r.result + ')').join(', ')}`);
+  console.log('  未登录的店：node app/prepare-login.mjs --shop <id>（点新标签页 eBay 快捷方式开干净入口，勿填地址），在窗口里点「登入 / Sign in」登录一次后重跑本脚本。');
+}
+
+for (const script of ['check-shops.mjs', 'check-sites.mjs']) {
+  const p = spawnSync(process.execPath, [join(ROOT, 'app', script)], { cwd: ROOT, encoding: 'utf8' });
+  console.log(`\n===== ${script} (exit ${p.status}) =====\n${(p.stdout || '').trim()}`);
+}
+console.log('\n注意：sites/*.json 的站点字段必须人工判读原始证据后填写，禁止继承 us.json 或按快捷方式名推断。');

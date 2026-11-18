@@ -1,0 +1,227 @@
+// 目标机自举向导：把「这台机器 + 几个店铺」变成可运行的配置。
+//
+// 铁律：
+//   - 只读探测 Chrome（Local State / Top Sites），不启动浏览器、不导航、不下载、不改 Chrome；
+//   - 默认 dry-run，只有显式 --apply 才写文件；
+//   - --root 可指向别的目录（演练 / 隔离安装用），默认当前工具包根；
+//   - 绝不覆盖已存在的 shops/<id>.json（除非 --force）；
+//   - 写出来的 shops/*.json 是纯 L2（无路径 / 端口 / 真实用户名），
+//     Chrome Profile 与端口写进本机 local.json（L3，绝不随分发包）。
+//
+// 用法：
+//   node app/init.mjs                          # 只看会生成什么（dry-run）
+//   node app/init.mjs --apply --auto           # 无人值守生成全部候选店铺（安装器用）
+//   node app/init.mjs --apply --add-shop "Profile 4"   # 追加一家店
+//   node app/init.mjs --root <dir> --apply --auto      # 在隔离目录演练
+//   node app/init.mjs --json                   # 结构化输出
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(HERE);
+const argv = process.argv.slice(2);
+const arg = (name, fallback = '') => {
+  const i = argv.indexOf(name);
+  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
+};
+const flag = name => argv.includes(name);
+const asJson = flag('--json');
+const apply = flag('--apply');
+const force = flag('--force');
+const auto = flag('--auto');
+const targetRoot = resolve(arg('--root', ROOT));
+const requestedProfiles = [...new Set(
+  argv.flatMap((a, i) => a === '--add-shop' && argv[i + 1] && !argv[i + 1].startsWith('--') ? [argv[i + 1]] : [])
+)].filter(Boolean);
+
+// 只读机器探测（探测的是本机 Chrome，与 --root 无关）
+const pm = spawnSync(process.execPath,
+  ['--disable-warning=ExperimentalWarning', join(HERE, 'probe-machine.mjs'), '--json'],
+  { cwd: ROOT, encoding: 'utf8', timeout: 30000 });
+let machine;
+try { machine = JSON.parse(String(pm.stdout || '').trim()); }
+catch { console.error('机器探测失败：' + String(pm.stderr || pm.stdout || '').slice(0, 200)); process.exit(2); }
+
+const candidates = machine.profiles.filter(p => p.entryUrl);
+let picked = requestedProfiles.length
+  ? candidates.filter(p => requestedProfiles.includes(p.dir))
+  : candidates;
+if (!auto && !requestedProfiles.length) picked = candidates; // dry-run 展示全部，写操作仍需 --apply
+
+// 站点只按已验证知识库的 hosts 匹配，匹配不到就是 unknown —— 绝不按域名/语言硬猜
+function knownSites() {
+  const dir = join(ROOT, 'sites');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
+    try { return { file: `sites/${f}`, ...JSON.parse(readFileSync(join(dir, f), 'utf8').replace(/^\uFEFF/, '')) }; }
+    catch { return null; }
+  }).filter(Boolean);
+}
+// 返回**全部**候选站点，而不是第一个命中。2026-11-14 实测：sites/uk.json 与 sites/au.json
+// 的后台域名完全相同（都是 www.ebay.com.hk），按 readdirSync 顺序取首个会把 UK 店静默标成 au。
+// 两个及以上候选时下游必须标 unknown + sitePending，由 probe-site 用 CSV 的 Currency /
+// Listing site 列自证，绝不猜（红线：不从未实测站点翻译/继承）。
+function matchSites(entryUrl) {
+  let host = '';
+  try { host = new URL(entryUrl).hostname.toLowerCase().replace(/^www\./, ''); } catch { return []; }
+  const hits = [];
+  for (const s of knownSites()) {
+    const hosts = Object.values(s.hosts || {}).map(h => {
+      try { return new URL(String(h).replace('{id}', '0')).hostname.toLowerCase().replace(/^www\./, ''); }
+      catch { return ''; }
+    });
+    if (hosts.includes(host)) hits.push({ site: s.site, file: s.file });
+  }
+  return hits;
+}
+
+const slug = name => String(name || '').toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 28) || 'shop';
+
+async function portFree(port) {
+  return new Promise(resolve => {
+    const s = createServer();
+    s.once('error', () => resolve(false));
+    s.listen(port, '127.0.0.1', () => s.close(() => resolve(true)));
+  });
+}
+async function alloc(start, used) {
+  let p = start;
+  while (used.has(p) || !(await portFree(p))) p++;
+  used.add(p);
+  return p;
+}
+
+const shopsDir = join(targetRoot, 'shops');
+const existing = existsSync(shopsDir)
+  ? readdirSync(shopsDir).filter(f => f.endsWith('.json') && !f.startsWith('_')).map(f => f.replace(/\.json$/, ''))
+  : [];
+const usedIds = new Set(existing);
+const usedPorts = new Set([7788, 9222, 9233, 7801]);
+const plan = [];
+for (const p of picked) {
+  let id = slug(p.name || p.dir);
+  let n = 2;
+  while (usedIds.has(id)) id = `${slug(p.name || p.dir)}-${n++}`;
+  usedIds.add(id);
+  const hits = matchSites(p.entryUrl);
+  // 命中唯一才敢落 site；0 个（知识库没有该域名）或 ≥2 个（域名歧义，如 uk/au 同走
+  // www.ebay.com.hk）都标 unknown + sitePending，交由 probe-site 用 CSV 自证。
+  const unique = hits.length === 1 ? hits[0] : null;
+  plan.push({
+    id,
+    profileSource: p.dir,
+    profileName: p.name,
+    entryUrl: p.entryUrl,
+    site: unique?.site || 'unknown',
+    siteConfig: unique?.file || '',
+    sitePending: !unique,
+    siteCandidates: hits.map(h => h.site),
+    siteAmbiguous: hits.length > 1,
+    exists: existing.includes(id)
+  });
+}
+
+// 端口只在 --apply 时分配；dry-run 不占用也不写任何东西
+const result = {
+  root: targetRoot,
+  mode: apply ? 'apply' : 'dry-run',
+  auto,
+  requestedProfiles,
+  detectedShopCount: machine.shopCount,
+  chromeExe: machine.chromeExe,
+  userDataDir: machine.userDataDir,
+  consolePort: machine.ports['7788'] === '空闲' ? 7788 : 7789,
+  plans: plan,
+  written: [],
+  skipped: [],
+  needsUser: machine.needsUser,
+  note: '站点以首份 CSV 的 Listing site / Currency 列自证；匹配不到知识库时标 sitePending，由 probe-site 现场采集，绝不硬猜。'
+};
+
+if (apply) {
+  mkdirSync(shopsDir, { recursive: true });
+  mkdirSync(join(targetRoot, 'app'), { recursive: true });
+  const localFile = join(targetRoot, 'local.json');
+  let local = {};
+  if (existsSync(localFile)) {
+    try { local = JSON.parse(readFileSync(localFile, 'utf8').replace(/^\uFEFF/, '')); } catch { local = {}; }
+  }
+  local.chromeExe = local.chromeExe || machine.chromeExe;
+  local.consolePort = local.consolePort || result.consolePort;
+  local.shops = local.shops || {};
+  for (const [k, v] of Object.entries(local.shops)) {
+    for (const p of [v.cdpPort, v.bridgePort, v.boardPort]) if (Number.isInteger(p)) usedPorts.add(p);
+    void k;
+  }
+
+  for (const item of plan) {
+    const file = join(shopsDir, `${item.id}.json`);
+    if (existsSync(file) && !force) { result.skipped.push(`${item.id}（已存在，未覆盖）`); continue; }
+    const l2 = {
+      configVersion: 2,
+      id: item.id,
+      shopName: '',
+      site: item.site,
+      sitePending: item.sitePending,
+      siteCandidates: item.siteCandidates || [],
+      siteNote: item.siteAmbiguous
+        ? `后台域名同时命中多个站点知识库（${item.siteCandidates.join(' / ')}），未敢硬猜，留待 probe-site 用 CSV 的 Currency / Listing site 列自证`
+        : '',
+      entryUrl: item.entryUrl,
+      entryMode: 'ntp-tile',
+      entryEvidence: { source: 'Chrome Top Sites（只读）', tileTitle: '', probedAt: new Date().toISOString() },
+      accountName: '',
+      accountEvidence: { source: 'init.mjs 未做在线身份实测；首次登录后由 probe-site 补 GHpre.userId', probedAt: '' },
+      sellerName: '',
+      sellerVerified: false,
+      profileSource: item.profileSource,
+      siteConfig: item.siteConfig,
+      plpCampaigns: [],
+      plgCampaigns: [],
+      priorityCampaigns: []
+    };
+    writeFileSync(file, JSON.stringify(l2, null, 2) + '\n', 'utf8');
+    result.written.push(`shops/${item.id}.json`);
+    // 2026-11-18 实测：不再克隆独立实例（克隆的 user-data-dir 会被 eBay 当"新设备" → captcha）。
+    // 多店 = 用户自己的 Chrome（日常 user-data-dir）里的不同 Profile；桥走 in-place 调试。
+    local.shops[item.id] = {
+      profileSource: item.profileSource,
+      profileSourceDir: machine.userDataDir,
+      bridgePort: await alloc(9300 + plan.indexOf(item) * 10, usedPorts),
+      boardPort: await alloc(7810 + plan.indexOf(item), usedPorts)
+    };
+  }
+  writeFileSync(localFile, JSON.stringify(local, null, 2) + '\n', 'utf8');
+  result.written.push('local.json');
+  const consoleFile = join(targetRoot, 'app', 'console.json');
+  if (!existsSync(consoleFile) || force) {
+    writeFileSync(consoleFile, JSON.stringify({ _说明: '控制台全局端口，由 init.mjs 生成', consolePort: local.consolePort }, null, 2) + '\n', 'utf8');
+    result.written.push('app/console.json');
+  }
+}
+
+if (asJson) {
+  console.log(JSON.stringify(result, null, 2));
+} else {
+  console.log(`=== 迁移自举向导（${result.mode}｜目标 ${targetRoot}）===`);
+  console.log(`只读探测：${result.detectedShopCount} 家候选店｜Chrome ${result.chromeExe || '(未找到)'}`);
+  console.log('将生成（纯 L2，无路径 / 端口）：');
+  for (const p of plan) {
+    const siteText = p.siteAmbiguous
+      ? `unknown（域名歧义：${p.siteCandidates.join('/')}，待 CSV 自证）`
+      : `site=${p.site}${p.sitePending ? '（待实测）' : ''}`;
+    console.log(`  ${p.id.padEnd(22)} ${p.profileSource.padEnd(10)} ${p.entryUrl.padEnd(30)} ${siteText}${p.exists ? ' [已存在]' : ''}`);
+  }
+  if (apply) {
+    console.log(`已写入：${result.written.join('、') || '（无）'}`);
+    if (result.skipped.length) console.log(`跳过：${result.skipped.join('、')}`);
+  } else {
+    console.log('\n这是 dry-run，未写任何文件。确认后加 --apply（安装器用 --apply --auto）。');
+  }
+  console.log('使用者仍需：登录一次 eBay 卖家后台 + 拨一次 chrome://inspect 调试开关。');
+  if (result.needsUser?.length) console.log('例外项：' + result.needsUser.join('；'));
+}

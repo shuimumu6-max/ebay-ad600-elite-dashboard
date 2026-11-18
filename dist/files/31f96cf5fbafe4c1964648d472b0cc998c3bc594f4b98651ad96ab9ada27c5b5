@@ -398,6 +398,21 @@
       </div>
     </div>
 
+    <!-- 多店铺：单店下拉对应 --shop，批量勾选对应 --shops；每店独立进程、严格串行。 -->
+    <div class="shopbar" id="shopbar" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:2px 0 4px">
+      <span style="font-size:12px;color:var(--muted,#6b7280)">下载店铺</span>
+      <select id="shopSelect" title="选一家店铺，下载会按该店配置在独立进程里跑" style="font-size:12px;padding:3px 6px;max-width:220px">
+        <option value="">默认单店（当前控制台）</option>
+      </select>
+      <span style="font-size:12px;color:var(--muted,#6b7280)">批量串行</span>
+      <div id="shopBatch" class="shop-batch" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+    </div>
+    <!-- 0 家店 = 全新机器的引导态：自动识别，不让使用者手填店铺数或地址 -->
+    <div id="shopGuide" style="display:none;align-items:center;flex-wrap:wrap;gap:8px;padding:2px 0 4px;font-size:12px;color:var(--muted,#6b7280)">
+      <span>还没配置店铺：向导会自动数出店铺数、读取每店首页入口，不用你提供地址。</span>
+      <button type="button" id="btnAddShop" title="只读探测 Chrome，生成 shops/*.json 与 local.json；不下载报表">自动识别并添加店铺</button>
+    </div>
+
     <nav class="viewtabs" id="viewTabs">
       <button data-view="download" class="on">下载报表</button>
       <button data-view="fields">字段字典</button>
@@ -712,7 +727,7 @@
             <div class="sect-t">高级选项（与后台参数一一对应）</div>
             <div class="field">
               <label>结果输出目录（留空用默认；改动后结果列表跟随新目录）</label>
-              <input type="text" id="outDir" placeholder="C:/Users/XPTTOP20/Desktop/测试下载">
+              <input type="text" id="outDir" placeholder="留空即用配置里的下载结果目录">
             </div>
             <div class="chips mt8">
               <label class="chip"><input type="checkbox" id="keepTabs"> 结束后保留标签页（调试用）</label>
@@ -1268,7 +1283,10 @@ function collect(){
     priorityCampaigns: prChecked(),
     keepTabs: $('#keepTabs').checked,
     outDir: $('#outDir').value.trim(),
-    apply: sync === 'apply'
+    apply: sync === 'apply',
+    // 多店铺：批量勾选优先于单店下拉；都不选 = 默认单店（老行为不变）
+    shopId: $('#shopSelect') ? $('#shopSelect').value : '',
+    shopIds: $$('#shopBatch input:checked').map(i => i.value)
   };
 }
 
@@ -1309,6 +1327,51 @@ function applyConnectGate(ok, reason){
 async function refreshState(){
   try{
     const s = await (await fetch('/api/state')).json();
+    // 多店铺清单：服务端读 shops/*.json，前端只渲染一次；账号未实测的店照样能选，
+    // 但下载时按店身份校验会拦下，避免 A 店报表进 B 店目录。
+    if (s.shops && !state.shopsRendered){
+      state.shopsRendered = true;
+      const sel = $('#shopSelect'), box = $('#shopBatch');
+      for (const shop of s.shops){
+        const opt = document.createElement('option');
+        opt.value = shop.id;
+        opt.textContent = `${shop.shopName}（${String(shop.site || '?').toUpperCase()}）${shop.sellerVerified ? '' : ' · 账号未实测'}`;
+        sel.appendChild(opt);
+        const label = document.createElement('label');
+        label.style.cssText = 'display:inline-flex;align-items:center;gap:3px;font-size:12px;cursor:pointer';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = shop.id;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(shop.shopName));
+        box.appendChild(label);
+      }
+    }
+    // 0 / 1 / N 自适应：0 引导态（只显示自动识别）、1 完全隐藏店铺栏（老单店行为）、
+    // N>1 才出现下拉 + 批量串行。唯一依据是服务端 listShops().length，不引入模式开关。
+    const shopCount = Array.isArray(s.shops) ? s.shops.length : 0;
+    const bar = $('#shopbar'), guide = $('#shopGuide'), addBtn = $('#btnAddShop');
+    if (bar) bar.style.display = shopCount > 1 ? 'flex' : 'none';
+    if (guide) guide.style.display = shopCount === 0 ? 'flex' : 'none';
+    if (addBtn && !state.shopBtnBound){
+      state.shopBtnBound = true;
+      addBtn.addEventListener('click', async () => {
+        addBtn.disabled = true;
+        toast('正在只读识别店铺（不下载报表）…');
+        try{
+          const r = await (await fetch('/api/init-shop', {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+          })).json();
+          if (!r.ok) throw new Error(r.error || '识别失败');
+          state.shopsRendered = false;
+          const sel0 = $('#shopSelect'), box0 = $('#shopBatch');
+          if (sel0) sel0.innerHTML = '<option value="">默认单店（当前控制台）</option>';
+          if (box0) box0.innerHTML = '';
+          await refreshState();
+          toast(`已生成 ${r.written.length} 项配置，现有 ${r.shopCount} 家店铺`, false);
+        }catch(e){ toast('识别失败：' + e.message, true); }
+        finally{ addBtn.disabled = false; }
+      });
+    }
     const dot = $('#dotChrome'), txt = $('#txtChrome'), fix = $('#btnFix');
     const b = s.bridge || {};
     applyConnectGate(!!s.chrome?.ok, s.chrome?.reason || '');

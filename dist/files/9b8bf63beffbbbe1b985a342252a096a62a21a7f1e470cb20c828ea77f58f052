@@ -1,15 +1,20 @@
 // 「一键补齐」的排队计划：把缺口拆成尽量少的几步，逐步串行执行。
 // 拆出来单独放，是为了能离线跑测试（不用真去 eBay 下载）。
 //
-// 约定（2026-11-10 二次重写：PLG 多预设合并进同一个进程，补齐全流程只剩 1 个下载步）：
-//   1. 流量逐日 + PLP 区间 + PLG 全部预设合并成**一个进程**：流量在一个标签页里按天循环，
-//      PLP 三个 campaign 在另外的标签页并行，PLG 走报表中心串行队列依次提交，互不抢；
-//   2. PLP 用「起止区间」一份搞定（campaign 页支持区间，报表里带 Date 列），
-//      不再一天提交一次；
-//   3. PLG 只有预设区间（今天/昨天/本周/上周），多预设用逗号列表一次传（如
+// 约定（2026-11-16 三次修正：campaign 页 PLP 一份区间报表只覆盖 1 天）：
+//   1. 流量逐日 + PLP 逐日 + PLG 全部预设合并成**一个进程**：流量在一个标签页里按天循环，
+//      PLP 三个 campaign 在另外的标签页并行（同一天内并行、跨天串行），PLG 走报表中心
+//      串行队列依次提交，互不抢；
+//   2. PLP **必须按天各出一份**（--plp-days d1,d2,...），不能只提交一个区间：
+//      campaign 页报的列是 Start date/End date，**没有 Date 列**，而体检（scan-gaps）
+//      与看板构建端（update-dashboard）都只取 Start date ⇒ 一份区间报表只覆盖 1 天。
+//      原来这里按「区间一次搞定」提交，结果是补 3 天只覆盖到 1 天，缺口永远清不掉；
+//   3. PLP 三种类型都要下（--plp-types listing,keyword,search）：
+//      原设计只传了 listing，关键词/搜索词两类根本没提交过，缺的是必然的；
+//   4. PLG 只有预设区间（今天/昨天/本周/上周），多预设用逗号列表一次传（如
 //      LASTWEEK,CURRENTWEEK），报表中心内部串行、不会认错文件；
-//   4. 步与步之间留 gapSec 秒（默认 8，限 5~120）——只有拆出多个进程时才用得上；
-//   5. 归档 / 推看板不在这里，等下载跑完、拿到运行目录后再补到队尾。
+//   5. 步与步之间留 gapSec 秒（默认 8，限 5~120）——只有拆出多个进程时才用得上；
+//   6. 归档 / 推看板不在这里，等下载跑完、拿到运行目录后再补到队尾。
 
 export const GAP_MIN_SEC = 5;
 export const GAP_MAX_SEC = 120;
@@ -105,12 +110,15 @@ export function planGapFill({ trafficDays = [], plgDays = [], plpDays = [], plgP
   const base = ['run-download.mjs', '--out', outDir, '--max-tabs', '10'];
   const steps = [];
 
-  // PLP 合并成一个区间提交（min~max）：campaign 页的报表带 Date 列，一次请求就能覆盖整段；
-  // 中间已存在的天会被看板按「日期|活动|关键词」复合键去重覆盖，不会重复计数。
-  // 原来按天提交，14 天就是 14 轮 × 2 分钟，一个区间一步就够。
+  // PLP 按天各提交一份：campaign 页报的列是 Start date/End date（没有 Date 列），
+  // 体检与看板构建端都只取 Start date ⇒ **一份区间报表只覆盖 1 天**。
+  // 原来这里把整段折成 [min, max] 一个区间提交，补 3 天实际只覆盖 1 天，
+  // 缺口永远清不掉（2026-11-16 实证：三次「补齐」后 PLP 三类仍缺 11-13/11-14）。
+  // 三种类型也必须一起下：只传 listing 的话关键词/搜索词两类从来没被提交过。
   const plpSegments = contiguousRanges(plpDays);
-  const plpRange = plpSegments.length
-    ? { start: plpSegments[0].start, end: plpSegments[plpSegments.length - 1].end }
+  const plpDaysSorted = [...new Set(plpDays)].filter(Boolean).sort();
+  const plpRange = plpDaysSorted.length
+    ? { start: plpDaysSorted[0], end: plpDaysSorted[plpDaysSorted.length - 1] }
     : null;
   if (traffic.length || plpRange || plgPresets.length) {
     const kinds = [];
@@ -121,8 +129,9 @@ export function planGapFill({ trafficDays = [], plgDays = [], plpDays = [], plgP
     if (traffic.length) { kinds.push('trafficDaily'); tail.push('--dates', daysArgSpec(traffic)); }
     if (plpRange) {
       kinds.push('plp');
-      tail.push('--plp-types', 'listing', '--campaigns', campaigns.join(','),
-        '--plp-start', plpRange.start, '--plp-end', plpRange.end);
+      // 逗号分隔多天 → download.mjs 按天拆任务（同天并行、跨天串行），每天各一份文件
+      tail.push('--plp-types', 'listing,keyword,search', '--campaigns', campaigns.join(','),
+        '--plp-days', plpDaysSorted.join(','));
     }
     if (plgPresets.length) {
       kinds.push('plg');
@@ -130,7 +139,7 @@ export function planGapFill({ trafficDays = [], plgDays = [], plpDays = [], plgP
     }
     const parts = [];
     if (traffic.length) parts.push(`流量逐日（${traffic[0]} ~ ${lastDay}，共 ${traffic.length} 天）`);
-    if (plpRange) parts.push(`PLP 物品列表（${plpRange.start} ~ ${plpRange.end}）`);
+    if (plpRange) parts.push(`PLP 物品列表/关键词/搜索词（${plpDaysSorted.length} 天逐日出，跨天串行）`);
     if (plgPresets.length) parts.push(`PLG 链接广告（预设 ${plgPresets.join(' + ')}，报表中心串行）`);
     steps.push({
       day: traffic.length ? `流量 ${traffic.length} 天` : (plpRange ? `PLP ${plpRange.start}~${plpRange.end}` : `PLG ${plgPresets.join('+')}`),

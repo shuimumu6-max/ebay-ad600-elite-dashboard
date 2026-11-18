@@ -1,6 +1,6 @@
 {
-  "version": "v202611111632",
-  "createdAt": "2026-11-11 16:32:49",
+  "version": "v202611181059",
+  "createdAt": "2026-11-18 10:59:40",
   "base": "https://shuimumu6-max.github.io/ebay-ad600-elite-dashboard/dist/",
   "files": [
     {
@@ -15,8 +15,8 @@
     },
     {
       "path": "app/bridge-daemon.mjs",
-      "hash": "efb5d57fd77c9a0cbbbdb602fcc7c3c1be6158b3caf463e7d95be8a7a7c49f25",
-      "size": 3301
+      "hash": "5be702c0fde1a69e78e39fa90073271030ca55d515b556cdf47041afb68999d5",
+      "size": 4472
     },
     {
       "path": "app/campaign-scan.mjs",
@@ -25,8 +25,8 @@
     },
     {
       "path": "app/cdp-bridge.mjs",
-      "hash": "365759c6de8df9a02849ce170d9af6c5ea2161df899825a0fcc8e57bca066c32",
-      "size": 18028
+      "hash": "652d4e5d288fe7e23e6a6baa3a8198c15b6a504176776c0e02a59cee120c6eb5",
+      "size": 20945
     },
     {
       "path": "app/cdp-endpoint.mjs",
@@ -35,18 +35,18 @@
     },
     {
       "path": "app/cdp.mjs",
-      "hash": "1561173dc85a3df0220986cf42d3c7ce31d8bf00d1ea05e0563e638b167f9aff",
-      "size": 8533
+      "hash": "17f5b79168fed74f6d8f039d58f154d3409eb732485216e590d9b0d83735bc19",
+      "size": 8881
     },
     {
       "path": "app/check-fields.mjs",
-      "hash": "4b2672cb537d81355a963bae195537512a8f5b3986713ffd3924a90b5f468449",
-      "size": 9070
+      "hash": "590971e17ee5fc9029c7162de5cc35032ec16d02a602346beec8c2d95c93c269",
+      "size": 9806
     },
     {
       "path": "app/check-gap-plan.mjs",
-      "hash": "f0fcf4fe4f42735c35ae95e638b463a222f7f140733ddc973f0464111f83ab9e",
-      "size": 7784
+      "hash": "53b4c431c16f28af21be10874efe2d7535a9a207b897fa28f40bd9234d17356d",
+      "size": 8280
     },
     {
       "path": "app/check-classify.mjs",
@@ -55,8 +55,8 @@
     },
     {
       "path": "app/check-options.mjs",
-      "hash": "751bd58e32a48908ce1cd8f184b34bb35694f78e0a00814ea95ccf41c3604dd5",
-      "size": 8288
+      "hash": "c2d6da61df46a2ae3d92f20217c6f1396232274d446666a478389e7012687370",
+      "size": 11279
     },
     {
       "path": "app/check-scan-window.mjs",
@@ -65,8 +65,8 @@
     },
     {
       "path": "app/check-ui.mjs",
-      "hash": "c3900cffd035731aa9bfec847bf694f9bf8bac3eaf4b697e77332c6a59ccd64e",
-      "size": 5406
+      "hash": "c290e2a856029c4ef85917000968f7602257809345885c40db28315773568869",
+      "size": 5859
     },
     {
       "path": "app/classify.mjs",
@@ -75,18 +75,18 @@
     },
     {
       "path": "app/config.mjs",
-      "hash": "e9c4e674101c5c08461134f50ffccfabd249990e7e43e45647c74d4cd3ba71f3",
-      "size": 8163
+      "hash": "7ac56e7e78c1eb51d368abe446003a92a4a561f0f1d7ad630f6f5bd914bafce5",
+      "size": 8551
     },
     {
       "path": "app/dashboard-server.mjs",
-      "hash": "af7c2e277e383ff149d2f4e67cf98600cf1e709d7e18af7b0808180f604c23db",
-      "size": 10339
+      "hash": "123fefbcf1d35de7ccee53b07092a8864905f240d5a3b925f70c7d0db4c30820",
+      "size": 11936
     },
     {
       "path": "app/download.mjs",
-      "hash": "e29101afa0a5719ea77e21cb4b68f640021a5a8481503f10ff9fe12d518c1a6a",
-      "size": 104113
+      "hash": "547dac8c3fdc07db23b9f59957e3da1873d781ac32b602667a7b7eb2eee6ce09",
+      "size": 110570
     },
     {
       "path": "app/engine.mjs",
@@ -95,8 +95,8 @@
     },
     {
       "path": "app/ensure-env.mjs",
-      "hash": "689805ecf2b731ca8d547f542bf25dbdabe2de31976b9905cec1f039ecb73702",
-      "size": 4266
+      "hash": "d0b5d237539bcc0599822e0fdf425506f961ead23285cb112394372f87fc0c0a",
+      "size": 5360
     },
     {
       "path": "app/env-check.mjs",
@@ -160,8 +160,8 @@
     },
     {
       "path": "app/reports.mjs",
-      "hash": "145da5c8e54993fefa5252650a6ee3decb314441d717e60d35ac06636128f01a",
-      "size": 33207
+      "hash": "3799bb46b69103053fa45d4227637e9fa8e6dff03cd217fdbd7c18ef85ecf7bb",
+      "size": 34893
     },
     {
       "path": "app/run-download.mjs",
@@ -175,23 +175,113 @@
     },
     {
       "path": "app/shop-config.mjs",
-      "hash": "97192ee7ea32d0fa9283d30269a4130575d4a159eba3908614b06b5a74d0e86a",
-      "size": 9116
+      "hash": "618216643a22414c3273abd6e704ffca55b65d931f8c481e1041d7af590dac37",
+      "size": 15245
+    },
+    {
+      "path": "app/console.json",
+      "hash": "31014b976f7128c5aec821790bc422507cff383f1fd363596129505a244a39a0",
+      "size": 171
+    },
+    {
+      "path": "app/launch-shop.mjs",
+      "hash": "4862d7bfab07a68f4ed738710ed65a2ba8ba308992f770b9bb3b13adbe2e8e51",
+      "size": 3238
+    },
+    {
+      "path": "app/open-entry.mjs",
+      "hash": "cddf2b5e049ed986d4cacaa164a4fec2316225253e34121de7b04b787c47499a",
+      "size": 11532
+    },
+    {
+      "path": "app/prepare-login.mjs",
+      "hash": "39ecba40a213afec1eb9faed066898ca591ed88beb32334b7978b57a5fc2ace1",
+      "size": 1856
+    },
+    {
+      "path": "app/probe-site.mjs",
+      "hash": "3ee886c57b214f7d0abbfde0384239a77482b44ca6b868babefc5b3fca325670",
+      "size": 14833
+    },
+    {
+      "path": "app/probe-all.mjs",
+      "hash": "174d5c376634805038fe0aa31ecd4a860def51d26ee38a7c487131988e807303",
+      "size": 5290
+    },
+    {
+      "path": "app/probe-machine.mjs",
+      "hash": "26f45ba5d452ae86c6911ea1558ad49f570c40474db4b7f837980b5a18b1d918",
+      "size": 8466
+    },
+    {
+      "path": "app/gen-site-baseline.mjs",
+      "hash": "e45b00352cfcc6a4f8f2fc232ed8dd5ac90a0b6728a12bf72b2e0151cbd45b3f",
+      "size": 2516
+    },
+    {
+      "path": "app/init.mjs",
+      "hash": "1343ad030c2b06d9eea3384afeb9a79296cb0439aac095a0721cd43004ecb935",
+      "size": 10365
+    },
+    {
+      "path": "app/export-migration.mjs",
+      "hash": "a498a1801cea1b0ba2679db2cb48439fa06e51fe75647df2f67e98cc735283ca",
+      "size": 2428
+    },
+    {
+      "path": "app/check-shops.mjs",
+      "hash": "aa7b8e60917df62aaa58e376aec7492a9df5f0e24e0c1d6df20c4ff2499599e9",
+      "size": 7323
+    },
+    {
+      "path": "app/check-sites.mjs",
+      "hash": "98d5fbb6b4011a6d772089d7c397a301949d31094b3e597d37d410c8a2b78ff4",
+      "size": 3069
+    },
+    {
+      "path": "app/site-rows.mjs",
+      "hash": "c1290aea6be340dcafd9a5ad508c543d47aef69a794016be7a8be9983108a4cc",
+      "size": 9933
+    },
+    {
+      "path": "app/probe-rows.mjs",
+      "hash": "25f2264a7b5856c3449edb9b202621cc849e52be6d9f3159a429751c13f2b483",
+      "size": 18757
+    },
+    {
+      "path": "app/check-site-runtime.mjs",
+      "hash": "403c8249d11bb0c0fe4ff9ada86d2f93d182cfce7765c4ebbce7ceb0547ed646",
+      "size": 11517
+    },
+    {
+      "path": "app/check-portability.mjs",
+      "hash": "73081feba5ec62149d2626fa5ae68da6fd244685f66da6987f85992027792c3c",
+      "size": 9196
+    },
+    {
+      "path": "app/drill-portability.mjs",
+      "hash": "062e3e85f2a9917388970e18e800188c2aa8b96770691092830c41f45150d9ab",
+      "size": 12136
+    },
+    {
+      "path": "app/dist-packlist.mjs",
+      "hash": "050cfc993291147664ddce377b88b11569935f7babf84459121d7810b020fe3f",
+      "size": 2458
     },
     {
       "path": "ui/index.html",
-      "hash": "1238463388935296f6c33018a8d01ab9964aa42c508b0f2a964f4a1b43419fff",
-      "size": 116127
+      "hash": "31f96cf5fbafe4c1964648d472b0cc998c3bc594f4b98651ad96ab9ada27c5b5",
+      "size": 120190
     },
     {
       "path": "ui/server.mjs",
-      "hash": "36f2152bb25d8820b467bb98429a22d24b7ee16eda3a6f0af167fa4fe313d194",
-      "size": 55953
+      "hash": "eb14757282c450f0e6f154f7f32ce378eb9c9b96325464c62db9a0f3f828809d",
+      "size": 57959
     },
     {
       "path": "ui/gap-plan.mjs",
-      "hash": "30ebeb25d115e4b252b513345235cc51e286c35063173fa9fd8bc8a6a74fe114",
-      "size": 8513
+      "hash": "9b8bf63beffbbbe1b985a342252a096a62a21a7f1e470cb20c828ea77f58f052",
+      "size": 9413
     },
     {
       "path": "一键下载.cmd",
@@ -230,8 +320,8 @@
     },
     {
       "path": "看板/ebay-shop-dashboard.html",
-      "hash": "93dfa2bf83977c94b56c3d66520cbaa13d75ee60e42d48a3a9a9dd4f7ec3ce1b",
-      "size": 160480
+      "hash": "260a224015ed48520ab880a80a4cf287c6a805a19a5487955a5ba47ded10f659",
+      "size": 171617
     },
     {
       "path": "在线更新.mjs",

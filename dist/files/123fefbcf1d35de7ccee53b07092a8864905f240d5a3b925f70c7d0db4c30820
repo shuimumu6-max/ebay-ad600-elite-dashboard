@@ -17,6 +17,22 @@ const HTML = join(BOARD_DIR, 'ebay-shop-dashboard.html');
 const PORT_FILE = join(BOARD_DIR, '服务端口.txt');
 const LOG_FILE = join(BOARD_DIR, '服务日志.txt');
 
+// 多店铺：顶部「店铺」下拉切换数据目录。店铺来自 shops\<id>.json（没店时退回单店 数据\）。
+function loadShops() {
+  const list = [];
+  const shopsDir = join(ROOT, 'shops');
+  let ids = [];
+  try { ids = readdirSync(shopsDir).filter(f => f.endsWith('.json') && !f.startsWith('_')).map(f => f.replace(/\.json$/, '')); } catch { /* 无 shops 目录 */ }
+  for (const id of ids) {
+    let label = id;
+    try { label = String(JSON.parse(readFileSync(join(shopsDir, `${id}.json`), 'utf8').replace(/^\uFEFF/, '')).shopName || '').trim() || id; } catch { /* 读不动就用 id */ }
+    list.push({ id, label, dir: join(ROOT, '店铺', id, '数据') });
+  }
+  if (!list.length) list.push({ id: 'default', label: '本店', dir: DATA_DIR });
+  return list;
+}
+const SHOPS = loadShops();
+
 const argv = process.argv.slice(2);
 const argOf = name => {
   const i = argv.indexOf(`--${name}`);
@@ -66,8 +82,8 @@ function collectCsv(dir, out = [], inPending = false) {
   return out;
 }
 
-function buildBundle() {
-  const all = collectCsv(DATA_DIR);
+function buildBundle(dir) {
+  const all = collectCsv(dir);
   // 1) 同名只留一份，优先「90-待处理」（那里是归档落点，名字最干净）
   const byName = new Map();
   for (const item of all) {
@@ -107,11 +123,13 @@ function sha256(path) {
 }
 
 // 目录里可能有几十份 CSV，每次请求都全量 stat 会拖慢页面：缓存 3 秒
-let cache = { at: 0, bundle: null };
-function bundle(force = false) {
+const caches = new Map();
+function bundle(dir, force = false) {
+  const cache = caches.get(dir) || { at: 0, bundle: null };
   if (!force && cache.bundle && Date.now() - cache.at < 3000) return cache.bundle;
-  cache = { at: Date.now(), bundle: buildBundle() };
-  return cache.bundle;
+  const next = { at: Date.now(), bundle: buildBundle(dir) };
+  caches.set(dir, next);
+  return next.bundle;
 }
 
 // ---------- HTTP ----------
@@ -131,10 +149,27 @@ const server = createServer((req, res) => {
     return send(200, JSON.stringify({ ok: true, app: 'ebay-dashboard-server', pid: process.pid, root: ROOT }), 'application/json; charset=utf-8');
   }
 
-  if (path === '/auto-data.json') {
-    const b = bundle();
+  if (path === '/shops.json') {
+    return send(200, JSON.stringify({ shops: SHOPS.map(s => ({ id: s.id, label: s.label })) }), 'application/json; charset=utf-8');
+  }
+
+  // 每家店的数据：/shop/<id>/auto-data.json 与 /shop/<id>/auto-data/<i>；不带前缀走第一家。
+  let shop = SHOPS[0];
+  let rest = path;
+  const shopMatch = path.match(/^\/shop\/([^/]+)\/(auto-data\.json|auto-data\/(\d+))$/);
+  if (shopMatch) {
+    const found = SHOPS.find(s => s.id === decodeURIComponent(shopMatch[1]));
+    if (!found) return send(404, '没有这个店铺');
+    shop = found;
+    rest = '/' + shopMatch[2];
+  }
+
+  if (rest === '/auto-data.json') {
+    const b = bundle(shop.dir);
     return send(200, JSON.stringify({
       version: 1,
+      shopId: shop.id,
+      shopLabel: shop.label,
       bundleId: b.bundleId,
       root: ROOT,                       // 页面用它区分「这是哪一份工具包的数据」
       count: b.files.length,
@@ -143,9 +178,9 @@ const server = createServer((req, res) => {
     }), 'application/json; charset=utf-8');
   }
 
-  if (path.startsWith('/auto-data/')) {
-    const index = Number(path.slice('/auto-data/'.length));
-    const b = bundle();
+  if (rest.startsWith('/auto-data/')) {
+    const index = Number(rest.slice('/auto-data/'.length));
+    const b = bundle(shop.dir);
     const target = Number.isInteger(index) ? b.files[index] : null;
     if (!target) return send(404, '没有这份报表');
     let body;
@@ -232,7 +267,7 @@ if (!chosen) {
 }
 
 try { writeFileSync(PORT_FILE, String(chosen), 'utf8'); } catch { /* 端口文件写不了不影响使用 */ }
-const b = bundle(true);
+const b = bundle(SHOPS[0].dir, true);
 log(`已启动：http://127.0.0.1:${chosen}/  报表 ${b.files.length} 份 / ${(b.totalBytes / 1048576).toFixed(1)} MB`);
 
 // 空闲自动退出：不常驻、不留后台进程

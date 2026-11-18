@@ -1,0 +1,55 @@
+// 打开某店铺的"用户自己的 Chrome"窗口（**不克隆、不起独立实例**）。
+//
+// 2026-11-18 实测：把 Profile 克隆到独立 user-data-dir 起新实例，会被 eBay 判为"新设备"，
+// 卖家页被甩到 splashui/captcha → signin，全部要求重登 → 下不了。
+// 正确姿势：用**用户自己的 Chrome**（日常 user-data-dir）+ 该店对应的 Profile（各自登录），
+// 再拨一次 chrome://inspect 的 Allow remote debugging；桥会自动连上（in-place 调试）。
+//
+// 用法：node app/launch-shop.mjs --shop <id>
+import { existsSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const argOf = name => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : null; };
+const shopId = argOf('shop');
+if (!shopId) { console.error('用法：node app/launch-shop.mjs --shop <id>'); process.exit(2); }
+
+const shopFile = join(ROOT, 'shops', `${shopId}.json`);
+if (!existsSync(shopFile)) { console.error(`找不到店铺配置：${shopFile}`); process.exit(2); }
+const shop = JSON.parse(readFileSync(shopFile, 'utf8').replace(/^\uFEFF/, ''));
+let l3 = {};
+try { l3 = JSON.parse(readFileSync(join(ROOT, 'local.json'), 'utf8').replace(/^\uFEFF/, '')).shops?.[shopId] || {}; } catch { /* 无 local.json 时按店铺定义里的 profileSource */ }
+const profileSource = l3.profileSource || shop.profileSource;
+if (!profileSource) { console.error(`店铺 ${shopId} 没有 profileSource（在 local.json 或 shops/${shopId}.json）`); process.exit(2); }
+
+const candidates = [
+  l3.chromeExe, shop.chromeExe,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe') : null,
+].filter(Boolean);
+const chromeExe = candidates.find(p => existsSync(p));
+if (!chromeExe) { console.error('找不到 chrome.exe'); process.exit(2); }
+
+console.log('================ 打开店铺窗口（用户自己的 Chrome） ================');
+console.log(`店铺   : ${shopId}`);
+console.log(`Profile: ${profileSource}`);
+console.log('');
+
+// 只带 --profile-directory（不指定 --user-data-dir、不指定调试端口）——
+// 打开的就是用户日常那个 Chrome，调试靠"原地调试"（chrome://inspect 开关）。
+const child = spawn(chromeExe.replace(/\//g, '\\'), [
+  `--profile-directory=${profileSource}`,
+  '--no-first-run',
+  '--no-default-browser-check'
+], { detached: true, stdio: 'ignore', windowsHide: false });
+child.unref();
+
+console.log('[OK] 已打开该 Profile 的 Chrome 窗口。');
+console.log('接下来（每家店只需一次）：');
+console.log('  1) 在这个窗口登录目标店的 eBay 卖家后台；');
+console.log('  2) 打开 chrome://inspect/#remote-debugging，把 Allow remote debugging 拨到开。');
+console.log('然后：双击「启动下载环境.cmd」→「一键下载.cmd」；多店用 download.mjs --shop <id> / --shops a,b。');

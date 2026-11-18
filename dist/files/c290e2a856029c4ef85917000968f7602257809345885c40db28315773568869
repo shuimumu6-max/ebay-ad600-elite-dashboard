@@ -1,8 +1,13 @@
 // 临时验收脚本：用真实浏览器打开控制台，检查渲染结果与运行时报错
 import { ensureBridge, sleep, cdp } from './cdp.mjs';
 import { openTab } from './pages.mjs';
+import { SHOP } from './shop-config.mjs';
 
-const URL = 'http://127.0.0.1:7788/';
+// 端口不写死：控制台端口按店来自配置（my-shop.json / shops/<id>.json 或本机 local.json），
+// 写死 7788 会让「本实例是 7791」这种正常情况误报成 4 项验收失败（迁移到别人电脑更甚）。
+// 解析顺序与 ui/server.mjs 完全一致：CONSOLE_PORT 环境变量 > 店铺配置。
+const PORT = Number(process.env.CONSOLE_PORT || SHOP.consolePort || 7788);
+const URL = `http://127.0.0.1:${PORT}/`;
 const HOOK = `(() => {
   window.__errs = [];
   window.addEventListener('error', e => window.__errs.push('error: ' + (e.message || '')));

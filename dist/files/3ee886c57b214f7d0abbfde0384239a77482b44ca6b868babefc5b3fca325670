@@ -1,0 +1,245 @@
+// 阶段 0 · 站点只读探针（只读页面 DOM，绝不点击任何提交下载按钮、绝不填写 eBay 地址）。
+//
+// 用法：
+//   node app/probe-site.mjs --shop uk-obd2                    # 只读采集入口页 + 页面内链接可达的页面
+//   node app/probe-site.mjs --shop uk-obd2 --record-seller   # 采集 + 把实测卖家名回填 shops/<id>.json
+//   node app/probe-site.mjs --shop uk-obd2 --cookies-only    # 只看 Cookie 解密状态
+//   node app/probe-site.mjs --shop uk-obd2 --open-login      # 点快捷方式开干净入口并把窗口置前
+//
+// 2026-11-14 改版（用户指正 + 实测）：
+//   旧版按 site 拼 www.ebay.co.uk / www.ebay.com.au，再直跳 /sh/performance/traffic、
+//   /sh/reports/downloads、signin，反复触发 Akamai「Security measure」。
+//   现改为：入口一律由 app/open-entry.mjs 点击 Chrome 新标签页的 eBay 首页快捷方式进入
+//   （UK 实测落地 https://www.ebay.com.hk/、captcha=false）；后续页面只通过**页面内链接点击**
+//   到达，找不到链接就如实记录缺失，绝不退回手填地址。
+//
+// 依赖：该店独立实例已由 `node app/launch-shop.mjs --shop <id> --daemon` 常驻。
+// 产出：docs/站点探针原始-<shopId>.json（原始证据，不直接写 sites/*.json）。
+// 原则：只记录页面上真实出现的内容，字段判读由人工完成，禁止从 us.json 继承或猜测。
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadShopContext, connectCdp, openEntry } from './open-entry.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const shopId = argv[argv.indexOf('--shop') + 1];
+if (!shopId) { console.error('用法：node app/probe-site.mjs --shop <id>'); process.exit(2); }
+const has = flag => argv.includes(flag);
+const { shop, endpoint, shopFile } = loadShopContext(shopId);
+const site = shop.site;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// 页面里只读采集：卖家名沿用 campaign-scan.mjs 的 SELLER 选择器（Hi xxx!），
+// 并补充香港站首页的「你好，xxx」写法。额外采集表格行首列、控件文案、页面全文，
+// 供人工判读报表中心行名 / Date range 预设 / 站点与币种线索。
+const COLLECT = `(() => {
+  const t = n => ((n && (n.innerText || n.textContent)) || '').trim().replace(/\\s+/g, ' ');
+  const el = document.querySelector('.gh-identity__greeting') || document.querySelector('#gh-ug') || document.querySelector('.gh-identity');
+  const greeting = el ? t(el) : '';
+  const m = greeting.match(/^(?:Hi|Hello|Welcome back|你好)[,，!\\s]+(.+?)[!,.，\\s]*$/i);
+  const raw = m ? m[1] : (greeting && greeting.length < 40 ? greeting.replace(/^(?:Hi|你好)[,，!\\s]+/i, '') : '');
+  // 未登录时页头是「你好！登入或註冊」/「Hi! Sign in or register」，绝不能当卖家名。
+  const seller = raw && !/登入|註冊|sign in|register|Log in|登入或/i.test(raw) ? raw : '';
+  const body = document.body ? document.body.innerText : '';
+  const uniq = a => [...new Set(a.map(t).filter(x => x && x.length < 160))].slice(0, 240);
+  const rows = [...document.querySelectorAll('tr, li[role="row"], [role="row"]')]
+    .map(r => r.querySelector('td, [role="gridcell"], .textual-display') || r.firstElementChild || r);
+  const controls = [...document.querySelectorAll('button, option, select, a[role="menuitem"], [role="option"]')];
+  return {
+    url: location.href,
+    title: document.title,
+    readyState: document.readyState,
+    greeting,
+    seller,
+    textLength: body.length,
+    textHead: body.slice(0, 6000),
+    signInish: /sign in|log in|登入或註冊|pardon our interruption|verify your identity|not signed in|security measure/i.test(body.slice(0, 2500)),
+    captcha: /security measure|pardon our interruption|verify your identity/i.test(body.slice(0, 3000)),
+    rowLabels: uniq(rows),
+    controlLabels: uniq(controls),
+    siteHints: {
+      currencies: [...new Set((body.match(/\\b(USD|GBP|AUD|EUR|US\\$|£|A\\$|HK\\$)\\b/g) || []))].slice(0, 12),
+      listingSites: [...new Set((body.match(/Listing site[:\\s]+([A-Z]{2})/gi) || []))].slice(0, 8),
+      dateSamples: [...new Set((body.match(/\\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+\\d{1,2},?\\s+\\d{2,4}\\b/gi) || []))].slice(0, 15)
+    },
+    hubLinks: [...document.querySelectorAll('a[href]')]
+      .map(a => a.getAttribute('href'))
+      .filter(h => h && /\\/sh\\/|seller|reports|signin/i.test(h))
+      .slice(0, 30)
+  };
+})()`;
+
+async function collectTab(cdp, targetId) {
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await cdp.send('Runtime.enable', {}, sessionId).catch(() => {});
+  let snap = null;
+  for (let i = 0; i < 16; i++) {
+    await sleep(600);
+    const r = await cdp.send('Runtime.evaluate', { expression: COLLECT, returnByValue: true }, sessionId).catch(() => null);
+    snap = r?.result?.value || null;
+    if (snap && snap.readyState === 'complete' && snap.textLength > 150) break;
+  }
+  return snap;
+}
+
+// 只点击页面里真实存在的链接（trusted 鼠标事件），绝不构造 eBay URL 去导航。
+// needles 按优先级匹配 href 文本；找不到就返回 skipped，不回退到手填地址。
+async function clickPageLink(cdp, fromTargetId, needles, label) {
+  const needlesJson = JSON.stringify(needles);
+  const findExpr = `(() => {
+    const needles = ${needlesJson};
+    const links = [...document.querySelectorAll('a[href]')];
+    for (const n of needles) {
+      const a = links.find(x => (x.getAttribute('href') || '').includes(n));
+      if (a) { const r = a.getBoundingClientRect(); return { href: a.getAttribute('href'), matched: n,
+        x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height }; }
+    }
+    return null;
+  })()`;
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: fromTargetId, flatten: true });
+  const found = (await cdp.send('Runtime.evaluate', { expression: findExpr, returnByValue: true }, sessionId))?.result?.value || null;
+  if (!found || !found.w) {
+    return { label, mode: 'page-link', skipped: true, reason: `入口页没有匹配链接 ${needles.join(' / ')}（多半尚未登录，Seller Hub 链接才会出现）`, snapshot: null };
+  }
+  const before = (await cdp.send('Target.getTargets')).targetInfos.filter(t => t.type === 'page').map(t => t.targetId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: found.x, y: found.y }, sessionId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: found.x, y: found.y, button: 'left', clickCount: 1 }, sessionId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: found.x, y: found.y, button: 'left', clickCount: 1 }, sessionId);
+
+  let landed = null;
+  for (let i = 0; i < 14; i++) {
+    await sleep(700);
+    const t = await cdp.send('Target.getTargets');
+    const pages = t.targetInfos.filter(p => p.type === 'page');
+    landed = pages.find(p => !before.includes(p.targetId) && /ebay\./i.test(p.url))
+      || pages.find(p => p.targetId === fromTargetId && needles.some(n => p.url.includes(n)));
+    if (landed) break;
+  }
+  if (!landed) {
+    return { label, mode: 'page-link', clickedHref: found.href, skipped: true, reason: '点击后未等到目标页面（可能需要先登录）', snapshot: null };
+  }
+  const snapshot = await collectTab(cdp, landed.targetId);
+  // 新开的标签采完即关，避免标签堆积；若就是入口标签本身则保留给人工登录用。
+  if (landed.targetId !== fromTargetId) await cdp.send('Target.closeTarget', { targetId: landed.targetId }).catch(() => {});
+  return { label, mode: 'page-link', clickedHref: found.href, matched: found.matched, targetId: landed.targetId, snapshot };
+}
+
+const validSeller = s => !!s && !/登入|註冊|sign in|register|Log in/i.test(s);
+
+function recordSeller(out) {
+  const found = [...new Set(out.pages.map(p => p.snapshot?.seller).filter(validSeller))];
+  if (found.length !== 1) {
+    return { ok: false, reason: found.length ? `读到多个不同卖家名：${found.join(' / ')}` : '未读到卖家名（多半尚未登录）' };
+  }
+  const seller = found[0];
+  const before = { sellerName: shop.sellerName || '', sellerVerified: !!shop.sellerVerified };
+  shop.sellerName = seller;
+  shop.sellerVerified = true;
+  shop.sellerEvidence = {
+    source: 'probe-site.mjs 只读读取店铺首页/Seller Hub 页头 .gh-identity__greeting',
+    greeting: out.pages.find(p => p.snapshot?.seller)?.snapshot?.greeting || '',
+    probedAt: out.probedAt,
+    note: `来自 ${shopId} 独立实例（${shop.profileSource}）实测，非快捷方式名推断`
+  };
+  writeFileSync(shopFile, JSON.stringify(shop, null, 2) + '\n', 'utf8');
+  return { ok: true, seller, before, after: { sellerName: seller, sellerVerified: true } };
+}
+
+async function main() {
+  const { cdp, ws } = await connectCdp(endpoint.wsUrl);
+  try {
+    const targets = await cdp.send('Target.getTargets');
+    const before = targets.targetInfos.filter(t => t.type === 'page').map(t => ({ url: t.url, title: t.title, targetId: t.targetId }));
+
+    // Cookie 是否已能被 Chrome 解密：区分「App-Bound 加密绑定导致登录态丢失」与「Cookie 在但 eBay 风控拦了页面」。
+    let cookies = { error: null, total: 0, ebay: 0, names: [] };
+    try {
+      const r = await cdp.send('Storage.getCookies');
+      const list = r?.cookies || [];
+      const ebay = list.filter(c => /ebay\./i.test(c.domain || ''));
+      const signinNames = ['s', 'nonsession', 'ebay', 'dp1'];
+      cookies = {
+        total: list.length, ebay: ebay.length,
+        names: [...new Set(ebay.map(c => c.name))].slice(0, 40),
+        sampleDomains: [...new Set(list.map(c => c.domain))].slice(0, 15),
+        signinCookies: ebay.filter(c => signinNames.includes(c.name)).map(c => ({
+          name: c.name, domain: c.domain, session: c.session, expires: c.expires,
+          valueLength: (c.value || '').length,
+          expired: c.expires > 0 && c.expires * 1000 < Date.now()
+        }))
+      };
+    } catch (error) { cookies.error = error.message; }
+    if (has('--cookies-only')) {
+      console.log(JSON.stringify({ shopId, site, cookies }, null, 2));
+      return;
+    }
+    if (has('--open-login')) {
+      const out = await openEntry(cdp, shop, { keepExisting: true });
+      console.log(JSON.stringify({
+        shopId, site, action: out.action, configuredEntry: shop.entryUrl,
+        tileHref: out.tileHref, targetId: out.targetId, snapshot: out.snapshot,
+        note: '入口靠点击新标签页快捷方式，未填写任何 eBay 地址、未直跳登录页。',
+        next: '请在窗口右上角点「登入 / Sign in」登录该店账号；登录后跑 node app/probe-all.mjs。'
+      }, null, 2));
+      return;
+    }
+
+    const out = {
+      shopId, site, entryMode: 'ntp-tile', configuredEntry: shop.entryUrl,
+      endpoint: endpoint.wsUrl, probedAt: new Date().toISOString(),
+      note: '只读探针：入口靠点击新标签页快捷方式，后续页面靠页面内链接点击；未填写任何 eBay 地址、未点击下载/提交按钮。',
+      existingPagesBefore: before, cookies, pages: []
+    };
+
+    // 1) 入口首页：点快捷方式（已有该店首页标签则复用，不重复导航）。
+    const entry = await openEntry(cdp, shop, { keepExisting: true });
+    const homeSnap = await collectTab(cdp, entry.targetId);
+    out.pages.push({ label: '站点首页', mode: 'ntp-tile', requestedUrl: shop.entryUrl, tileHref: entry.tileHref, targetId: entry.targetId, snapshot: homeSnap });
+    console.log(`[站点首页] ${homeSnap?.url || '(无)'} | seller=${homeSnap?.seller || '(未读到)'} | 文本 ${homeSnap?.textLength || 0} 字 | captcha=${homeSnap?.captcha} | 入口=${entry.action}`);
+
+    // 2/3) 内部页只从页面内链接点击进入；找不到就如实记录，不直跳。
+    const inner = [
+      { label: 'Seller Hub 概览', needles: ['/sh/ovw', 'seller hub', '/sh/research'] },
+      { label: 'Traffic 报表页', needles: ['/sh/performance/traffic', 'performance/traffic'] },
+      { label: '报表中心下载页', needles: ['/sh/reports/downloads', 'reports/downloads'] }
+    ];
+    for (const c of inner) {
+      try {
+        const page = await clickPageLink(cdp, entry.targetId, c.needles, c.label);
+        out.pages.push(page);
+        const s = page.snapshot;
+        console.log(`[${c.label}] ${s ? `${s.url} | 行名候选 ${(s.rowLabels || []).length} | 控件 ${(s.controlLabels || []).length}` : `跳过：${page.reason}`}`);
+      } catch (error) {
+        out.pages.push({ label: c.label, mode: 'page-link', error: error.message });
+        console.log(`[${c.label}] 失败：${error.message}`);
+      }
+    }
+
+    const sellers = [...new Set(out.pages.map(p => p.snapshot?.seller).filter(validSeller))];
+    const blocked = out.pages.some(p => /signin\.ebay|splashui\/captcha/i.test(p.snapshot?.url || '') || p.snapshot?.captcha);
+    out.loginState = sellers.length === 1 && !blocked
+      ? { loggedIn: true, seller: sellers[0] }
+      : { loggedIn: false, reason: blocked ? '被登录挑战 / 验证码拦截' : '未读到卖家名（站点字段需登录后重采）', sellers };
+    out.siteFieldsPending = [
+      'hosts.traffic / reports / campaign（登录后由页面内链接实测，不得按 site 猜）',
+      'rowNames.orders（9 种，含 24h 长破折号）',
+      'rowNames.listings（3 种）/ marketing（5 种）',
+      'rcRanges / orderRanges（Date range 预设）',
+      'timezone / reportTimezone / reportLagDays',
+      'currency / listingSite / csvHeaders',
+      'dateFormats.actualCsvDate（需该店已归档 CSV 抽样）'
+    ];
+    if (has('--record-seller')) out.sellerRecord = recordSeller(out);
+
+    const outPath = join(ROOT, 'docs', `站点探针原始-${shopId}.json`);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, JSON.stringify(out, null, 2) + '\n', 'utf8');
+    console.log(`登录态：${out.loginState.loggedIn ? '已登录 ' + out.loginState.seller : '未登录 — ' + out.loginState.reason}`);
+    if (out.sellerRecord) console.log(`卖家名回填：${out.sellerRecord.ok ? out.sellerRecord.seller : '跳过（' + out.sellerRecord.reason + '）'}`);
+    console.log(`原始证据已写入：${outPath}`);
+    if (!out.loginState.loggedIn) console.log('提示：站点字段一律待人工判读，禁止继承 sites/us.json。');
+  } finally { ws.close(); }
+}
+
+main().catch(error => { console.error(`[probe-site] ${error.stack || error.message}`); process.exitCode = 1; });

@@ -1,0 +1,231 @@
+// 阶段 0 · 店铺入口：点击 Chrome 新标签页的 eBay 首页快捷方式（ntp-tile）。
+//
+// 用法：
+//   node app/open-entry.mjs --shop uk-obd2                # 点快捷方式进入该店首页并回报状态
+//   node app/open-entry.mjs --shop uk-obd2 --list-tiles   # 只读列出新标签页里的快捷方式
+//   node app/open-entry.mjs --shop uk-obd2 --keep-existing# 已有该店首页标签就只激活，不重复点
+//
+// 背景（2026-11-14 用户指正 + 实测）：
+//   5 个 Profile 的新标签页里都有 eBay 首页快捷方式；除 US 老店是 www.ebay.com 外，
+//   其余 4 家店都是 eBay 中国香港站 ebay.com.hk。用 Target.createTarget 直接按 site 拼
+//   www.ebay.co.uk / signin / /sh/reports/downloads 会触发 Akamai「Security measure」；
+//   改成打开 chrome://new-tab-page/ 并用真实鼠标事件点 tile，实测落地
+//   https://www.ebay.com.hk/、captcha=false、首页正常。
+//
+// 铁律：本文件唯一允许传给 Target.createTarget 的 URL 是 chrome://new-tab-page/。
+//   shops/<id>.json 的 entryUrl 只是「校验 tile 是不是该店那一个」的基准，
+//   绝不能拿去当导航目标；站点域名、signin、报表页一律不在这里拼。
+//
+// 边界：只操作该店独立实例的浏览器会话；不提交任何报表下载、不改磁盘 Profile 文件。
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const NTP = 'chrome://new-tab-page/';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+export function loadShopContext(shopId) {
+  const shopFile = join(ROOT, 'shops', `${shopId}.json`);
+  const epFile = join(ROOT, '店铺实例', shopId, 'endpoint.json');
+  if (!existsSync(shopFile)) throw new Error(`店铺配置不存在：${shopFile}`);
+  if (!existsSync(epFile)) throw new Error(`没有端点文件，请先常驻启动实例：node app/launch-shop.mjs --shop ${shopId} --daemon`);
+  const shop = JSON.parse(readFileSync(shopFile, 'utf8').replace(/^\uFEFF/, ''));
+  const endpoint = JSON.parse(readFileSync(epFile, 'utf8').replace(/^\uFEFF/, ''));
+  if (!shop.entryUrl) throw new Error(`shops/${shopId}.json 缺少 entryUrl（须来自 Top Sites 实测）`);
+  if (shop.entryMode && shop.entryMode !== 'ntp-tile') throw new Error(`不支持的 entryMode：${shop.entryMode}`);
+  return { shop, endpoint, shopFile };
+}
+
+class Cdp {
+  constructor(ws) {
+    this.ws = ws;
+    this.id = 0;
+    this.pending = new Map();
+    ws.addEventListener('message', event => {
+      let msg;
+      try { msg = JSON.parse(String(event.data)); } catch { return; }
+      if (!msg.id || !this.pending.has(msg.id)) return;
+      const { resolve, reject, timer } = this.pending.get(msg.id);
+      clearTimeout(timer);
+      this.pending.delete(msg.id);
+      if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+      else resolve(msg.result);
+    });
+  }
+  send(method, params = {}, sessionId) {
+    return new Promise((resolve, reject) => {
+      const id = ++this.id;
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`${method} 超时`)); }, 15000);
+      this.pending.set(id, { resolve, reject, timer });
+      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  }
+}
+
+export async function connectCdp(wsUrl) {
+  const ws = new WebSocket(wsUrl);
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', () => reject(new Error('WS 连接失败')), { once: true });
+    setTimeout(() => reject(new Error('WS 连接超时')), 10000);
+  });
+  return { cdp: new Cdp(ws), ws };
+}
+
+// 递归穿透 shadow DOM，只读列出新标签页里的 eBay 快捷方式（含可点击坐标）。
+const TILE_EXPR = `(() => {
+  const out = [];
+  const walk = (root, depth) => {
+    if (depth > 8) return;
+    for (const el of root.querySelectorAll('*')) {
+      const href = el.getAttribute && el.getAttribute('href');
+      if (href && /ebay\\./i.test(href)) {
+        const r = el.getBoundingClientRect();
+        out.push({ href, tag: el.tagName, x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height });
+      }
+      if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+    }
+  };
+  walk(document, 0);
+  return out;
+})()`;
+
+const SNAP_EXPR = `(() => {
+  const t = document.body ? document.body.innerText : '';
+  const el = document.querySelector('.gh-identity__greeting') || document.querySelector('#gh-ug');
+  const greeting = el ? (el.innerText || el.textContent || '').trim() : '';
+  const m = greeting.match(/^(?:Hi|Hello|Welcome back|你好)[,，!\\s]+(.+?)[!,.，\\s]*$/i);
+  const raw = m ? m[1] : (greeting && greeting.length < 40 ? greeting.replace(/^(?:Hi|你好)[,，!\\s]+/i, '') : '');
+  const seller = raw && !/登入|註冊|sign in|register|Log in/i.test(raw) ? raw : '';
+  return {
+    url: location.href, title: document.title, readyState: document.readyState,
+    textLength: t.length, greeting, seller,
+    captcha: /security measure|pardon our interruption|verify your identity/i.test(t.slice(0, 3000)),
+    signInish: /sign in|log in|登入或註冊|登入|pardon our interruption|security measure/i.test(t.slice(0, 2500)),
+    textHead: t.slice(0, 800),
+    hubLinks: [...document.querySelectorAll('a[href]')]
+      .map(a => a.getAttribute('href'))
+      .filter(h => h && /\\/sh\\/|seller|reports|signin/i.test(h)).slice(0, 30)
+  };
+})()`;
+
+function hostOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; }
+}
+
+export async function listTiles(cdp) {
+  const { targetId } = await cdp.send('Target.createTarget', { url: NTP, background: true });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  try {
+    await sleep(1800);
+    const r = await cdp.send('Runtime.evaluate', { expression: TILE_EXPR, returnByValue: true }, sessionId);
+    return r?.result?.value || [];
+  } finally {
+    await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+  }
+}
+
+// 已有该店首页标签就复用，不重复点击、不重复导航。
+async function existingEntryTab(cdp, shop) {
+  const t = await cdp.send('Target.getTargets');
+  const host = hostOf(shop.entryUrl);
+  return t.targetInfos.find(p => p.type === 'page' && hostOf(p.url) === host && !/chrome:\/\//.test(p.url));
+}
+
+export async function snapshotTab(cdp, targetId) {
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await cdp.send('Runtime.enable', {}, sessionId).catch(() => {});
+  let snap = null;
+  for (let i = 0; i < 16; i++) {
+    await sleep(600);
+    const r = await cdp.send('Runtime.evaluate', { expression: SNAP_EXPR, returnByValue: true }, sessionId).catch(() => null);
+    snap = r?.result?.value || null;
+    if (snap && snap.readyState === 'complete' && snap.textLength > 150) break;
+  }
+  return snap;
+}
+
+export async function openEntry(cdp, shop, opts = {}) {
+  const existing = await existingEntryTab(cdp, shop);
+  if (existing && opts.keepExisting !== false) {
+    await cdp.send('Target.activateTarget', { targetId: existing.targetId }).catch(() => {});
+    return {
+      action: '复用已有入口标签', targetId: existing.targetId,
+      tileHref: shop.entryUrl, snapshot: await snapshotTab(cdp, existing.targetId)
+    };
+  }
+
+  // 关掉探针/登录遗留标签，避免 Akamai 挑战页继续挂在窗口里。
+  const t0 = await cdp.send('Target.getTargets');
+  const pages = t0.targetInfos.filter(p => p.type === 'page');
+  for (const p of pages) await cdp.send('Target.closeTarget', { targetId: p.targetId }).catch(() => {});
+
+  const { targetId } = await cdp.send('Target.createTarget', { url: NTP, background: false });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await cdp.send('Target.activateTarget', { targetId }).catch(() => {});
+  await sleep(2000);
+
+  const tiles = (await cdp.send('Runtime.evaluate', { expression: TILE_EXPR, returnByValue: true }, sessionId))?.result?.value || [];
+  const wanted = hostOf(shop.entryUrl);
+  const tile = tiles.find(t => hostOf(t.href) === wanted) || tiles.find(t => /ebay\./i.test(t.href));
+  if (!tile || !tile.w) {
+    throw new Error(`新标签页里没找到可点击的 eBay 快捷方式（期望 ${shop.entryUrl}）。请检查该店 Profile 的 Top Sites，禁止改用手填地址回退。`);
+  }
+
+  // 真实鼠标事件（trusted input），不是 JS .click()，也不是地址栏输入。
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tile.x, y: tile.y }, sessionId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: tile.x, y: tile.y, button: 'left', clickCount: 1 }, sessionId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tile.x, y: tile.y, button: 'left', clickCount: 1 }, sessionId);
+
+  // 等待落地：tile 可能在本标签导航，也可能新开标签。
+  let landed = null;
+  for (let i = 0; i < 20; i++) {
+    await sleep(700);
+    const t = await cdp.send('Target.getTargets');
+    landed = t.targetInfos.find(p => p.type === 'page' && /ebay\./i.test(p.url) && !/signin\.|splashui\/captcha/.test(p.url));
+    if (landed) break;
+  }
+  if (!landed) {
+    const t = await cdp.send('Target.getTargets');
+    return {
+      action: '已点击 tile 但未等到正常落地页', tileHref: tile.href, targetId,
+      pages: t.targetInfos.filter(p => p.type === 'page').map(p => p.url),
+      snapshot: null
+    };
+  }
+  await cdp.send('Target.activateTarget', { targetId: landed.targetId }).catch(() => {});
+  return {
+    action: '点击新标签页快捷方式', tileHref: tile.href,
+    configuredEntry: shop.entryUrl, tileMatchesConfig: hostOf(tile.href) === wanted,
+    targetId: landed.targetId, snapshot: await snapshotTab(cdp, landed.targetId)
+  };
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const shopId = argv[argv.indexOf('--shop') + 1];
+  if (!shopId) { console.error('用法：node app/open-entry.mjs --shop <id> [--list-tiles] [--keep-existing]'); process.exit(2); }
+  const { shop, endpoint } = loadShopContext(shopId);
+  const { cdp, ws } = await connectCdp(endpoint.wsUrl);
+  try {
+    if (argv.includes('--list-tiles')) {
+      console.log(JSON.stringify({ shopId, configuredEntry: shop.entryUrl, tiles: await listTiles(cdp) }, null, 2));
+      return;
+    }
+    const out = await openEntry(cdp, shop, { keepExisting: !argv.includes('--no-keep') });
+    const s = out.snapshot || {};
+    console.log(JSON.stringify({
+      shopId, entryMode: 'ntp-tile', entryUrl: shop.entryUrl, ...out,
+      next: s.captcha
+        ? '入口被风控拦截：请先在该窗口手动完成验证，再用 --no-keep 重试。'
+        : (s.seller ? `已登录：${s.seller}。可跑 node app/probe-all.mjs 采站点字段。`
+          : '首页正常但尚未登录：请在窗口里点「登入 / Sign in」登录该店账号，之后跑 node app/probe-all.mjs。')
+    }, null, 2));
+  } finally { ws.close(); }
+}
+
+// 作为 CLI 直接执行时才跑 main；被 import 时由调用方自行调用。
+if (process.argv[1] && /open-entry\.mjs$/.test(process.argv[1])) {
+  main().catch(error => { console.error(`[open-entry] ${error.stack || error.message}`); process.exitCode = 1; });
+}

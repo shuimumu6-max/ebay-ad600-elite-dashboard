@@ -1,0 +1,160 @@
+// 机器环境只读探测：迁移向导 init.mjs 的第 0 步原型。
+//
+// 铁律（2026-11-14 用户纠正）：只读，不写任何文件、不启动浏览器、不导航、不下载、
+// 不改 Chrome 配置。探测出的 entryUrl 只是「新标签页快捷方式」的校验基准，
+// 真正进入 eBay 必须由向导点击那个 tile，绝不按 site 拼域名后直接填地址。
+//
+// 用法：node app/probe-machine.mjs [--json]
+//   --json 供 drill-portability.mjs / 未来的 init.mjs 消费，输出只走 stdout。
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:net';
+
+const asJson = process.argv.includes('--json');
+const LOCAL = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+
+// Chrome 可执行文件：多候选探测，探测不到才需要使用者指一下（例外项，不是必填项）
+const chromeCandidates = [
+  process.env.CHROME_EXE,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  join(LOCAL, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  join(LOCAL, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+].filter(Boolean);
+const chromeExe = chromeCandidates.find(p => existsSync(p)) || '';
+const userDataDir = join(LOCAL, 'Google', 'Chrome', 'User Data');
+
+// Profile 清单：只读 Local State，不碰 Chrome 运行实例
+function readProfiles() {
+  const f = join(userDataDir, 'Local State');
+  if (!existsSync(f)) return [];
+  try {
+    const j = JSON.parse(readFileSync(f, 'utf8').replace(/^\uFEFF/, ''));
+    const cache = j?.profile?.info_cache || {};
+    return Object.entries(cache).map(([dir, v]) => ({
+      dir,
+      name: String(v?.name || dir),
+      hasCookies: existsSync(join(userDataDir, dir, 'Network', 'Cookies'))
+    }));
+  } catch { return []; }
+}
+
+// 新标签页快捷方式：只读 Top Sites（Chrome 自己的 SQLite，只读打开，不改数据）
+let DatabaseSync = null;
+try { ({ DatabaseSync } = await import('node:sqlite')); } catch { /* 老 Node 无 node:sqlite，优雅降级 */ }
+
+function isEbayHome(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    const host = u.hostname.toLowerCase().replace(/^www\./, '');
+    if (!/^ebay\./.test(host)) return false;               // 挡掉 github.io 等非 eBay 域名
+    if (u.pathname.replace(/\/+$/, '') !== '') return false; // 只认站点首页
+    return !/signin|captcha|\/sh\/|\/itm\/|\/sch\/|\/b\//i.test(rawUrl);
+  } catch { return false; }
+}
+
+// Top Sites 加了 wal 后缀的伴生文件；Chrome 运行时这些文件可能带 -wal / -shm。
+const WAL_SUFFIXES = ['', '-wal', '-shm'];
+
+function readEntry(profileDir) {
+  const f = join(userDataDir, profileDir, 'Top Sites');
+  if (!DatabaseSync) return { url: '', title: '', reason: 'node:sqlite 不可用（Node < 22.5）' };
+  if (!existsSync(f)) return { url: '', title: '', reason: '该 Profile 无 Top Sites' };
+
+  // 2026-11-14 实测：Chrome 正在运行时，Top Sites 被 SQLite 排他锁占住，
+  // 直接 readOnly 打开会抛 `database is locked`，导致「自动识别候选店铺」直接归零，
+  // 卡死「本机跑通」与「别人电脑自动建店」的第一步。绕过方式：先把文件（连同
+  // -wal/-shm 伴生文件）复制到临时目录，再对副本只读打开 —— 原文件全程不被写入。
+  // 注意：绝不能在原目录上做任何写操作，也不能改 Chrome 任何配置。
+  let snapshotDir = '';
+  try {
+    snapshotDir = mkdtempSync(join(tmpdir(), 'ebay-topsites-'));
+    const snap = join(snapshotDir, 'Top Sites');
+    cpSync(f, snap);
+    for (const suffix of WAL_SUFFIXES.slice(1)) {
+      const side = f + suffix;
+      if (existsSync(side)) cpSync(side, snap + suffix);
+    }
+    return queryEntry(snap, '快照');
+  } catch (error) {
+    // 连复制都失败（权限 / 杀软）时，退回直接只读打开试试
+    return queryEntry(f, '直读', error);
+  } finally {
+    if (snapshotDir) try { rmSync(snapshotDir, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }
+  }
+}
+
+function queryEntry(dbPath, mode, fallbackError = null) {
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare('select url,title from top_sites').all();
+    const hit = rows.map(r => ({ url: String(r.url || ''), title: String(r.title || '') }))
+      .find(t => isEbayHome(t.url));
+    return hit ? { ...hit, readMode: mode, reason: '' } : { url: '', title: '', reason: '无 eBay 站点首页快捷方式' };
+  } catch (error) {
+    const detail = error.message.slice(0, 80);
+    const note = fallbackError ? `（快照失败：${String(fallbackError.message).slice(0, 60)}）` : '';
+    return { url: '', title: '', reason: `Top Sites 读取失败：${detail}${note}` };
+  } finally { try { db?.close(); } catch { /* 已关闭 */ } }
+}
+
+async function portFree(port) {
+  return new Promise(resolve => {
+    const s = createServer();
+    s.once('error', () => resolve(false));
+    s.listen(port, '127.0.0.1', () => s.close(() => resolve(true)));
+  });
+}
+
+const profiles = readProfiles().map(p => ({ ...p, entry: readEntry(p.dir) }));
+// 候选店铺 = 能自动拿到 eBay 首页入口的 Profile；店铺数由这里数出来，不需要使用者报数
+const candidates = profiles.filter(p => p.entry.url);
+const needsUser = [];
+if (!chromeExe) needsUser.push('Chrome 不在常见安装位置：指一下 chrome.exe 路径');
+if (!candidates.length) needsUser.push('没有已记住的 eBay 首页快捷方式：先在 Chrome 里登录一次卖家后台，或手动指定要用哪个 Profile');
+const ports = {};
+for (const p of [7788, 9222, 9233, 7801]) ports[p] = await portFree(p) ? '空闲' : '已占用';
+if (Object.values(ports).every(v => v === '已占用')) needsUser.push('基准端口全被占：确认换一段端口');
+
+const result = {
+  probedAt: new Date().toISOString(),
+  node: process.version,
+  chromeExe,
+  userDataDir,
+  desktop: join(homedir(), 'Desktop'),
+  oneDriveDesktop: process.env.OneDrive ? join(process.env.OneDrive, 'Desktop') : '',
+  ports,
+  profiles: profiles.map(p => ({
+    dir: p.dir, name: p.name, hasCookies: p.hasCookies,
+    entryUrl: p.entry.url, tileTitle: p.entry.title, note: p.entry.reason
+  })),
+  shopCount: candidates.length,
+  autoKnown: ['店铺数量', '每店入口地址', 'Chrome 路径', 'User Data / Profile 清单', '桌面路径', '端口占用'],
+  notNeededFromUser: ['店铺数', '站点地址 / eBay 域名 / 报表中心 URL', '活动 ID / Campaign ID', '数据目录 / 端口', '店铺显示名（可空）'],
+  mustBeDoneByUser: ['在自己 Chrome 里登录一次 eBay 卖家后台（每店一次，Cookie 设备绑定）', '拨一次 chrome://inspect 的 Allow remote debugging'],
+  onlyConfirmFromUser: ['从自动列出的 Profile 里勾选要纳入的店铺（默认全选）'],
+  needsUser
+};
+
+if (asJson) {
+  console.log(JSON.stringify(result, null, 2));
+} else {
+  console.log('=== 机器环境只读探测（不写文件 / 不启动浏览器 / 不下载）===');
+  console.log(`Node ${result.node}｜Chrome ${chromeExe || '(未找到)'}`);
+  console.log(`User Data: ${userDataDir}`);
+  console.log(`桌面: ${result.desktop}${result.oneDriveDesktop ? `｜OneDrive 桌面: ${result.oneDriveDesktop}` : ''}`);
+  console.log(`端口: ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join('  ')}`);
+  console.log('\nProfile / 自动识别到的 eBay 首页入口：');
+  for (const p of result.profiles) {
+    console.log(`  ${p.dir.padEnd(10)} ${p.name.padEnd(20)} ${p.entryUrl || '— ' + p.note}`);
+    if (p.tileTitle) console.log(`  ${' '.repeat(10)} tile「${p.tileTitle.slice(0, 46)}」`);
+  }
+  console.log(`\n自动识别候选店铺：${result.shopCount} 家（店铺数不用问使用者）`);
+  console.log('使用者必须做：' + result.mustBeDoneByUser.join('；'));
+  console.log('使用者只需确认：' + result.onlyConfirmFromUser.join('；'));
+  console.log('明确不需要提供：' + result.notNeededFromUser.join('、'));
+  console.log(result.needsUser.length ? '例外需人工：\n  - ' + result.needsUser.join('\n  - ') : '本次无例外项。');
+  console.log('\n注意：entryUrl 只作 tile 校验基准，进入 eBay 必须点击快捷方式，不允许直接导航。');
+}

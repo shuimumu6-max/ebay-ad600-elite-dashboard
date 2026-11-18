@@ -1,0 +1,167 @@
+// 阶段 C · 站点行名运行时加载 + 未实测站点硬拦 + 店铺身份校验
+//
+// 背景（2026-11-14 实测）：
+//   5 家店里 4 家后台是 www.ebay.com.hk 繁中界面。报表中心真实行名与英文完全不同
+//   （英文 "all active listings" ↔ 繁中「所有出售中的物品」，另见 docs/站点探针行名-*.json）。
+//   reports.mjs 原先把 9 种订单 / 3 种名单 / 5 种广告行名写死成英文，
+//   繁中店一旦提交下载，会用英文正则去「已請求報表」列表认领文件 → 必然认错。
+//
+// 本模块是唯一事实来源：
+//   - 行名从 sites/<site>.json 读，代码里不再有第二份英文常量（US 基线也在 sites/us.json）。
+//   - status !== verified 或缺行名的站点，配置层仍可加载（自检/控制台不崩），
+//     但 assertSiteReady() 会在真正开始下载前抛错，绝不静默降级成英文行名。
+//   - 身份主键是 GHpre.userId（问候语 fn 会重复、快捷方式名会与账号互换），
+//     逐店比对 accountName，防止 A 店报表写进 B 店目录。
+//
+// 原则：只认实测值，禁止从 us.json 翻译/继承到别的站点。
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+export const SITE_DIR = join(ROOT, 'sites');
+export const DEFAULT_SITE = 'us';
+
+export const ORDER_KEYS = ['all', 'unpaid', 'unshipped', 'overdue', 'due24h', 'express', 'paidShipped', 'paidNoFeedback', 'shippedNoFeedback'];
+export const LISTING_KEYS = ['active', 'unsold', 'scheduled'];
+export const MARKETING_KEYS = [
+  'marketing.plg.listing', 'marketing.priority.listing', 'marketing.priority.keyword',
+  'marketing.priority.campaign', 'marketing.priority.search'
+];
+
+const readJson = path => {
+  try { return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')); }
+  catch { return null; }
+};
+
+export function loadSiteConfig(site, root = ROOT) {
+  const name = String(site || '').trim().toLowerCase();
+  if (!/^[a-z0-9_-]+$/.test(name)) return null;
+  return readJson(join(root, 'sites', `${name}.json`));
+}
+
+// 报表中心行名由**后台界面语言**决定，与账号所属业务站点（US/UK/AU）不是一回事：
+// 本机实测 us-999 账号站点是 US，但入口走 www.ebay.com.hk，报表中心是繁中。
+// 只看 site=us 就会误放行英文行名，所以下载前必须再核对 host ↔ uiLanguage。
+export function uiLanguageFromHost(host = '') {
+  const h = String(host || '').toLowerCase();
+  if (/ebay\.com\.hk/.test(h)) return 'zh-HK';
+  if (/ebay\.com(?:[/:]|$)/.test(h)) return 'en-US';
+  return 'unknown';
+}
+
+// 逐项列出缺什么，供错误信息直接告诉使用者下一步采什么，不含糊说「配置不全」。
+export function siteReadiness(site, root = ROOT, opts = {}) {
+  const name = String(site || DEFAULT_SITE).trim().toLowerCase();
+  const cfg = loadSiteConfig(name, root);
+  const missing = [];
+  if (!cfg) return { site: name, ready: false, status: 'missing', missing: [`sites/${name}.json 不存在`], cfg: null };
+  // 界面语言一致性：把「英文基线」用到繁中后台是阶段 C 最危险的误放行路径。
+  if (opts.host) {
+    const ui = uiLanguageFromHost(opts.host);
+    if (ui === 'unknown') missing.push(`后台域名 ${opts.host} 的界面语言未实测`);
+    else if (!cfg.uiLanguage) missing.push('站点配置缺 uiLanguage，无法核对后台界面');
+    else if (cfg.uiLanguage !== ui) {
+      missing.push(`界面语言不符：后台 ${opts.host} 是 ${ui}，但 sites/${name}.json 标 ${cfg.uiLanguage}`);
+    }
+  }
+  if (cfg.status !== 'verified') missing.push(`status=${cfg.status}（尚未实测）`);
+  const rows = cfg.rowNames || {};
+  const orders = Array.isArray(rows.orders) ? rows.orders : [];
+  if (orders.length !== 9) missing.push(`订单行名 ${orders.length}/9`);
+  else if (!orders.some(x => /24\s*(hours|小時|小时)/i.test(x))) missing.push('订单行名缺 24h 写法');
+  for (const k of LISTING_KEYS) if (!rows.listings?.[k]?.rowMatch) missing.push(`名单行名缺 ${k}`);
+  for (const k of MARKETING_KEYS) if (!rows.marketing?.[k]?.rowMatch) missing.push(`广告行名缺 ${k}`);
+  if (!(cfg.rcRanges || []).length) missing.push('rcRanges 为空');
+  if (!(cfg.orderRanges || []).length) missing.push('orderRanges 为空');
+  if (!cfg.hosts?.traffic || !cfg.hosts?.reports || !cfg.hosts?.campaign) missing.push('hosts 未实测');
+  if (!cfg.currency || !cfg.listingSite) missing.push('Currency / Listing site 未实测');
+  if (!cfg.reportTimezone || cfg.reportLagDays === null || cfg.reportLagDays === undefined) missing.push('报表时区 / T+1 未实测');
+  return {
+    site: name, ready: missing.length === 0, status: cfg.status || 'unknown',
+    uiLanguage: cfg.uiLanguage || null,
+    missing, cfg, pendingReason: cfg.pendingReason || '', needsProbeFields: cfg.needsProbeFields || []
+  };
+}
+
+// 行名解析：verified 站点用自己实测值；pending 站点回退 US 基线仅供「展示 / 自检」，
+// 同时把 ready=false 一路带出去 —— 下载层 assertSiteReady() 会拦住，绝不拿它去认领文件。
+export function rowNamesFor(site, root = ROOT, opts = {}) {
+  const state = siteReadiness(site, root, opts);
+  const cfg = state.cfg;
+  const us = loadSiteConfig(DEFAULT_SITE, root);
+  const own = state.ready ? (cfg?.rowNames || {}) : {};
+  const base = us?.rowNames || {};
+  return {
+    site: state.site,
+    ready: state.ready,
+    status: state.status,
+    uiLanguage: state.uiLanguage || null,
+    missing: state.missing,
+    source: state.ready ? `sites/${state.site}.json（实测）` : `sites/${DEFAULT_SITE}.json（US 基线，仅供展示，禁止用于下载）`,
+    orders: own.orders?.length ? [...own.orders] : [...(base.orders || [])],
+    listings: state.ready ? own.listings : (base.listings || {}),
+    marketing: state.ready ? own.marketing : (base.marketing || {}),
+    ranges: state.ready
+      ? { rc: cfg?.rcRanges || [], order: cfg?.orderRanges || [] }
+      : { rc: us?.rcRanges || [], order: us?.orderRanges || [] }
+  };
+}
+
+export function assertSiteReady(site, { root = ROOT, where = '下载', host = '' } = {}) {
+  const state = siteReadiness(site, root, { host });
+  if (state.ready) return state;
+  const reason = state.status === 'missing'
+    ? `没有 sites/${state.site}.json`
+    : `${state.site} 站点尚未实测：${state.pendingReason || state.missing.join('、')}`;
+  // 界面语言不符 ≠ 该站点配置要重测：是店铺指错了知识库（账号业务站点与后台界面语言不是一回事）。
+  const langMismatch = state.missing.some(m => m.startsWith('界面语言不符'));
+  const hint = langMismatch
+    ? `下一步：该店后台界面是 ${/是 (zh-HK|en-US)/.exec(state.missing.join('、'))?.[1] || '其他语言'}，` +
+      `shops/<id>.json 的 site 不应指向 ${state.site}。等对应界面语言的站点配置 verified 后，` +
+      `把该店的 site 改指它（例如繁中后台的店指向 zh-HK 知识库站点），不要改 sites/${state.site}.json 的 uiLanguage。`
+    : `下一步：在该店已登录的后台运行 node app/probe-rows.mjs --shop <id>（只读，不提交），` +
+      `逐字采全 9 种订单 / 3 种名单 / 5 种广告行名、Date range 预设与 CSV 表头后，` +
+      `再把 sites/${state.site}.json 标为 verified。禁止从 sites/us.json 翻译或继承。`;
+  throw new Error(
+    `禁止${where}：${reason}\n` +
+    `缺失字段：${state.missing.join('、') || '无'}\n` +
+    `原因：报表中心行名按界面语言而变，用一种语言的行名去另一种语言的「下載報告」列表认领会拿错文件。\n` +
+    hint
+  );
+}
+
+// 页面上只读身份：GHpre 是 eBay 全站 header 注入的全局对象；
+// 读不到时退回初始 HTML 正则（探针实测 5 店都是这两种来源之一）。
+// 绝不取问候语 fn / 快捷方式名：两个 UK 店账号互换、fn 有重复，不能当主键。
+export const READ_USER_ID_EXPR = `(() => {
+  const html = document.documentElement ? document.documentElement.outerHTML : '';
+  const gh = (typeof window.GHpre === 'object' && window.GHpre) ? window.GHpre : null;
+  const pick = re => { const m = html.match(re); return m ? m[1] : ''; };
+  const id = (gh && gh.userId) || pick(/"userId"\\s*:\\s*"([^"]+)"/i) || pick(/\\buserId\\s*[:=]\\s*['"]([^'"]+)['"]/i) || '';
+  return { userId: String(id).trim(), href: location.href };
+})()`;
+
+export function assertShopIdentity(expectedAccountName, observed, { shopId = '', strict = true } = {}) {
+  const expected = String(expectedAccountName || '').trim();
+  // 老单店 my-shop.json 没有 accountName：保持原有行为，不做身份校验。
+  if (!expected) return { ok: true, skipped: true, reason: '该店配置未记录 accountName（老单店兼容）' };
+  const actual = typeof observed === 'string'
+    ? observed.trim()
+    : String(observed?.userId || '').trim();
+  if (!actual) {
+    if (strict) throw new Error(
+      `店铺身份校验失败：读不到当前后台的 GHpre.userId，无法确认这就是 ${shopId || expected} 的 Seller Hub。` +
+      `请确认该店独立实例已登录、页面已加载完成后重跑（禁止跨店下载）。`
+    );
+    return { ok: false, skipped: false, reason: '读不到 userId' };
+  }
+  if (actual.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error(
+      `店铺身份不符，已停止：当前浏览器后台账号是「${actual}」，` +
+      `但本次任务属于「${shopId || expected}」（配置 accountName=${expected}）。` +
+      `A 店报表绝不能写进 B 店目录；请关闭错店的 Chrome 实例，用该店自己的实例重跑。`
+    );
+  }
+  return { ok: true, skipped: false, expected, actual };
+}

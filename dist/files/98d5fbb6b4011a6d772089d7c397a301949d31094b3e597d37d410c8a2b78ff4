@@ -1,0 +1,53 @@
+// 站点配置自检：sites/*.json 每个字段都必须来自探针实测，缺项或未验证直接失败。
+// 用法：node app/check-sites.mjs
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const DIR = join(ROOT, 'sites');
+const files = existsSync(DIR) ? readdirSync(DIR).filter(f => f.endsWith('.json')) : [];
+const problems = [];
+const lines = [];
+
+if (!files.length) problems.push('sites/ 下没有任何站点配置');
+
+for (const f of files) {
+  const site = f.replace(/\.json$/, '');
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(join(DIR, f), 'utf8').replace(/^\uFEFF/, '')); }
+  catch (error) { problems.push(`${site}: JSON 解析失败 ${error.message}`); continue; }
+  if (cfg.site !== site) problems.push(`${site}: site 字段与文件名不一致（${cfg.site}）`);
+  if (cfg.status !== 'verified') {
+    lines.push(`${site}: 探针未完成（${cfg.status}）— ${cfg.pendingReason || '无说明'}`);
+    problems.push(`${site}: 尚未实测，禁止进入下一阶段`);
+    continue;
+  }
+  const required = [
+    ['hosts.traffic', cfg.hosts?.traffic], ['hosts.reports', cfg.hosts?.reports], ['hosts.campaign', cfg.hosts?.campaign],
+    ['timezone', cfg.timezone], ['reportTimezone', cfg.reportTimezone], ['reportLagDays', cfg.reportLagDays],
+    ['currency', cfg.currency], ['listingSite', cfg.listingSite],
+    ['dateFormats.actualCsvDate', cfg.dateFormats?.actualCsvDate],
+    ['csvHeaders.listingSite', cfg.csvHeaders?.listingSite], ['csvHeaders.currency', cfg.csvHeaders?.currency],
+    ['verifiedAt', cfg.verifiedAt], ['verifiedBy', cfg.verifiedBy]
+  ];
+  for (const [key, value] of required) if (value === null || value === undefined || value === '') problems.push(`${site}: 缺字段 ${key}`);
+  const orders = cfg.rowNames?.orders || [];
+  if (orders.length !== 9) problems.push(`${site}: 订单行名 ${orders.length}/9（必须逐字采集，含 24h 长破折号）`);
+  if (!orders.some(x => /24 hours/.test(x))) problems.push(`${site}: 订单行名缺 24h 写法`);
+  if (!Object.keys(cfg.rowNames?.listings || {}).length) problems.push(`${site}: 名单行名为空`);
+  if (!Object.keys(cfg.rowNames?.marketing || {}).length) problems.push(`${site}: 广告行名为空`);
+  if (!(cfg.rcRanges || []).length) problems.push(`${site}: rcRanges 为空`);
+  if (!(cfg.orderRanges || []).length) problems.push(`${site}: orderRanges 为空`);
+  lines.push(`${site}: verified / 订单 ${orders.length} / 名单 ${Object.keys(cfg.rowNames?.listings || {}).length} / 广告 ${Object.keys(cfg.rowNames?.marketing || {}).length} / ${cfg.verifiedBy}`);
+}
+
+console.log(`站点配置 ${files.length} 份`);
+lines.forEach(l => console.log('  ' + l));
+if (problems.length) {
+  console.log('\n站点自检未通过：');
+  problems.forEach(p => console.log('  ✗ ' + p));
+  process.exitCode = 1;
+} else {
+  console.log('\n全部站点配置均已实测，字段齐全。');
+}

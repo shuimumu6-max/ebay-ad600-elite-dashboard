@@ -1,18 +1,37 @@
 // 统一的环境保障：不管用户从控制台、一键下载还是命令行进来，都走同一套逻辑。
 // 目标：桥只起一次、永久常驻；只有「浏览器重启后」才需要用户点一次允许。
+//
+// 2026-11-14 多店铺：桥端口不能再写死 9233。每店的桥监听自己的 bridgePort，
+// 环境检测必须探同一个端口、并把店铺上下文传给守护，否则多店下载会连不上桥。
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BRIDGE_PORT } from './config.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = dirname(here);
+const SHOP_ID = String(process.env.EBAY_SHOP_ID || '').trim();
 const DAEMON = join(here, 'bridge-daemon.mjs');
-const HEALTH = 'http://127.0.0.1:9233/health';
+const HEALTH = `http://127.0.0.1:${BRIDGE_PORT}/health`;
 const INSPECT_URL = 'chrome://inspect/#remote-debugging';
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Chrome 路径按店解析：本店独立实例的 chromeExe（local.json）优先，其次常见安装位置。
+// 独立实例用同一个 Chrome 程序，所以路径本身一般相同，但换机/换安装位置时以配置为准。
+function shopChromeExe() {
+  try {
+    const f = join(PROJECT_ROOT, 'local.json');
+    if (!existsSync(f)) return '';
+    const local = JSON.parse(readFileSync(f, 'utf8').replace(/^\uFEFF/, ''));
+    return (SHOP_ID && local.shops?.[SHOP_ID]?.chromeExe) || local.chromeExe || '';
+  } catch { return ''; }
+}
+
 const CHROME_CANDIDATES = [
+  shopChromeExe(),
+  process.env.CHROME_EXE,
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe') : null
@@ -34,7 +53,8 @@ export async function bridgeHealth() {
 export function startBridgeDaemon() {
   try {
     const child = spawn(process.execPath, [DAEMON], {
-      cwd: here, detached: true, stdio: 'ignore', windowsHide: true
+      cwd: here, detached: true, stdio: 'ignore', windowsHide: true,
+      env: { ...process.env, EBAY_BRIDGE_PORT: String(BRIDGE_PORT), ...(SHOP_ID ? { EBAY_SHOP_ID: SHOP_ID } : {}) }
     });
     child.unref();
     return true;
