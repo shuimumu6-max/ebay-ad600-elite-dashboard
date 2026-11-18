@@ -728,7 +728,8 @@
       const dates = unique(dataState.trafficRaw
         .filter(row => row.start && row.start === row.end && inProduct(row))
         .map(row => row.start)).sort();
-      return { start: listingStartDate() || dates[0] || '', end: dates.at(-1) || '', days: dates.length };
+      const start = [listingStartDate(), dates[0]].filter(Boolean).sort().at(-1) || '';
+      return { start, end: dates.at(-1) || '', days: dates.length };
     }
 
     // 日期输入框可选范围（2026-11-17 用户拍板「没有报表的时间不需要能勾选」）：
