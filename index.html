@@ -736,9 +736,11 @@
     // 未来日期（如 11-18）与刊登前的日期因此都无法勾选。
     function reportBounds() {
       const dates = unique(dataState.trafficRaw
-        .filter(row => row.start && row.start === row.end)
+        .filter(row => row.start && row.start === row.end && inProduct(row))
         .map(row => row.start)).sort();
-      return { min: listingStartDate() || dates[0] || '', max: dates.at(-1) || '' };
+      // 下限 = max(链接刊登开始日, 最早日报日)：既不早于上架日，也不早于有数据的日期。
+      const lower = [listingStartDate(), dates[0]].filter(Boolean).sort().at(-1) || '';
+      return { min: lower, max: dates.at(-1) || '' };
     }
 
     function trafficSelection() {
