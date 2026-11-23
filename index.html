@@ -1460,7 +1460,7 @@
         <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',table)}${summary ? sortHeader('记录天数','days',table) : ''}${sortHeader('Item ID','itemId',table)}${sortHeader('标题','title',table)}${adMetricHeaders(table)}${type === 'PLG' ? sortHeader('自然曝光','naturalImpressions',table)+sortHeader('自然点击','naturalClicks',table)+sortHeader('自然销量','naturalSold',table) : ''}${sortHeader('Campaign','campaign',table)}</tr></thead><tbody>${body || `<tr><td colspan="${(summary ? 15 : 14)+(type === 'PLG' ? 3 : 0)}">当前筛选范围没有记录，请调整日期、Campaign 或 Item ID。</td></tr>`}</tbody></table></div></section>`;
     }
 
-    function adTermsTable(type) {
+    function adTermsRows(type) {
       const isKeyword = type === 'keywords';
       const filter = adFilterState(type);
       const source = (isKeyword ? dataState.ads.keywordRows : dataState.ads.searchRows).filter(row => withinAdsRange(row) && (!ui.campaigns.length || ui.campaigns.includes(row.campaign)));
@@ -1468,10 +1468,74 @@
       const filtered = source.filter(row => contains(isKeyword ? row.keyword : row.searchQuery,filter.term) && contains(row.keyword,filter.keyword) && (!filter.matchType || row.matchType === filter.matchType));
       const summary = filter.view === 'summary';
       const rows = sortRows(summary ? summarizeAdRows(filtered,type) : filtered.map(adRowRatios),type);
+      return { isKeyword, source, filtered, summary, rows };
+    }
+
+    function adTermsTable(type) {
+      const { isKeyword, source, filtered, summary, rows } = adTermsRows(type);
       const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}${isKeyword ? '' : `<td>${esc(row.searchQuery)}</td>`}<td>${esc(row.keyword)}</td><td>${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}<td>${esc(row.campaign)}</td></tr>`).join('');
-      return `${adTableFilters(type,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><h3>${isKeyword ? '关键词' : '搜索词'}表现 · ${summary ? '区间汇总' : '日度明细'}</h3><small>${fmt(rows.length)} 条${summary ? '汇总，来自 '+fmt(filtered.length)+' 条日度记录' : '日度记录'}</small></div>
+      return `${adTableFilters(type,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><div style="display:flex;align-items:baseline;gap:10px"><h3>${isKeyword ? '关键词' : '搜索词'}表现 · ${summary ? '区间汇总' : '日度明细'}</h3><small>${fmt(rows.length)} 条${summary ? '汇总，来自 '+fmt(filtered.length)+' 条日度记录' : '日度记录'}</small></div><button class="btn" id="adTermsExportBtn" data-export-terms="${type}">${icon('download')}导出表格</button></div>
         <div class="snapshot-note">${isKeyword ? '同一关键词和匹配方式跨日期、跨 Campaign 合并；出价显示所选期间的最小值至最大值。' : '同一搜索词跨日期、跨 Campaign、跨触发关键词合并；触发关键词及匹配方式列展示涉及的全部值。'} 汇总跟随日期及本页筛选，比例按合计值重算。记录天数仅代表报表中存在记录的天数。</div>
         <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',type)}${summary ? sortHeader('记录天数','days',type) : ''}${isKeyword ? '' : sortHeader('搜索词','searchQuery',type)}${sortHeader(isKeyword ? '关键词' : '触发关键词','keyword',type)}${sortHeader('匹配方式','matchType',type)}${isKeyword ? sortHeader(summary ? '期间出价范围' : 'Bid','bid',type) : ''}${adMetricHeaders(type)}${sortHeader('Campaign','campaign',type)}</tr></thead><tbody>${body || `<tr><td colspan="${summary ? 16 : 15}">当前筛选范围没有记录，请调整筛选条件。</td></tr>`}</tbody></table></div></section>`;
+    }
+
+    function adTermsColumns(isKeyword, summary) {
+      const columns = [{ label: summary ? '数据区间' : '日期', get: row => summary ? rangeText(row.date, row.end) : row.date }];
+      if (summary) columns.push({ label: '记录天数', get: row => row.days, format: '#,##0' });
+      if (!isKeyword) columns.push({ label: '搜索词', get: row => row.searchQuery, text: true });
+      columns.push({ label: isKeyword ? '关键词' : '触发关键词', get: row => row.keyword, text: true });
+      columns.push({ label: '匹配方式', get: row => row.matchType, text: true });
+      if (isKeyword) {
+        if (summary) columns.push({ label: '期间出价范围', get: row => row.bid == null ? '—' : (row.bidMax !== row.bid ? `${money(row.bid)} 至 ${money(row.bidMax)}` : money(row.bid)), text: true });
+        else columns.push({ label: 'Bid', get: row => row.bid, format: '$#,##0.00' });
+      }
+      columns.push({ label: '曝光', get: row => row.impressions, format: '#,##0' });
+      columns.push({ label: '点击', get: row => row.clicks, format: '#,##0' });
+      columns.push({ label: 'CTR', get: row => row.ctr, format: '0.00%' });
+      columns.push({ label: '销量', get: row => row.sold, format: '#,##0' });
+      columns.push({ label: 'CVR', get: row => row.conversion, format: '0.00%' });
+      columns.push({ label: '销售额', get: row => row.sales, format: '$#,##0.00' });
+      columns.push({ label: '广告费', get: row => row.adFees, format: '$#,##0.00' });
+      columns.push({ label: '平均 CPC', get: row => row.avgCpc, format: '$#,##0.00' });
+      columns.push({ label: 'ROAS', get: row => row.roas, format: '0.00' });
+      columns.push({ label: 'ACOS', get: row => row.acos, format: '0.00%' });
+      columns.push({ label: 'Campaign', get: row => row.campaign, text: true });
+      return columns;
+    }
+
+    function exportAdTerms(type) {
+      const { isKeyword, filtered, summary, rows } = adTermsRows(type);
+      const title = isKeyword ? '关键词' : '搜索词';
+      if (!rows.length) return toast(`当前筛选范围没有可导出的${title}记录。`, true);
+      const columns = adTermsColumns(isKeyword, summary);
+      const lastColumn = columns.length - 1;
+      const meta = `日期：${rangeText(ui.start, ui.end)}；Campaign：${ui.campaigns.length ? ui.campaigns.join(' / ') : '全部'}；${summary ? `${fmt(rows.length)} 条汇总，来自 ${fmt(filtered.length)} 条日度记录` : `${fmt(rows.length)} 条日度记录`}；比例按合计值重算；— 表示无数据。`;
+      const sheet = XLSX.utils.aoa_to_sheet([
+        [`eBay AD600 Elite · 广告看板 · ${title}表现 · ${summary ? '区间汇总' : '日度明细'}`],
+        [meta],
+        columns.map(column => column.label),
+        ...rows.map(row => columns.map(column => { const value = column.get(row); return value == null || value === '' ? (column.format ? '—' : '') : value; }))
+      ]);
+      sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: lastColumn } }, { s: { r: 1, c: 0 }, e: { r: 1, c: lastColumn } }];
+      sheet['!cols'] = columns.map((column, index) => ({ wch: index === 0 ? 18 : /搜索词|关键词|匹配方式|Campaign/.test(column.label) ? 26 : 13 }));
+      sheet['!rows'] = [{ hpt: 30 }, { hpt: 26 }, { hpt: 28 }, ...rows.map(() => ({ hpt: 20 }))];
+      sheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 2, c: 0 }, e: { r: rows.length + 2, c: lastColumn } }) };
+      for (let r = 0; r <= rows.length + 2; r += 1) {
+        for (let c = 0; c <= lastColumn; c += 1) {
+          const address = XLSX.utils.encode_cell({ r, c });
+          const cell = sheet[address] || (sheet[address] = { t: 's', v: '' });
+          if (r >= 3 && columns[c].format && cell.v !== '—' && cell.v !== '') { cell.t = 'n'; cell.v = Number(cell.v); cell.z = columns[c].format; }
+          cell.s = {
+            font: { name: '微软雅黑', sz: r === 0 ? 14 : 11, bold: r <= 2, color: { rgb: r === 0 || r === 2 ? 'FFFFFF' : r === 1 ? '52657A' : '20354D' } },
+            fill: { patternType: 'solid', fgColor: { rgb: r === 0 ? '1769AA' : r === 1 ? 'F3F6FA' : r === 2 ? '2F7BBF' : r % 2 === 1 ? 'F8FAFC' : 'FFFFFF' } },
+            alignment: { vertical: 'center', horizontal: r === 0 || r === 1 ? 'left' : r === 2 ? 'center' : c === 0 || columns[c].text ? 'left' : 'right', wrapText: true },
+            border: { bottom: { style: 'thin', color: { rgb: 'DFE6EE' } }, right: { style: 'thin', color: { rgb: 'DFE6EE' } } }
+          };
+        }
+      }
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, sheet, `${title}表现`);
+      XLSX.writeFile(workbook, `eBay-广告看板-${title}-${new Date().toLocaleDateString('sv-SE')}.xlsx`);
     }
 
 
@@ -1620,6 +1684,7 @@
       ['uploadBtn', 'topUploadBtn'].forEach(id => document.getElementById(id)?.addEventListener('click', () => document.getElementById('fileInput').click()));
       document.getElementById('exportBtn')?.addEventListener('click', exportData);
       document.getElementById('dailyExportBtn')?.addEventListener('click', exportDailyData);
+      document.getElementById('adTermsExportBtn')?.addEventListener('click', event => exportAdTerms(event.currentTarget.dataset.exportTerms));
       document.getElementById('clearBtn')?.addEventListener('click', clearData);
       document.getElementById('shopSelect')?.addEventListener('change', e => {
         localStorage.setItem('ebay-online-shop', e.target.value);
