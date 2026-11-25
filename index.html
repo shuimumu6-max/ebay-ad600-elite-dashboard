@@ -2069,7 +2069,7 @@
       const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词']];
       const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : ui.adTab === 'plp' ? adLinksTable('PLP') : adTermsTable(ui.adTab);
       const bounds = reportBounds();
-      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。</p></div></div><div class="panel toolbar"><div class="field field-date"><label for="startFilter">开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field field-date"><label for="endFilter">结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><span class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（广告页只看广告数据）</span></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
+      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。<strong>与后台对账请先比钱</strong>（销售额／广告费／销量）：eBay 的曝光、点击属近实时数据、约 72 小时内继续上调，看板显示的是导出快照值 —— 详见「数据源说明 → 数据新鲜度」。</p></div></div><div class="panel toolbar"><div class="field field-date"><label for="startFilter">开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field field-date"><label for="endFilter">结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><span class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（广告页只看广告数据）</span></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
     }
 
     // 数据源说明（2026-11-26 新增）：每个数字「从哪来、怎么算」——运营核对时不用翻代码。
@@ -2102,7 +2102,39 @@
         row('自然曝光 / 自然点击 / 自然销量（PLG 链接表）', 'PLG 的 <code>Organic Impressions / Organic Clicks / Organic Sold Quantity</code>', '按「日期＋Item」去重：多个活动对同一天同一 Item 的自然值不一致时显示「—」（避免用其中一个活动的值冒充整体）'),
         row('覆盖台账（每日记录）', '每类报表的文件是否到位（含 eBay 回空的空报表）', '●有数据　○已核实无数据（eBay 回空，归档为 <code>-空报表-</code>）　✕缺　·还没到应到日（太平洋时间次日 16:00 后算应到）')
       ].join('');
-      return `<div class="page-head"><div><h2>数据源说明</h2><p>看板上的每个数字来自哪份报表的哪一列、按什么规则算出来。数据源＝各店归档目录（本页展示的店铺：${esc(shopDir)}），原始文件在「每日记录」里可核对是否到位。</p></div></div>
+      // 数据新鲜度（2026-11-26）：每类报表的「最新数据日 + 该日数据是哪天导出的」。
+      // 为什么要有这一块：eBay 的广告指标是近实时数据，官方说明「约 72 小时内继续对账」——
+      // 曝光/点击会被**上调**（销售额/广告费先定稿）。看板显示的是报表**导出那一刻**的快照值，
+      // 所以「越新导出越准」；导出距今天数超阈值就直接提示重下，避免出现「看板比后台低」的疑问。
+      const sources = fullState.sources || [];
+      const todayIso = typeof shanghaiToday === 'function' ? shanghaiToday() : new Date().toISOString().slice(0, 10);
+      const dayDiff = (from, to) => Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000);
+      const freshness = [['Traffic', 'Traffic 单日报'], ['PLG', 'PLG 广告'], ['PLP', 'PLP 链接'], ['Keyword', 'PLP 关键词'], ['Search', 'PLP 搜索词'], ['Active', '在售名单']].map(([type, label]) => {
+        const rows = sources.filter(source => source.type === type);
+        if (!rows.length) return `<tr><td class="t-text">${label}</td><td>—</td><td>—</td><td class="t-text">这类数据还没有</td></tr>`;
+        const latestDay = rows.map(source => String(source.end || source.start || '').slice(0, 10)).filter(Boolean).sort().at(-1) || '';
+        const covering = rows.filter(source => String(source.start || '') <= latestDay && String(source.end || '') >= latestDay);
+        const exportedAt = (covering.length ? covering : rows).map(source => String(source.importedAt || '').slice(0, 10)).filter(Boolean).sort().at(-1) || '';
+        const age = exportedAt ? dayDiff(exportedAt, todayIso) : null;
+        const state = age == null ? '—'
+          : age <= 2 ? '<span class="badge green">新鲜</span>'
+            : age <= 4 ? `<span class="badge amber">${fmt(age)} 天前导出（可能会被 eBay 上调）</span>`
+              : `<span class="badge red">${fmt(age)} 天前导出 → 建议重下最近 7~10 天</span>`;
+        return `<tr><td class="t-text">${label}</td><td>${esc(latestDay || '—')}</td><td>${esc(exportedAt || '—')}</td><td class="t-text">${state}</td></tr>`;
+      }).join('');
+      return `<div class="page-head"><div><h2>数据源说明</h2><p>看板上的每个数字来自哪份报表的哪一列、按什么规则算出来。数据源＝各店归档目录（本页展示的店铺：${esc(shopDir)}），原始文件在「每日记录」里可核对是否到位。看板显示的是<strong>报表导出那一刻的快照值</strong>，且同一天多次导出时固定以<strong>最近一次下载</strong>为准 —— 所以数字永远是「已下载数据里最新的一份」。</p></div></div>
+        <section class="panel"><div class="panel-head"><h3>与 eBay 后台对账（重要）</h3><small>先看钱，再看曝光／点击</small></div>
+          <div class="panel-body">
+            <p class="field-help" style="font-size:12.5px;line-height:1.9">
+              ① eBay 广告指标是<strong>近实时</strong>数据，官方说明「<strong>约 72 小时内继续对账</strong>」：<strong>曝光、点击会被上调</strong>，销售额、广告费通常先定稿。<br>
+              ② 看板 = 报表导出那一刻的值（快照）；后台 = 实时值。两者短期不一致是<strong>数据源的对账时差</strong>，不是看板算错。<br>
+              ③ 对账顺序：<strong>先比销售额 / 广告费 / 销量 / ROAS</strong>（这几个应与后台一致）；曝光、点击若低于后台，说明那几天导出偏早、还没对完账。<br>
+              ④ 处理办法：把<strong>最近 7~10 天</strong>重下一遍 —— 看着板会自动用最近一次下载的值覆盖旧值（钱不会变，曝光/点击会向后台靠拢）。<br>
+              ⑤ 下表「数据新鲜度」逐类标出该不该重下。
+            </p>
+          </div></section>
+        <section class="panel"><div class="panel-head"><h3>数据新鲜度</h3><small>最新数据日 = 该类最近一份有数据的报表日；导出时间 = 覆盖该日的最新一次下载</small></div>
+          <div class="table-wrap"><table class="src-table"><thead><tr><th class="t-text">报表类型</th><th>最新数据日</th><th>该日数据导出时间</th><th class="t-text">状态</th></tr></thead><tbody>${freshness}</tbody></table></div></section>
         <section class="panel"><div class="panel-head"><h3>经营数据</h3><small>Traffic 流量 ＋ 在售名单 ＋ 广告花费（按链接）</small></div>${table(business)}</section>
         <section class="panel snapshot"><div class="panel-head"><h3>广告数据</h3><small>PLG / PLP 链接 / 关键词 / 搜索词</small></div>${table(ads)}</section>`;
     }
