@@ -49,28 +49,35 @@
       --shadow: 0 4px 16px rgba(19, 33, 53, 0.06);
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-width: 320px; min-height: 100%; overflow-x: hidden; background: var(--bg); color: var(--ink); font-family: "Microsoft YaHei", system-ui, sans-serif; }
+    /* 2026-11-25 修：html/body 上的 overflow-x: hidden 会让 position: sticky 失效（滚动后顶栏与左侧导航一起消失，
+       本机实测 topbar.top=-1200）。改用 html 上的 overflow-x: clip：横向同样不溢出，但不破坏 sticky。 */
+    html { overflow-x: clip; }
+    html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--bg); color: var(--ink); font-family: "Microsoft YaHei", system-ui, sans-serif; }
     button, input, select { font: inherit; }
     button { cursor: pointer; }
     button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     .app { min-height: 100vh; }
-    .topbar { height: 62px; padding: 0 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; }
-    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .topbar { min-height: 64px; padding: 8px 20px; display: flex; align-items: center; gap: 14px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 30; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 0 1 auto; }
     .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; color: white; background: var(--blue); border-radius: 7px; flex: 0 0 auto; }
     .brand-mark svg { width: 19px; }
-    .brand h1 { margin: 0; font-size: 17px; line-height: 1.2; letter-spacing: 0; }
+    .brand h1 { margin: 0; font-size: 16px; line-height: 1.2; letter-spacing: 0; }
     .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    /* 顶栏右侧：店铺 + 产品 + 数据截止日（2026-11-25 重构：切换器从独立一行收进顶栏） */
+    .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+    .scope { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .scope-sep { width: 1px; height: 22px; background: var(--line); flex: 0 0 auto; }
+    .shop-select { height: 32px; max-width: 240px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 12px; font-weight: 650; cursor: pointer; }
     .status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-    .product-switch { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); flex: 0 0 auto; }
-    .product-bar { padding: 12px 22px 0; display: flex; justify-content: flex-start; }
-    .product-btn { min-height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-family: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+    .product-switch { display: flex; align-items: center; gap: 3px; height: 32px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); flex: 0 0 auto; }
+    .product-btn { height: 24px; padding: 0 12px; display: inline-flex; align-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-family: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
     .product-btn:hover { color: var(--blue); }
     .product-btn.active { color: var(--blue); background: var(--panel); box-shadow: var(--shadow); }
     .product-notice { margin-bottom: 14px; padding: 11px 14px; border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; background: var(--amber-soft); color: #6b4a00; font-size: 12px; line-height: 1.7; }
-    .workspace { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: calc(100vh - 62px); }
+    .workspace { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: calc(100vh - 64px); }
     .sidebar { padding: 18px 12px; background: #f8f9fb; border-right: 1px solid var(--line); }
-    .nav { display: grid; gap: 5px; position: sticky; top: 80px; }
+    .nav { display: grid; gap: 5px; position: sticky; top: 78px; }
     .nav-btn { width: 100%; min-height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 6px; background: transparent; color: #435064; text-align: left; }
     .nav-btn:hover { background: #edf1f5; }
     .nav-btn.active { color: var(--blue); background: var(--blue-soft); font-weight: 700; }
@@ -80,7 +87,7 @@
     .page-head h2 { margin: 0; font-size: 22px; letter-spacing: 0; }
     .page-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
     .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .btn { min-height: 36px; padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: #314056; font-weight: 650; font-size: 13px; }
+    .btn { min-height: 32px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: #314056; font-weight: 650; font-size: 13px; white-space: nowrap; }
     .btn:hover { border-color: #aeb9c6; background: #f9fafb; }
     .btn.primary { color: white; border-color: var(--blue); background: var(--blue); }
     .btn.primary:hover { background: #10598f; }
@@ -114,6 +121,9 @@
     .cov-partial { color: #b26a00; }
     .cov-blank { color: var(--amber); }
     .cov-miss { color: var(--red); }
+    /* 未到应到日（2026-11-25 新增）：报表还没到出数时间（太平洋时间次日 16:00 后才应到），
+       原来显示成红 ✕「缺」，和上方「没有缺口」自相矛盾 —— 改中性色 + 中性符号。 */
+    .cov-pending { color: #aeb9c6; }
     .cov-scroll { max-height: 520px; overflow: auto; }
     .cov-matrix td, .cov-matrix th { text-align: center; }
     .cov-matrix td:first-child, .cov-matrix th:first-child { text-align: left; position: sticky; left: 0; background: var(--panel); z-index: 1; }
@@ -125,21 +135,36 @@
     .cov-gap-line code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
     .empty { padding: 58px 20px; color: var(--muted); text-align: center; }
     .empty svg { width: 30px; height: 30px; margin-bottom: 8px; color: #9aa6b3; }
-    .filters { padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; margin-bottom: 14px; }
-    .filters .field:first-child { grid-column: span 2; }
+    /* 筛选工具条（2026-11-25 重构）：原来是 auto-fit minmax(145px) 网格，选择框被压到 145px，
+       「日报逐日相加（…」这类长选中项直接截断。现在用 flex：搜索/快捷区间各自保底宽，
+       日期与按钮按内容宽，放不下自动换行。 */
+    .filters, .toolbar { padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; margin-bottom: 14px; }
     .field { min-width: 0; }
+    .field-search { flex: 3 1 260px; }
+    .field-range { flex: 3 1 250px; }
+    .field-date { flex: 0 1 170px; }
+    .field-auto { flex: 0 1 auto; }
+    .field-reset { flex: 0 0 auto; }
+    .toolbar-note { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: 11px; }
+    /* 表格自带工具条（Item 整体链接表现等）：搜索 + 状态筛选 + 行数 */
+    .table-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+    .table-toolbar .field { max-width: 340px; }
+    .table-toolbar .table-count { margin-left: auto; color: var(--muted); font-size: 12px; }
     .field-help { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-    .traffic-source-help { grid-column: 1 / -1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; font-size: 12px; line-height: 1.7; }
+    .traffic-source-help { flex: 1 1 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; font-size: 12px; line-height: 1.7; }
+    .traffic-source-help .field { max-width: 300px; margin-bottom: 8px; }
     .traffic-source-help summary { cursor: pointer; color: var(--blue); font-weight: 600; }
     .traffic-source-help p { margin: 8px 0 0; }
     .traffic-source-help ul { margin: 6px 0 0; padding-left: 20px; }
     .field label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
-    .input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); }
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; margin-bottom: 14px; }
-    .metric { min-height: 104px; padding: 15px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
+    .input { width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); }
+    select.input { cursor: pointer; }
+    /* auto-fit：按可用宽度铺满，不再出现「最后一张卡孤零零占一行」（经营看板 9 张卡原来排成 4+4+1） */
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 11px; margin-bottom: 14px; }
+    .metric { min-height: 96px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
     .metric-label { color: var(--muted); font-size: 12px; }
-    .metric-value { margin-top: 9px; font-size: 25px; line-height: 1; font-weight: 760; font-variant-numeric: tabular-nums; }
-    .metric-foot { margin-top: 10px; color: var(--muted); font-size: 11px; }
+    .metric-value { margin-top: 9px; font-size: 24px; line-height: 1; font-weight: 760; font-variant-numeric: tabular-nums; }
+    .metric-foot { margin-top: 9px; color: var(--muted); font-size: 11px; }
     .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
     .chart { width: 100%; height: 330px; }
     .ad-tabs { display: flex; gap: 6px; margin: 0 0 14px; padding: 4px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: #eef2f6; }
@@ -148,21 +173,32 @@
     .campaign-chips { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 14px; }
     .campaign-chip { min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: white; color: #435064; font-size: 12px; }
     .campaign-chip.active { color: white; border-color: var(--blue); background: var(--blue); }
+    .campaign-chip.more { border-style: dashed; color: var(--blue); font-weight: 700; }
     .campaign-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
     .campaign-card { padding: 15px; }
     .campaign-card-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px; }
-    .campaign-card-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; }
-    .campaign-card-grid div { padding:9px; border-radius:5px; background:#f6f8fa; }
-    .campaign-card-grid span { display:block; color:var(--muted); font-size:10px; }
-    .campaign-card-grid strong { display:block; margin-top:5px; font-size:14px; }
+    .campaign-card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:8px; }
+    .campaign-card-grid div { min-width:0; padding:9px; border-radius:5px; background:#f6f8fa; }
+    .campaign-card-grid span { display:block; color:var(--muted); font-size:10px; white-space:nowrap; }
+    .campaign-card-grid strong { display:block; margin-top:5px; font-size:13.5px; white-space:nowrap; font-variant-numeric:tabular-nums; }
     .table-wrap { width: 100%; max-height: calc(100vh - 150px); overflow: auto; overscroll-behavior: contain; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th { position: sticky; top: 0; z-index: 1; padding: 10px 11px; background: #f5f7f9; color: #516074; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    th { position: sticky; top: 0; z-index: 1; padding: 9px 10px; background: #f5f7f9; color: #516074; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; font-weight: 700; }
     th[data-sort-key] { cursor: pointer; user-select: none; }
     th[data-sort-key]:hover { color: var(--blue); background: #edf3f8; }
     .sort-indicator { display: inline-block; width: 14px; margin-left: 3px; color: var(--blue); font-weight: 800; }
-    th:first-child, th:nth-child(2), td:first-child, td:nth-child(2) { text-align: left; }
-    td { padding: 10px 11px; border-bottom: 1px solid #edf0f3; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    /* 2026-11-25 修：原来「第 2 列也左对齐」把每张表的第 2 列都当文本列 —— 关键词表的「记录天数」这类
+       数字列被左对齐后列宽失控、列间出现大片空白。现在只保留第 1 列左对齐，文本列用 .t-text 显式标注。 */
+    th:first-child, td:first-child { text-align: left; }
+    td { padding: 9px 10px; border-bottom: 1px solid #edf0f3; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    th.t-text, td.t-text { text-align: left; }
+    /* 文本列吃掉余量、数字列按内容收紧（width:1% 是「按内容宽」的标准写法），消除列间大片空白 */
+    .table-compact th, .table-compact td { width: 1%; }
+    .table-compact th.t-text, .table-compact td.t-text { width: auto; min-width: 170px; }
+    /* 宽表横向滚动时把首列钉住（Item ID 不跟着滚走） */
+    .sticky-first th:first-child, .sticky-first td:first-child { position: sticky; left: 0; z-index: 2; background: var(--panel); }
+    .sticky-first thead th:first-child { z-index: 3; background: #f5f7f9; }
+    .sticky-first tbody tr:hover td:first-child { background: #fafbfd; }
     tr:last-child td { border-bottom: 0; }
     tbody tr:hover { background: #fafbfd; }
     th.plp-col, td.plp-col { background: #f7f2fb; }
@@ -170,13 +206,20 @@
     tbody tr:hover td.plp-col { background: #f1e9f8; }
     .ad-summary-table { min-width: 980px; }
     .ad-summary-table th, .ad-summary-table td { padding: 9px 7px; font-size: 11px; }
-    .ad-summary-table .item-title { width: 190px; max-width: 190px; }
+    .ad-summary-table .item-title { width: 230px; max-width: 230px; }
     th.plg-col, td.plg-col { background: #fff8e9; }
     th.plg-col { color: #9a6413; }
     tbody tr:hover td.plg-col { background: #fff1d2; }
-    .item-title { max-width: 330px; overflow: hidden; text-overflow: ellipsis; }
+    .item-title { max-width: 330px; overflow: hidden; text-overflow: ellipsis; text-align: left; }
     .snapshot { margin-top: 14px; }
     .snapshot-note { margin: 0 0 12px; padding: 10px 12px; color: var(--amber); background: var(--amber-soft); border-left: 3px solid #e3a008; font-size: 12px; line-height: 1.6; }
+    /* 长口径说明默认折叠（2026-11-25）：页面不再先堆一大块黄底文字 */
+    .note-details { margin: 0 0 12px; border: 1px solid var(--line); border-left: 3px solid #e3a008; border-radius: 6px; background: var(--amber-soft); }
+    .note-details > summary { cursor: pointer; padding: 9px 12px; color: var(--amber); font-size: 12px; font-weight: 700; }
+    .note-details[open] > summary { border-bottom: 1px solid rgba(227,160,8,.35); }
+    .note-details > div { padding: 9px 12px 10px; color: #6b4a00; font-size: 12px; line-height: 1.7; }
+    .inline-help { margin-top: 7px; }
+    .inline-help > summary { cursor: pointer; color: var(--blue); font-size: 12px; font-weight: 650; }
     .snapshot-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
     .snapshot-metric { padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
     .snapshot-metric span { display: block; color: var(--muted); font-size: 11px; }
@@ -195,6 +238,10 @@
     .loading-box { padding: 18px 22px; display: flex; align-items: center; gap: 11px; background: white; border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); font-size: 13px; font-weight: 700; }
     .spinner { width: 18px; height: 18px; border: 2px solid #cbd6e0; border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* 经营看板 9 张指标卡：宽屏 auto-fit 排 5+4；中等宽度下有 1 张会孤零零占一行，这里固定 3 列（3+3+3） */
+    @media (max-width: 1439px) {
+      .metrics-9 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
     @media (max-width: 1050px) {
       .workspace { grid-template-columns: 1fr; }
       .sidebar { padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow: auto; }
@@ -206,10 +253,10 @@
       .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
-      .topbar { height: auto; min-height: 58px; padding: 10px 14px; flex-wrap: wrap; gap: 8px; }
-      .brand p, .status span:last-child { display: none; }
-      .product-bar { padding: 10px 14px 0; }
-      .product-switch { width: 100%; overflow-x: auto; }
+      .topbar { min-height: 56px; padding: 8px 14px; flex-wrap: wrap; gap: 8px; }
+      .brand p { display: none; }
+      .topbar-right { margin-left: 0; width: 100%; justify-content: flex-start; }
+      .product-switch { max-width: 100%; overflow-x: auto; }
       .product-btn { flex: 1 0 auto; }
       .content { padding: 18px 14px 34px; }
       .page-head { align-items: flex-start; flex-direction: column; }
@@ -247,7 +294,7 @@
     // fullState = 全量数据（含两个产品）；dataState = 当前产品视图，页面函数一律读 dataState。
     let fullState = structuredClone(DEFAULT_STATE);
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { coverageSpan: 30, coverageOpen: [], page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 }, dailyPageNo: 1, dailyPageSize: 200 };
+    let ui = { coverageSpan: 30, coverageOpen: [], dailyPageNo: 1, dailyPageSize: 200, page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], campaignExpand: false, adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', itemStatus: 'all', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
     // 仅 builder 模式（手工上传 CSV）使用：在售名单里的 itemId→SKU
     let skuByItemId = new Map();
@@ -257,7 +304,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
-    const FRONTEND_VERSION = 'v20261125-覆盖矩阵';
+    const FRONTEND_VERSION = 'v20261125-界面重构';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -349,6 +396,12 @@
     }
     function productSwitch() {
       return productOptions().map(([key, label]) => `<button class="product-btn ${ui.product === key ? 'active' : ''}" data-product="${esc(key)}" aria-pressed="${ui.product === key}">${esc(label)}</button>`).join('');
+    }
+    // 店铺切换控件（2026-11-25 重构）：顶栏右上角，与产品分段同高（32px）。
+    // 线上（?shop=）与本机（127.0.0.1 服务）取数方式不同，但控件本身共用这个模板，避免两份 HTML 走样。
+    function shopSelectHtml(shops, currentId) {
+      if (!shops || !shops.length) return '';
+      return `<select class="shop-select" id="shopSelect" aria-label="切换店铺" title="切换店铺">${shops.map(item => `<option value="${esc(item.id)}" ${item.id === currentId ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
     }
     // 外部广告快照目前只覆盖 AD600 Elite，其它产品的 PLP/关键词/搜索词为空属正常，不显示为 0
     function productNotice() {
@@ -1129,18 +1182,23 @@
         ['import', 'file-up', '数据导入'],
         ['daily', 'calendar-range', '每日记录']
       ].filter(([id]) => !SHARED_READONLY || id !== 'import');
+      // 顶栏右侧：店铺 + 产品 + 数据截止日（2026-11-25 重构；没有店铺切换时不显示分隔线）
+      const shopHtml = shopSwitch();
+      const dataEnd = reportBounds().max || '—';
       return `<header class="topbar">
         <div class="brand"><div class="brand-mark">${icon('chart-no-axes-combined', 19)}</div><div><h1>eBay 流量与广告看板</h1><p>${PRODUCTS.map(product => product.label).join(' · ')} ｜ Traffic + PLG + PLP + 关键词</p></div></div>
-        <div class="status"><span class="status-dot"></span><span>${SHARED_READONLY ? '在线只读版' : '数据仅保存在当前浏览器'} · ${FRONTEND_VERSION}</span></div>
+        <div class="topbar-right">
+          <div class="scope">${shopHtml ? shopHtml + '<span class="scope-sep"></span>' : ''}<div class="product-switch" role="group" aria-label="产品范围">${productSwitch()}</div></div>
+          <div class="status" title="${SHARED_READONLY ? '在线只读版' : '本机版'} · 前端版本 ${FRONTEND_VERSION}"><span class="status-dot"></span><span>数据截至 ${esc(dataEnd)}</span></div>
+        </div>
       </header>
-      <div class="product-bar"><div class="product-switch" role="group" aria-label="产品范围">${productSwitch()}</div>${shopSwitch()}</div>
       <div class="workspace">
         <aside class="sidebar"><nav class="nav">${pages.map(([id, ico, label]) => `<button class="nav-btn ${ui.page === id ? 'active' : ''}" data-page="${id}">${icon(ico)}<span>${label}</span></button>`).join('')}</nav></aside>
         <main class="content">${content}</main>
       </div>`;
     }
 
-    function filterPanel(dateScope = 'PLG') {
+    function filterPanel(dateScope = 'PLG', hideSearch = false) {
       const periods = trafficPeriods();
       const dailyRange = dailyDateRange();
       const bounds = reportBounds();
@@ -1150,14 +1208,15 @@
       const selectedPeriod = ui.trafficPeriod === 'custom' ? 'custom'
         : atDailyRange ? 'daily-range'
         : periods.find(period => period.start === ui.start && period.end === ui.end)?.key || 'custom';
-      return `<div class="panel filters">
-        <div class="field"><label>搜索 Item ID 或标题</label><input class="input" id="queryFilter" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
-        ${dateScope === '每日记录' ? '' : `<div class="field"><label>报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="daily-range" ${selectedPeriod === 'daily-range' ? 'selected' : ''}>日报逐日相加（刊登日 ~ 最新）</option><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
-        <div class="field" style="${dateScope === '每日记录' ? 'display:none' : ''}"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter" aria-describedby="trafficSourceBrief"><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（默认）</option><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option></select><small class="field-help" id="trafficSourceBrief">默认按日报逐日相加；两种来源可能存在差额，不能仅凭差额判错。具体规则及原因见下方说明。</small></div>
-        <div class="field"><label>开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div>
-        <div class="field"><label>结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div>
-        <div class="field-help" style="grid-column:1/-1">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（下限＝当前产品链接刊登开始日，上限＝最新日报日；没有报表的日期不可选）。</div>
-        <details class="traffic-source-help"><summary>Traffic 来源说明：${dateScope === '每日记录' ? '每日记录只使用单日报表' : '默认日报逐日相加，可切换累计快照'}（点击展开）</summary>
+      return `<div class="panel toolbar">
+        ${hideSearch ? '' : `<div class="field field-search"><label for="queryFilter">搜索 Item ID 或标题</label><input class="input" id="queryFilter" type="search" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>`}
+        ${dateScope === '每日记录' ? '' : `<div class="field field-range"><label for="trafficPeriodFilter">报表快捷区间</label><select class="input" id="trafficPeriodFilter"><option value="daily-range" ${selectedPeriod === 'daily-range' ? 'selected' : ''}>日报逐日相加（刊登日 ~ 最新）</option><option value="custom" ${selectedPeriod === 'custom' ? 'selected' : ''}>自选日期</option>${periods.map(period => `<option value="${esc(period.key)}" ${selectedPeriod === period.key ? 'selected' : ''}>${esc(rangeText(period.start, period.end))}${period.start === period.end ? '（单日）' : '（累计报表）'}</option>`).join('')}</select></div>`}
+        <div class="field field-reset"><button class="btn" id="filterReset" type="button">重置</button></div>
+        <div class="field field-date"><label for="startFilter">开始日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div>
+        <div class="field field-date"><label for="endFilter">结束日期${dateScope === '每日记录' ? '' : '（Traffic + 广告）'}</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div>
+        <div class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（下限＝当前产品链接刊登开始日，上限＝最新日报日；没有报表的日期不可选）。</div>
+        <details class="traffic-source-help"><summary>Traffic 口径：${dateScope === '每日记录' ? '每日记录只使用单日报表' : ui.trafficSource === 'daily' ? '日报逐日相加' : '累计报表优先'} · 说明与切换（点击展开）</summary>
+          ${dateScope === '每日记录' ? '' : `<div class="field"><label for="trafficSourceFilter">Traffic 汇总来源</label><select class="input" id="trafficSourceFilter"><option value="daily" ${ui.trafficSource === 'daily' ? 'selected' : ''}>仅按日报汇总（默认）</option><option value="auto" ${ui.trafficSource !== 'daily' ? 'selected' : ''}>同区间累计报表优先</option></select><small class="field-help">默认按日报逐日相加；两种来源可能存在差额，不能仅凭差额判错。具体规则及原因见下方说明。</small></div>`}
           <p><strong>日报逐日相加（默认，2026-11-17 定）：</strong>按同一 Item 将所选日期内的原始日报相加，默认范围取<strong>当前产品链接刊登开始日（后台 Item Start Date）~ 最新日报日</strong>（600E 与 900E 的起点不同，切换产品后各自重新推导）。起点用刊登日而不用「最早日报日」：eBay 在 11 月重新下载 9 月报表时，会用链接<strong>当前</strong>的标题回填历史行，产生一批「链接当时还不存在 / 当时在卖别的商品」的全 0 或 <code>-</code> 空行，它们不代表该商品当时在售。缺失日期或缺失 Item 行不视为实际为零，也不会用累计差额补写每天的数据。日期框的可选范围同样以刊登日为下限、最新日报日为上限，没有报表的日期（含未来日期）无法勾选。</p>
           <p><strong>同区间累计报表优先（可选）：</strong>把「报表快捷区间」或日期切到某份累计报表的起止范围时，才使用该区间快照。累计报表是某次导出时的快照，与日报相加可能存在差额，不能仅凭差额判错。每日记录页面始终使用单日报表。</p>
           <p><strong>为什么可能有差额？</strong></p>
@@ -1183,7 +1242,7 @@
 
     function dashboardPage() {
       const rows = itemPerformance();
-      if (!rows.length) return `<div class="page-head"><h2>经营看板</h2></div>${filterPanel()}<div class="snapshot-note">${esc(trafficSelection().note)}</div><div class="panel empty">当前日期范围没有数据，请调整开始、结束日期。</div>`;
+      if (!rows.length) return `<div class="page-head"><h2>经营看板</h2></div>${filterPanel('PLG', true)}<div class="snapshot-note">${esc(trafficSelection().note)}</div><div class="panel empty">当前日期范围没有数据，请调整开始、结束日期。</div>`;
       const trafficRows = trafficPeriodRows();
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
@@ -1198,11 +1257,13 @@
       const adFees = sum(rows, 'adFees');
       const plpSales = sum(rows, 'plpSales');
       const plpFees = sum(rows, 'plpFees');
+      // 在售状态只筛下表（页头指标保持整体口径，沿用 Item 明细页的既有约定；搜索与日期仍是整页口径）
+      const tableRows = (ui.itemStatus || 'all') === 'all' ? rows : rows.filter(row => row.listingStatus === ui.itemStatus);
       return `<div class="page-head"><div><h2>经营看板</h2><p>按同一 Item 和日期统一查看整体流量、自然流量、PLG 与 PLP 广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
-        ${filterPanel()}
-        <div class="snapshot-note">统计范围：${rangeText(ui.start, ui.end)}；Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。${esc(trafficSelection().note)}</div>
+        ${filterPanel('PLG', true)}
+        <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>统计范围：${rangeText(ui.start, ui.end)}；Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
         ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
-        <section class="metrics">
+        <section class="metrics metrics-9">
           ${metric('链接总曝光', hasTraffic ? fmt(impressions) : '—', `${fmt(rows.filter(row => row.hasTraffic).length)} 个 Item 有 Traffic`)}
           ${metric('总PV（Total page views）', hasTraffic ? fmt(totalViews) : '—', '站内 + 站外全部访问')}
           ${metric('站内PV（eBay）', hasTraffic ? fmt(ebayViews) : '—', '站内广告 + 站内自然')}
@@ -1221,17 +1282,30 @@
           <div class="panel"><div class="panel-head"><h3>流量与广告曝光对比</h3><small>统一查看 Traffic、自然、PLG、PLP</small></div><div id="channelChart" class="chart"></div></div>
           <div class="panel"><div class="panel-head"><h3>每日流量与广告互动趋势</h3><small>eBay PV 与广告点击按日对比</small></div><div id="trendChart" class="chart"></div></div>
         </section>
-        <section class="panel"><div class="panel-head"><h3>Item 整体链接表现</h3><small>整体曝光、PV、销量、CTR 与转化率</small></div>${itemSummaryTable(rows)}</section>`;
+        <section class="panel"><div class="panel-head"><h3>Item 整体链接表现</h3><small>整体曝光、PV、销量、CTR 与转化率</small></div>${itemTableToolbar(rows, tableRows)}${itemSummaryTable(tableRows)}</section>`;
     }
 
     function emptyDashboard() {
       return `<div class="page-head"><div><h2>经营看板</h2><p>${SHARED_READONLY ? '等待维护者更新报表后自动生成。' : '上传两类 eBay CSV 后自动生成。'}</p></div></div><div class="panel empty">${icon('chart-no-axes-combined', 30)}<div>还没有可展示的数据</div>${SHARED_READONLY ? '' : `<div style="margin-top:14px"><button class="btn primary" id="topUploadBtn">${icon('upload')}上传 Traffic + PLG</button></div>`}</div>`;
     }
 
+    // Item 表工具条（2026-11-25 新增）：搜索（与顶部同一个值）+ 在售状态 + 显示行数。
+    // 在售状态只筛本表；搜索与日期沿用整页口径（与原来一致）。
+    function itemTableToolbar(allRows, shownRows) {
+      const current = ui.itemStatus || 'all';
+      const snapshot = dataState.activeListings;
+      const options = [['all', '全部（含历史）'], ['active', '在售'], ['absent', '不在最新在售名单'], ['unknown', '状态待确认']];
+      return `<div class="table-toolbar">
+        <div class="field field-search"><label for="itemTableQuery">搜索 Item ID 或标题</label><input class="input" id="itemTableQuery" type="search" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
+        <div class="field field-auto"><label for="itemStatusFilter">在售状态</label><select class="input" id="itemStatusFilter">${options.map(([value, label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+        <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态只筛本表，搜索与日期作用于整页</span>
+      </div>`;
+    }
+
     function itemSummaryTable(rows) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
       const sorted = sortRows(rows, 'summary');
-      return `<div class="table-wrap"><table><thead><tr>${sortHeader('Item ID', 'itemId', 'summary')}${sortHeader('标题', 'title', 'summary')}${sortHeader('上架日期', 'listingStartDate', 'summary')}${sortHeader('距今上架时间', 'listingAgeDays', 'summary')}${sortHeader('总PV', 'totalPageViews', 'summary')}${sortHeader('总曝光', 'totalImpressions', 'summary')}${sortHeader('站内PV', 'ebayViews', 'summary')}${sortHeader('站外PV', 'externalViews', 'summary')}${sortHeader('销量（Traffic）', 'quantitySold', 'summary')}${sortHeader('总 CTR', 'totalCtr', 'summary')}${sortHeader('总转化率', 'totalConversion', 'summary')}${sortHeader('PV核对（日度减累计）', 'pvAudit', 'summary')}</tr></thead><tbody>${sorted.map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td><td>${row.hasTraffic ? fmt(row.totalPageViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}${row.salesMismatch ? ' <span class="badge amber">待核对</span>' : ''}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td style="white-space:normal;min-width:180px">${esc(row.pvAudit)}</td></tr>`).join('')}</tbody></table></div>`;
+      return `<div class="table-wrap"><table class="sticky-first"><thead><tr>${sortHeader('Item ID', 'itemId', 'summary')}${sortHeader('标题', 'title', 'summary')}${sortHeader('上架日期', 'listingStartDate', 'summary')}${sortHeader('距今上架时间', 'listingAgeDays', 'summary')}${sortHeader('总PV', 'totalPageViews', 'summary')}${sortHeader('总曝光', 'totalImpressions', 'summary')}${sortHeader('站内PV', 'ebayViews', 'summary')}${sortHeader('站外PV', 'externalViews', 'summary')}${sortHeader('销量（Traffic）', 'quantitySold', 'summary')}${sortHeader('总 CTR', 'totalCtr', 'summary')}${sortHeader('总转化率', 'totalConversion', 'summary')}${sortHeader('PV核对（日度减累计）', 'pvAudit', 'summary')}</tr></thead><tbody>${sorted.map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td><td>${row.hasTraffic ? fmt(row.totalPageViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}${row.salesMismatch ? ' <span class="badge amber">待核对</span>' : ''}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td style="white-space:normal;min-width:180px">${esc(row.pvAudit)}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
     function itemAdPerformanceTable(rows) {
@@ -1303,7 +1377,7 @@
       { key: 'keyword', label: 'PLP 关键词', ad: true, note: '按活动、单日下载' },
       { key: 'search', label: 'PLP 搜索词', ad: true, note: '按活动、单日下载' }
     ];
-    const COV_GLYPH = { have: '●', partial: '◐', blank: '○', miss: '✕' };
+    const COV_GLYPH = { have: '●', partial: '◐', blank: '○', miss: '✕', pending: '·' };
 
     const covNorm = value => clean(value).replace(/\s+/g, ' ').toLowerCase();
     // 「已知不可得」（bundle.knownGaps）：确认**永远拿不到**的报表 —— 例如某活动的 eBay 弹窗里
@@ -1440,7 +1514,7 @@
       return { dates, earliest, latest, dataLatest, dueEnd, gapEnd, types, ranges, active };
     }
 
-    function coverageCellInfo(type, date) {
+    function coverageCellInfo(type, date, dueEnd = '') {
       const { days, empty } = coverageState();
       const haveDay = days[type.key] || {};
       const blankDay = empty[type.key] || {};
@@ -1451,7 +1525,11 @@
       const has = (bag, key) => Object.prototype.hasOwnProperty.call(bag, key);
       // partial：这天有数据，但至少一个活动缺（类型级只看「有没有」会全绿，掩盖活动级缺口）
       const partial = (type.partialDays && type.partialDays.has(date)) || false;
-      return { status: has(haveDay, date) ? (partial ? 'partial' : 'have') : has(blankDay, date) ? 'blank' : 'miss', have, blank, partial };
+      // 未到应到日（2026-11-25 新增）：太平洋时间次日 16:00 之后才把「昨天」算作应到（用户口径）。
+      // 没到应到日的日期没有数据是正常的 —— 原来矩阵把「今天」整行标成红 ✕「缺」，
+      // 与上方「各类报表状态：没有缺口」自相矛盾。现在显示中性「·」。
+      const pending = Boolean(dueEnd) && date > dueEnd;
+      return { status: has(haveDay, date) ? (partial ? 'partial' : 'have') : has(blankDay, date) ? 'blank' : pending ? 'pending' : 'miss', have, blank, partial, pending };
     }
 
     function coverageSummary(model) {
@@ -1491,19 +1569,20 @@
       const head = model.types.map(type => `<th>${esc(type.label)}</th>`).join('');
       const rows = model.dates.slice().reverse().map(date => {
         const cells = model.types.map(type => {
-          const info = coverageCellInfo(type, date);
+          const info = coverageCellInfo(type, date, model.gapEnd);
           const missing = info.partial ? (type.campaignGaps || []).filter(item => item.gaps.includes(date)).map(item => item.entry.name) : [];
           const title = [
             info.have.length ? `有数据：${info.have.join('、')}` : '',
             info.blank.length ? `eBay 回空（已核实无数据）：${info.blank.join('、')}` : '',
             missing.length ? `但这些活动这天没有文件：${missing.join('、')}` : '',
+            info.pending ? '还没到出报表时间（太平洋时间次日 16:00 后才应到），不算缺口' : '',
             info.status === 'miss' ? '没有这份报表' : ''
           ].filter(Boolean).join('；');
           return `<td class="cov-cell cov-${info.status}"${title ? ` title="${esc(title)}"` : ''}>${COV_GLYPH[info.status]}</td>`;
         }).join('');
         return `<tr><td>${date}</td>${cells}</tr>`;
       }).join('');
-      return `<section class="panel"><div class="panel-head"><h3>覆盖矩阵</h3><small>● 有数据　◐ 部分活动缺　○ 已核实无数据（eBay 回空）　✕ 缺　　鼠标悬停看是哪个活动</small></div>
+      return `<section class="panel"><div class="panel-head"><h3>覆盖矩阵</h3><small>● 有数据　◐ 部分活动缺　○ 已核实无数据（eBay 回空）　✕ 缺　　· 还没到应到日（太平洋时间次日 16:00）　　鼠标悬停看是哪个活动</small></div>
         <div class="panel-body" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${[7, 30, 90, 0].map(n => `<button class="btn${Number(ui.coverageSpan) === n ? ' primary' : ''}" data-coverage-span="${n}" style="min-width:auto;padding:0 10px">${n ? `最近 ${n} 天` : '全部'}</button>`).join('')}<span style="color:var(--muted);font-size:12px">共 ${fmt(model.dates.length)} 天（${model.dates[0] || '—'} ~ ${model.dates[model.dates.length - 1] || '—'}）</span></div>
         <div class="table-wrap cov-scroll"><table class="cov-matrix"><thead><tr><th>日期</th>${head}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
     }
@@ -1526,7 +1605,9 @@
           if (type.blank.size) body += `<div class="cov-gap-line" style="color:var(--muted)">已核实无数据（eBay 回空，不用重下）：${[...type.blank].sort().map(date => `<code>${date}</code>`).join('')}</div>`;
         } else {
           body = type.campaigns.map(entry => {
-            const entryGaps = coverageGapDays(entry.have, entry.blank, entry.first, model.latest);
+            // 缺口右端用 gapEnd（应到日）：latest 含「提前到了的新一天」，拿它算缺口会把
+            // 其他活动「今天还没生成」的报表算成缺（2026-11-25 修，与类型级口径一致）。
+            const entryGaps = coverageGapDays(entry.have, entry.blank, entry.first, model.gapEnd || model.latest);
             const note = knownGapNote(type.key, entry.name);
             return `<div class="cov-gap-line"><strong>${esc(entry.name)}</strong>
               <span style="color:var(--muted)">有数据 ${fmt(entry.have.size)} 天${entry.first ? `（${entry.first} ~ ${entry.latest || entry.first}）` : ''}</span>
@@ -1636,7 +1717,7 @@
       const absent = [...history].filter(id => !active.has(id)).length;
       const selected = ui.listingStatus || 'active';
       return `<section class="metrics">${metric('当前在售 Item', snapshot ? fmt(active.size) : '待确认', snapshot ? '名单日期：' + snapshot.date : '请提供完整在售商品报表')}${metric('历史记录 Item', fmt(history.size), '全部历史数据去重，不受所选日期影响')}${metric('历史链接不在最新名单', snapshot ? fmt(absent) : '待确认', '不等同于已确认下架')}</section>
-        <div class="panel" style="padding:16px;margin-bottom:16px"><div class="field"><label for="listingStatusFilter">Item 在售状态</label><select class="input" id="listingStatusFilter">${[['active','在售'],['all','全部（含历史）'],['absent','不在最新在售名单'],['unknown','状态待确认']].map(([value,label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div><p class="field-help">${snapshot ? `名单日期：${esc(snapshot.date)}（文件导出日期），来源：${esc(snapshot.name)}。` : '尚无在售名单，当前显示数据状态待确认的链接。'}状态按最新名单中的 Item ID 判断，与经营数据所选时间范围无关；未在名单中不直接判为下架，可能涉及结束、售罄或导出范围。名单可能包含零库存链接，不代表均可购买。新在售链接即使所选区间没有表现记录也保留，指标显示“—”。筛选仅作用于本页及 Item 导出，经营看板和每日历史保留原口径。</p></div>`;
+        <div class="panel" style="padding:14px 16px;margin-bottom:16px"><div class="field" style="max-width:300px"><label for="listingStatusFilter">Item 在售状态</label><select class="input" id="listingStatusFilter">${[['active','在售'],['all','全部（含历史）'],['absent','不在最新在售名单'],['unknown','状态待确认']].map(([value,label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div><p class="field-help">${snapshot ? `名单日期：${esc(snapshot.date)}（文件导出日期）。` : '尚无在售名单，当前显示数据状态待确认的链接。'}状态按最新名单中的 Item ID 判断，与所选时间范围无关；筛选仅作用于本页与 Item 导出。</p><details class="inline-help"><summary>在售状态与名单口径说明（点击展开）</summary><p class="field-help">来源：${snapshot ? esc(snapshot.name) : '—'}。未在名单中不直接判为下架，可能涉及结束、售罄或导出范围；名单可能包含零库存链接，不代表均可购买；新在售链接即使所选区间没有表现记录也保留，指标显示“—”。经营看板与每日历史保留原口径。</p></details></div>`;
     }
 
     function detailPage() {
@@ -1648,7 +1729,7 @@
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
         ${listingStatusPanel()}
-        <div class="snapshot-note">PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plpEnd)}。${esc(trafficSelection().note)}</div>
+        <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
         <div class="snapshot-note">「当前售价」取该链接最近一次导出报表里的当前价（Price (Current or Last Price)，已含当时生效的促销/降价），不是标价、也不是成交均价；同一链接在区间内调过价时，这里显示最新那个价。</div>
         ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
         <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(rows.length)} 个 Item</small></div>${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
@@ -1763,7 +1844,13 @@
 
     function campaignChips() {
       const names = unique([...dataState.plgRaw.map(row => row.campaign), ...(dataState.ads.plpRows || []).map(row => row.campaign)]).sort();
-      return `<div class="campaign-chips"><button class="campaign-chip ${ui.campaigns.length ? '' : 'active'}" data-campaign="">全部 Campaign</button>${names.map(name => `<button class="campaign-chip ${ui.campaigns.includes(name) ? 'active' : ''}" data-campaign="${esc(name)}">${esc(name.replace('US.TD.PLG.topdon_scanner.', ''))}</button>`).join('')}</div>`;
+      // 2026-11-25：活动多时 chips 会占两三行（超长活动名尤其吵）→ 默认只显示前 8 个，其余折叠成「展开全部」。
+      const LIMIT = 8;
+      const expanded = Boolean(ui.campaignExpand);
+      const shown = expanded ? names : names.slice(0, LIMIT);
+      const chip = name => `<button class="campaign-chip ${ui.campaigns.includes(name) ? 'active' : ''}" data-campaign="${esc(name)}">${esc(name.replace('US.TD.PLG.topdon_scanner.', ''))}</button>`;
+      const toggle = names.length > LIMIT ? `<button class="campaign-chip more" id="campaignToggle">${expanded ? '收起活动列表' : `展开全部 ${fmt(names.length)} 个活动`}</button>` : '';
+      return `<div class="campaign-chips"><button class="campaign-chip ${ui.campaigns.length ? '' : 'active'}" data-campaign="">全部 Campaign</button>${shown.map(chip).join('')}${toggle}</div>`;
     }
 
     // 起始日显示（2026-11-25 新增）：主值取保守下界，鼠标悬停给出报表原值与我方最早数据日，
@@ -1776,15 +1863,15 @@
       if (info.earliest && info.earliest !== info.show) bits.push(`我方最早有数据 ${info.earliest}`);
       const title = bits.length ? ` title="${esc(bits.join('；'))}"` : '';
       const mark = info.earliest && info.claim && info.earliest < info.claim ? ' *' : '';
-      return `<td class="ad-start"${title}>${esc(info.show)}${mark}</td>`;
+      return `<td class="ad-start t-text"${title}>${esc(info.show)}${mark}</td>`;
     }
 
     function campaignOverview() {
       const campaigns = adCampaignRows();
       const impressions = sum(campaigns, 'impressions'), clicks = sum(campaigns, 'clicks'), sold = sum(campaigns, 'sold'), sales = sum(campaigns, 'sales'), fees = sum(campaigns, 'adFees');
       const cards = [...campaigns].sort((a,b) => b.impressions-a.impressions).map(row => `<article class="panel campaign-card"><div class="campaign-card-head"><strong>${esc(row.campaign)}</strong><span class="badge ${row.adType.includes('PLP') ? 'blue' : 'amber'}">${esc(row.adType)}</span></div><div class="campaign-card-grid"><div><span>起始日</span><strong title="${esc(`报表标注 ${row.startInfo?.claim || '—'}；我方最早有数据 ${row.startInfo?.earliest || '—'}`)}">${esc(row.startInfo?.show || '—')}${row.startInfo?.earliest && row.startInfo?.claim && row.startInfo.earliest < row.startInfo.claim ? ' *' : ''}</strong></div><div><span>曝光</span><strong>${fmt(row.impressions)}</strong></div><div><span>点击 / CTR</span><strong>${fmt(row.clicks)} / ${pct(row.ctr)}</strong></div><div><span>销量 / CVR</span><strong>${fmt(row.sold)} / ${pct(row.conversion)}</strong></div><div><span>广告费</span><strong>${money(row.adFees)}</strong></div><div><span>ROAS</span><strong>${fmt(row.roas,2)}</strong></div><div><span>平均 CPC</span><strong>${money(row.avgCpc)}</strong></div><div><span>销售额</span><strong>${money(row.sales)}</strong></div><div><span>Item 数</span><strong>${fmt(row.itemCount)}</strong></div>${adStatusText(row.statusInfo) ? `<div><span>刊登状态</span><strong title="${esc(adStatusRaw(row.statusInfo))}">${esc(adStatusText(row.statusInfo))}</strong></div>` : ''}<div><span>数据天数</span><strong>${fmt(row.days)}</strong></div></div></article>`).join('');
-      const table = sortRows(campaigns, 'campaigns').map(row => `<tr><td>${esc(row.campaign)}</td><td>${esc(row.adType)}</td>${startCell(row)}<td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td title="${esc(adStatusRaw(row.statusInfo))}">${esc(adStatusText(row.statusInfo) || '—')}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.avgCpc)}</td><td>${fmt(row.roas,2)}</td></tr>`).join('');
-      return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="snapshot-note">「起始日」取报表标注的 Campaign start date 与我方最早有数据日中**更早**的那个（带 <b>*</b> 表示报表标注偏晚，悬停可看两个值）—— 用它判断某天缺数据是否发生在活动开始之前。</div><div class="table-wrap"><table id="campaignTable"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns')}${sortHeader('起始日','adStart','campaigns')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('刊登状态','statusText','campaigns')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}</tr></thead><tbody>${table}</tbody></table></div></section>`;
+      const table = sortRows(campaigns, 'campaigns').map(row => `<tr><td>${esc(row.campaign)}</td><td class="t-text">${esc(row.adType)}</td>${startCell(row)}<td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td class="t-text" title="${esc(adStatusRaw(row.statusInfo))}">${esc(adStatusText(row.statusInfo) || '—')}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.avgCpc)}</td><td>${fmt(row.roas,2)}</td></tr>`).join('');
+      return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="snapshot-note">「起始日」取报表标注的 Campaign start date 与我方最早有数据日中**更早**的那个（带 <b>*</b> 表示报表标注偏晚，悬停可看两个值）—— 用它判断某天缺数据是否发生在活动开始之前。</div><div class="table-wrap"><table id="campaignTable" class="table-compact"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns','t-text')}${sortHeader('起始日','adStart','campaigns','t-text')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('刊登状态','statusText','campaigns','t-text')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}</tr></thead><tbody>${table}</tbody></table></div></section>`;
     }
 
     function adFilterState(tab = ui.adTab) {
@@ -1843,12 +1930,12 @@
       const links = tab === 'plg' || tab === 'plp';
       const options = unique(sourceRows.map(row => row.itemId)).sort();
       const matches = unique([...sourceRows.map(row => row.matchType), filter.matchType]).sort();
-      return `<div class="panel filters">
-        <div class="field"><label for="adViewFilter">查看方式</label><select class="input" id="adViewFilter" data-ad-filter="view"><option value="summary" ${filter.view === 'summary' ? 'selected' : ''}>${links ? '按 Item 汇总' : tab === 'keywords' ? '按关键词＋匹配方式汇总' : '按搜索词汇总'}</option><option value="daily" ${filter.view === 'daily' ? 'selected' : ''}>日度明细</option></select></div>
-        ${links ? `<div class="field"><label for="adItemFilter">Item ID</label><input class="input" type="search" id="adItemFilter" data-ad-filter="itemId" list="adItemOptions" placeholder="输入或选择 Item ID" value="${esc(filter.itemId)}" /><datalist id="adItemOptions">${options.map(id => `<option value="${esc(id)}"></option>`).join('')}</datalist></div>`
-          : `<div class="field"><label for="adTermFilter">${tab === 'keywords' ? '关键词包含' : '搜索词包含'}</label><input class="input" type="search" id="adTermFilter" data-ad-filter="term" placeholder="输入文字筛选" value="${esc(filter.term)}" /></div>
-          ${tab === 'searches' ? `<div class="field"><label for="adKeywordFilter">触发关键词包含</label><input class="input" type="search" id="adKeywordFilter" data-ad-filter="keyword" value="${esc(filter.keyword)}" placeholder="输入触发关键词" /></div>` : ''}
-          <div class="field"><label for="adMatchFilter">匹配方式</label><select class="input" id="adMatchFilter" data-ad-filter="matchType"><option value="">全部匹配方式</option>${matches.map(value => `<option value="${esc(value)}" ${filter.matchType === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></div>`}
+      return `<div class="panel toolbar">
+        <div class="field field-auto"><label for="adViewFilter">查看方式</label><select class="input" id="adViewFilter" data-ad-filter="view"><option value="summary" ${filter.view === 'summary' ? 'selected' : ''}>${links ? '按 Item 汇总' : tab === 'keywords' ? '按关键词＋匹配方式汇总' : '按搜索词汇总'}</option><option value="daily" ${filter.view === 'daily' ? 'selected' : ''}>日度明细</option></select></div>
+        ${links ? `<div class="field field-search"><label for="adItemFilter">Item ID</label><input class="input" type="search" id="adItemFilter" data-ad-filter="itemId" list="adItemOptions" placeholder="输入或选择 Item ID" value="${esc(filter.itemId)}" /><datalist id="adItemOptions">${options.map(id => `<option value="${esc(id)}"></option>`).join('')}</datalist></div>`
+          : `<div class="field field-search"><label for="adTermFilter">${tab === 'keywords' ? '关键词包含' : '搜索词包含'}</label><input class="input" type="search" id="adTermFilter" data-ad-filter="term" placeholder="输入文字筛选" value="${esc(filter.term)}" /></div>
+          ${tab === 'searches' ? `<div class="field field-search"><label for="adKeywordFilter">触发关键词包含</label><input class="input" type="search" id="adKeywordFilter" data-ad-filter="keyword" value="${esc(filter.keyword)}" placeholder="输入触发关键词" /></div>` : ''}
+          <div class="field field-auto"><label for="adMatchFilter">匹配方式</label><select class="input" id="adMatchFilter" data-ad-filter="matchType"><option value="">全部匹配方式</option>${matches.map(value => `<option value="${esc(value)}" ${filter.matchType === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></div>`}
         <button class="btn" id="adFilterReset">清空本页筛选</button>
       </div>`;
     }
@@ -1874,10 +1961,10 @@
       const filtered = source.filter(row => !filter.itemId || String(row.itemId).includes(filter.itemId));
       const summary = filter.view === 'summary';
       const rows = sortRows(summary ? summarizeAdRows(filtered,'links') : filtered.map(adRowRatios),table);
-      const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}<td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank" rel="noopener">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>${adMetricCells(row)}${type === 'PLG' ? `<td>${adValue(row.naturalImpressions)}</td><td>${adValue(row.naturalClicks)}</td><td>${adValue(row.naturalSold)}</td>` : ''}<td>${esc(row.campaign)}</td></tr>`).join('');
+      const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}<td><a href="https://www.ebay.com/itm/${esc(row.itemId)}" target="_blank" rel="noopener">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td>${adMetricCells(row)}${type === 'PLG' ? `<td>${adValue(row.naturalImpressions)}</td><td>${adValue(row.naturalClicks)}</td><td>${adValue(row.naturalSold)}</td>` : ''}<td class="t-text">${esc(row.campaign)}</td></tr>`).join('');
       return `${adTableFilters(tab,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><h3>${type} 链接表现 · ${summary ? 'Item 汇总' : '日度明细'}</h3><small>${summary ? `${fmt(rows.length)} 个 Item，来自 ${fmt(filtered.length)} 条日度记录` : `${fmt(rows.length)} 条日度记录`}</small></div>
         <div class="snapshot-note">按上方日期、Campaign 和本页 Item ID 筛选。汇总时同一 Item 跨日期、跨 Campaign 合并，比例按合计值重算。${summary && type === 'PLG' ? '自然指标按同日 Item 去重，多个 Campaign 的自然记录不一致时显示 —。' : ''}</div>
-        <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',table)}${summary ? sortHeader('记录天数','days',table) : ''}${sortHeader('Item ID','itemId',table)}${sortHeader('标题','title',table)}${adMetricHeaders(table)}${type === 'PLG' ? sortHeader('自然曝光','naturalImpressions',table)+sortHeader('自然点击','naturalClicks',table)+sortHeader('自然销量','naturalSold',table) : ''}${sortHeader('Campaign','campaign',table)}</tr></thead><tbody>${body || `<tr><td colspan="${(summary ? 15 : 14)+(type === 'PLG' ? 3 : 0)}">当前筛选范围没有记录，请调整日期、Campaign 或 Item ID。</td></tr>`}</tbody></table></div></section>`;
+        <div class="table-wrap"><table class="table-compact"><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',table)}${summary ? sortHeader('记录天数','days',table) : ''}${sortHeader('Item ID','itemId',table)}${sortHeader('标题','title',table)}${adMetricHeaders(table)}${type === 'PLG' ? sortHeader('自然曝光','naturalImpressions',table)+sortHeader('自然点击','naturalClicks',table)+sortHeader('自然销量','naturalSold',table) : ''}${sortHeader('Campaign','campaign',table,'t-text')}</tr></thead><tbody>${body || `<tr><td colspan="${(summary ? 15 : 14)+(type === 'PLG' ? 3 : 0)}">当前筛选范围没有记录，请调整日期、Campaign 或 Item ID。</td></tr>`}</tbody></table></div></section>`;
     }
 
     function adTermsRows(type) {
@@ -1893,10 +1980,10 @@
 
     function adTermsTable(type) {
       const { isKeyword, source, filtered, summary, rows } = adTermsRows(type);
-      const body = rows.map(row => `<tr><td>${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}${isKeyword ? '' : `<td>${esc(row.searchQuery)}</td>`}<td>${esc(row.keyword)}</td><td>${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}<td>${esc(row.campaign)}</td></tr>`).join('');
+      const body = rows.map(row => `<tr><td class="t-text">${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}${isKeyword ? '' : `<td class="t-text">${esc(row.searchQuery)}</td>`}<td class="t-text">${esc(row.keyword)}</td><td class="t-text">${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}<td class="t-text">${esc(row.campaign)}</td></tr>`).join('');
       return `${adTableFilters(type,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><div style="display:flex;align-items:baseline;gap:10px"><h3>${isKeyword ? '关键词' : '搜索词'}表现 · ${summary ? '区间汇总' : '日度明细'}</h3><small>${fmt(rows.length)} 条${summary ? '汇总，来自 '+fmt(filtered.length)+' 条日度记录' : '日度记录'}</small></div><button class="btn" id="adTermsExportBtn" data-export-terms="${type}">${icon('download')}导出表格</button></div>
         <div class="snapshot-note">${isKeyword ? '同一关键词和匹配方式跨日期、跨 Campaign 合并；出价显示所选期间的最小值至最大值。' : '同一搜索词跨日期、跨 Campaign、跨触发关键词合并；触发关键词及匹配方式列展示涉及的全部值。'} 汇总跟随日期及本页筛选，比例按合计值重算。记录天数仅代表报表中存在记录的天数。</div>
-        <div class="table-wrap"><table><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',type)}${summary ? sortHeader('记录天数','days',type) : ''}${isKeyword ? '' : sortHeader('搜索词','searchQuery',type)}${sortHeader(isKeyword ? '关键词' : '触发关键词','keyword',type)}${sortHeader('匹配方式','matchType',type)}${isKeyword ? sortHeader(summary ? '期间出价范围' : 'Bid','bid',type) : ''}${adMetricHeaders(type)}${sortHeader('Campaign','campaign',type)}</tr></thead><tbody>${body || `<tr><td colspan="${summary ? 16 : 15}">当前筛选范围没有记录，请调整筛选条件。</td></tr>`}</tbody></table></div></section>`;
+        <div class="table-wrap"><table class="table-compact"><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',type,'t-text')}${summary ? sortHeader('记录天数','days',type) : ''}${isKeyword ? '' : sortHeader('搜索词','searchQuery',type,'t-text')}${sortHeader(isKeyword ? '关键词' : '触发关键词','keyword',type,'t-text')}${sortHeader('匹配方式','matchType',type,'t-text')}${isKeyword ? sortHeader(summary ? '期间出价范围' : 'Bid','bid',type) : ''}${adMetricHeaders(type)}${sortHeader('Campaign','campaign',type,'t-text')}</tr></thead><tbody>${body || `<tr><td colspan="${summary ? 16 : 15}">当前筛选范围没有记录，请调整筛选条件。</td></tr>`}</tbody></table></div></section>`;
     }
 
     function adTermsColumns(isKeyword, summary) {
@@ -1963,7 +2050,7 @@
       const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词']];
       const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : ui.adTab === 'plp' ? adLinksTable('PLP') : adTermsTable(ui.adTab);
       const bounds = reportBounds();
-      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。</p></div></div><div class="panel filters"><div class="field"><label>开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field"><label>结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
+      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。</p></div></div><div class="panel toolbar"><div class="field field-date"><label for="startFilter">开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field field-date"><label for="endFilter">结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><span class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（广告页只看广告数据）</span></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
     }
 
     function coveragePage() {
@@ -2138,6 +2225,19 @@
       });
       const query = document.getElementById('queryFilter');
       query?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
+      // 表内搜索与顶部搜索是同一个值（2026-11-25）：在表格那儿改，顶部跟着变；反之亦然
+      const itemQuery = document.getElementById('itemTableQuery');
+      itemQuery?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
+      document.getElementById('itemStatusFilter')?.addEventListener('change', e => { ui.itemStatus = e.target.value; render(); });
+      document.getElementById('campaignToggle')?.addEventListener('click', () => { ui.campaignExpand = !ui.campaignExpand; render(); });
+      document.getElementById('filterReset')?.addEventListener('click', () => {
+        ui.query = '';
+        ui.trafficPeriod = 'daily-range';
+        const range = dailyDateRange();
+        ui.start = range.start || '';
+        ui.end = range.end || '';
+        render();
+      });
       document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; render(); });
       document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; render(); });
       document.getElementById('trafficSourceFilter')?.addEventListener('change', e => { ui.trafficSource = e.target.value; render(); });
@@ -2263,7 +2363,7 @@
       skuByItemId = new Map();
       applyProduct();
       await saveState();
-      ui = { coverageSpan: 30, coverageOpen: [], page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      ui = { coverageSpan: 30, coverageOpen: [], dailyPageNo: 1, dailyPageSize: 200, page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], campaignExpand: false, adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', itemStatus: 'all', detail: 'item', sort: { table: '', key: '', dir: 0 } };
       render();
       toast('数据已清空。');
     }
@@ -2327,7 +2427,7 @@
       const s = onlineShops();
       if (!s) return '';
       const id = pickedShopId();
-      return `<div class="field" style="min-width:220px"><label>店铺</label><select class="input" id="shopSelect">${s.shops.map(x => `<option value="${esc(x.id)}" ${x.id === id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select></div>`;
+      return shopSelectHtml(s.shops, id);
     }
 
     (async function start() {
