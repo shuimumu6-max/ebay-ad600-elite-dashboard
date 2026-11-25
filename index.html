@@ -1306,6 +1306,23 @@
     const COV_GLYPH = { have: '●', partial: '◐', blank: '○', miss: '✕' };
 
     const covNorm = value => clean(value).replace(/\s+/g, ' ').toLowerCase();
+    // 「已知不可得」（bundle.knownGaps）：确认**永远拿不到**的报表 —— 例如某活动的 eBay 弹窗里
+    // 根本没有 keyword 报表选项。不标的话它每天挂在缺失清单里当噪音，还容易被当成漏下载反复去补。
+    // 匹配规则：kind 相同 + 活动名归一化后相同（行里的名字可能带连续空格，所以要归一化）；* 可通配。
+    function knownGapNote(kind, campaign) {
+      const list = (typeof fullState !== 'undefined' && fullState && fullState.knownGaps)
+        || dataState.knownGaps
+        || [];
+      const name = covNorm(campaign);
+      for (const item of list) {
+        if (!item || covNorm(item.kind) !== covNorm(kind)) continue;
+        const raw = covNorm(item.campaign || '');
+        if (!raw) continue;
+        const pattern = raw.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+        if (new RegExp('^' + pattern + '$').test(name)) return item.note || '已知不可得';
+      }
+      return '';
+    }
     const covAddDays = (iso, days) => { const date = new Date(`${iso}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); };
 
     function coverageState() {
@@ -1386,15 +1403,19 @@
         const cover = [...new Set([...have, ...blank])].sort();
         const campaigns = type.ad ? coverageCampaigns(type.key) : [];
         // 活动级缺口：类型级「有数据」只要求有一个活动有文件，所以类型级看不到谁缺了 —— 这里单独算。
-        const campaignGaps = campaigns
-          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, latest) }))
+        const allCampaignGaps = campaigns
+          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, latest), note: knownGapNote(type.key, entry.name) }))
           .filter(item => item.gaps.length);
+        // 已知不可得（⛔）单独拎出来：不算缺口、不进「还有缺口」、也不让矩阵挂 ◐
+        const knownGapEntries = allCampaignGaps.filter(item => item.note);
+        const campaignGaps = allCampaignGaps.filter(item => !item.note);
         // 「部分活动缺」的日子：类型级有数据，但至少一个活动那天没有文件。
         // 只看每个活动自己范围内的缺口，避免把「活动还没开始」算进来。
         const partialDays = new Set();
         campaignGaps.forEach(item => item.gaps.forEach(date => { if (have.has(date)) partialDays.add(date); }));
         return {
-          ...type, have, blank, cover, campaigns, campaignGaps, partialDays,
+          ...type, have, blank, cover, campaigns, campaignGaps, knownGapEntries, partialDays,
+          knownGapDays: knownGapEntries.reduce((sum, item) => sum + item.gaps.length, 0),
           latestDay: [...have].sort().pop() || '',
           gaps: coverageGapDays(have, blank, cover[0] || '', latest)
         };
@@ -1422,8 +1443,11 @@
         const bits = [];
         if (type.gaps.length) bits.push(`类型级 ${fmt(type.gaps.length)} 天`);
         if (type.campaignGaps && type.campaignGaps.length) bits.push(`${fmt(type.campaignGaps.length)} 个活动有缺`);
-        if (!bits.length) return `<span class="badge green">没有缺口</span>`;
-        return `<span class="badge red">${bits.join(' ｜ ')}</span>`;
+        const known = type.knownGapEntries && type.knownGapEntries.length
+          ? `<span class="badge amber">⛔ ${fmt(type.knownGapEntries.length)} 个永久不可得</span>`
+          : '';
+        if (!bits.length) return `<span class="badge green">没有缺口</span>${known}`;
+        return `<span class="badge red">${bits.join(' ｜ ')}</span>${known}`;
       };
       const adRows = model.types.map(type => `<tr>
         <td>${esc(type.label)}</td>
@@ -1473,20 +1497,26 @@
         let body;
         if (!open) {
           // 「类型级没有缺口」不等于「都齐了」：只要有 1 个活动有数据，类型级就算有 —— 必须把活动级也说出来
+          const knownNote = type.knownGapEntries && type.knownGapEntries.length
+            ? `<span class="badge amber">⛔ ${fmt(type.knownGapEntries.length)} 个永久不可得（${fmt(type.knownGapDays)} 天，不用补）</span>`
+            : '';
           const typeLine = type.gaps.length
             ? `<div class="cov-gap-line"><span class="badge red">类型级缺 ${fmt(type.gaps.length)} 天</span>${type.gaps.map(date => `<code>${date}</code>`).join('')}</div>`
             : (type.campaignGaps && type.campaignGaps.length
               ? `<div class="cov-gap-line"><span class="badge green">各类活动合起来覆盖完整</span><span style="color:var(--muted)">但 ${fmt(type.campaignGaps.length)} 个活动自己有缺口，点「展开活动」看</span></div>`
-              : `<div class="cov-gap-line"><span class="badge green">没有缺口</span></div>`);
+              : `<div class="cov-gap-line"><span class="badge green">没有缺口</span>${knownNote}</div>`);
           body = typeLine;
           if (type.blank.size) body += `<div class="cov-gap-line" style="color:var(--muted)">已核实无数据（eBay 回空，不用重下）：${[...type.blank].sort().map(date => `<code>${date}</code>`).join('')}</div>`;
         } else {
           body = type.campaigns.map(entry => {
             const entryGaps = coverageGapDays(entry.have, entry.blank, entry.first, model.latest);
+            const note = knownGapNote(type.key, entry.name);
             return `<div class="cov-gap-line"><strong>${esc(entry.name)}</strong>
               <span style="color:var(--muted)">有数据 ${fmt(entry.have.size)} 天${entry.first ? `（${entry.first} ~ ${entry.latest || entry.first}）` : ''}</span>
               ${entry.blank.size ? `<span class="badge amber">回空 ${fmt(entry.blank.size)} 天</span>` : ''}
-              ${entryGaps.length ? `<span class="badge red">缺 ${fmt(entryGaps.length)} 天</span>${entryGaps.map(date => `<code>${date}</code>`).join('')}` : `<span class="badge green">齐</span>`}</div>`;
+              ${note
+                ? `<span class="badge amber">⛔ 永久不可得 ${entryGaps.length ? fmt(entryGaps.length) + ' 天' : ''}</span><span style="color:var(--muted)">${esc(note)}</span>`
+                : (entryGaps.length ? `<span class="badge red">缺 ${fmt(entryGaps.length)} 天</span>${entryGaps.map(date => `<code>${date}</code>`).join('')}` : `<span class="badge green">齐</span>`)}</div>`;
           }).join('') || `<div class="cov-gap-line" style="color:var(--muted)">这个类型下还没有任何活动数据</div>`;
         }
         return `<div class="cov-type"><div class="cov-type-head"><strong>${esc(type.label)}</strong>
@@ -1503,12 +1533,15 @@
         lines.push('');
         lines.push(`【${type.label}】最新数据日 ${type.latestDay || '—'}`);
         if (type.blank.size) lines.push(`  已核实无数据（eBay 回空，不用重下）：${[...type.blank].sort().join(' ')}`);
-        const campaignGaps = type.campaigns
-          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, model.latest) }))
+        const allGaps = type.campaigns
+          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, model.latest), note: knownGapNote(type.key, entry.name) }))
           .filter(item => item.gaps.length);
-        if (!type.gaps.length && !campaignGaps.length) { lines.push('  没有缺口'); return; }
+        const campaignGaps = allGaps.filter(item => !item.note);
+        const knownGaps = allGaps.filter(item => item.note);
+        if (!type.gaps.length && !campaignGaps.length && !knownGaps.length) { lines.push('  没有缺口'); return; }
         if (type.gaps.length) lines.push(`  类型级：缺 ${type.gaps.length} 天 ${type.gaps.join(' ')}`);
         campaignGaps.forEach(({ entry, gaps }) => lines.push(`  · ${entry.name}\n      缺 ${gaps.length} 天：${gaps.join(' ')}`));
+        knownGaps.forEach(({ entry, gaps, note }) => lines.push(`  · ${entry.name}\n      ⛔ 永久不可得（不用补）${gaps.length ? ` ${gaps.length} 天：${gaps.join(' ')}` : ''}\n      原因：${note}`));
       });
       const { ranges, active } = coverageState();
       lines.push('');
@@ -1532,11 +1565,12 @@
       }
       const typeGaps = model.types.reduce((sum, type) => sum + type.gaps.length, 0);
       const campaignGaps = model.types.reduce((sum, type) => sum + ((type.campaignGaps || []).reduce((n, item) => n + item.gaps.length, 0)), 0);
+      const knownDays = model.types.reduce((sum, type) => sum + (type.knownGapDays || 0), 0);
       const totalGaps = typeGaps + campaignGaps;
       return `${head}
         <section class="metrics">
           ${metric('最新数据日', model.latest, `各类报表最早 ${model.earliest}`)}
-          ${metric('还有缺口', totalGaps ? `${fmt(totalGaps)} 天` : '0 天', `类型级 ${fmt(typeGaps)} 天 ｜ 活动级 ${fmt(campaignGaps)} 天`)}
+          ${metric('还有缺口', totalGaps ? `${fmt(totalGaps)} 天` : '0 天', `类型级 ${fmt(typeGaps)} 天 ｜ 活动级 ${fmt(campaignGaps)} 天${knownDays ? `（另有 ${fmt(knownDays)} 天永久不可得，已排除）` : ''}`)}
           ${metric('已核实无数据', fmt(model.types.reduce((sum, type) => sum + type.blank.size, 0)) + ' 天', 'eBay 回空，不用重下')}
         </section>
         ${coverageSummary(model)}
