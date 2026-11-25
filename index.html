@@ -1344,7 +1344,10 @@
       };
       Object.entries(days[kind] || {}).forEach(([date, names]) => (names || []).forEach(name => add('have', date, name)));
       Object.entries(empty[kind] || {}).forEach(([date, names]) => (names || []).forEach(name => add('blank', date, name)));
-      return [...map.entries()].filter(([key]) => mine.has(key)).map(([, entry]) => {
+      // 活动列表按当前产品范围收敛；但如果一个都没命中（例如在新店看默认产品 AD600 Elite，
+      // 而活动全是 900E 的），就退回全量 —— 否则「展开活动」永远是 0 个，用户以为没数据。
+      const scoped = [...map.entries()].filter(([key]) => mine.has(key));
+      return (scoped.length ? scoped : [...map.entries()]).map(([, entry]) => {
         const cover = [...entry.have, ...entry.blank].sort();
         return { ...entry, cover, first: cover[0] || '', latest: [...entry.have].sort().pop() || '' };
       }).sort((a, b) => a.name.localeCompare(b.name));
