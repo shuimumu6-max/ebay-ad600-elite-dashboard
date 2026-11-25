@@ -209,7 +209,7 @@
     // fullState = 全量数据（含两个产品）；dataState = 当前产品视图，页面函数一律读 dataState。
     let fullState = structuredClone(DEFAULT_STATE);
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 }, dailyPageNo: 1, dailyPageSize: 200 };
     let charts = [];
     // 仅 builder 模式（手工上传 CSV）使用：在售名单里的 itemId→SKU
     let skuByItemId = new Map();
@@ -1259,15 +1259,37 @@
         <section class="panel"><div class="panel-head"><h3>每日 Item 明细</h3><small>${fmt(rows.length)} 行</small></div>${dailyRecordTable(rows)}</section>`;
     }
 
+    // 分页条（2026-11-25 新增）：「每日记录」原来一次渲染 4000+ 行、单次 4 秒多，
+    // 而且 render() 每次交互都整页重建 → 输入筛选/点排序都会卡。改成只渲染当前页。
+    // 只影响「显示」：筛选、排序、汇总指标、导出（走数据不走 DOM）全都不变。
+    function dailyPager(total, page, pages) {
+      if (pages <= 1) return '';
+      const btn = (label, target, disabled) => `<button class="btn" data-daily-page="${target}"${disabled ? ' disabled' : ''} style="min-width:auto;padding:0 10px">${label}</button>`;
+      return `<div class="daily-pager" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:10px 12px;border-top:1px solid var(--line);color:var(--muted);font-size:12px">
+        <span>共 ${fmt(total)} 行，第 ${fmt(page)} / ${fmt(pages)} 页</span>
+        ${btn('首页', 1, page === 1)}${btn('上一页', page - 1, page === 1)}${btn('下一页', page + 1, page === pages)}${btn('末页', pages, page === pages)}
+        <label style="display:flex;align-items:center;gap:4px">每页
+          <select id="dailyPageSize">${[100, 200, 500, 1000].map(n => `<option value="${n}"${n === ui.dailyPageSize ? ' selected' : ''}>${n}</option>`).join('')}</select> 行
+        </label>
+      </div>`;
+    }
+
     function dailyRecordTable(rows) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有每日记录</div>`;
       const sorted = sortRows(rows.map(row => ({ ...row, status: row.hasDailyTraffic ? '完整' : '缺Traffic', organicConversion: row.organicSold / row.trafficNaturalViews || 0 })), 'daily');
-      return `<div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'daily')}${sortHeader('Item ID', 'itemId', 'daily')}${sortHeader('标题', 'title', 'daily')}${sortHeader('数据状态', 'status', 'daily')}${sortHeader('总曝光', 'trafficTotalImpressions', 'daily')}${sortHeader('总PV', 'trafficPageViews', 'daily')}${sortHeader('站内PV', 'trafficEbayViews', 'daily')}${sortHeader('站外PV', 'trafficExternalViews', 'daily')}${sortHeader('总销量', 'trafficSold', 'daily')}${sortHeader('总 CTR', 'trafficCtr', 'daily')}${sortHeader('总转化率', 'trafficConversion', 'daily')}${sortHeader('自然曝光', 'trafficNaturalImpressions', 'daily')}${sortHeader('自然 eBay PV', 'trafficNaturalViews', 'daily')}${sortHeader('自然 SOLD', 'organicSold', 'daily')}${sortHeader('自然 CTR', 'trafficNaturalCtr', 'daily')}${sortHeader('自然转化率', 'organicConversion', 'daily')}${sortHeader('PLG曝光', 'adImpressions', 'daily')}${sortHeader('PLG点击', 'adClicks', 'daily')}${sortHeader('PLG CTR', 'ctr', 'daily')}${sortHeader('PLG销量', 'adSold', 'daily')}${sortHeader('PLG销售额', 'adSales', 'daily')}${sortHeader('PLG广告费', 'adFees', 'daily')}${sortHeader('PLG ROAS', 'roas', 'daily')}${sortHeader('PLP曝光', 'plpImpressions', 'daily')}${sortHeader('PLP点击', 'plpClicks', 'daily')}${sortHeader('PLP广告费', 'plpFees', 'daily')}${sortHeader('PLP ROAS', 'plpRoas', 'daily')}</tr></thead><tbody>${sorted.map(row => `<tr>
+      const total = sorted.length;
+      const size = Number(ui.dailyPageSize) || 200;
+      const pages = Math.max(1, Math.ceil(total / size));
+      // 夹紧页码：筛选/换区间后行数会变，不能让用户停在一个不存在的页上
+      const page = Math.min(Math.max(1, Number(ui.dailyPageNo) || 1), pages);
+      ui.dailyPageNo = page;
+      const slice = sorted.slice((page - 1) * size, page * size);
+      return `<div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'daily')}${sortHeader('Item ID', 'itemId', 'daily')}${sortHeader('标题', 'title', 'daily')}${sortHeader('数据状态', 'status', 'daily')}${sortHeader('总曝光', 'trafficTotalImpressions', 'daily')}${sortHeader('总PV', 'trafficPageViews', 'daily')}${sortHeader('站内PV', 'trafficEbayViews', 'daily')}${sortHeader('站外PV', 'trafficExternalViews', 'daily')}${sortHeader('总销量', 'trafficSold', 'daily')}${sortHeader('总 CTR', 'trafficCtr', 'daily')}${sortHeader('总转化率', 'trafficConversion', 'daily')}${sortHeader('自然曝光', 'trafficNaturalImpressions', 'daily')}${sortHeader('自然 eBay PV', 'trafficNaturalViews', 'daily')}${sortHeader('自然 SOLD', 'organicSold', 'daily')}${sortHeader('自然 CTR', 'trafficNaturalCtr', 'daily')}${sortHeader('自然转化率', 'organicConversion', 'daily')}${sortHeader('PLG曝光', 'adImpressions', 'daily')}${sortHeader('PLG点击', 'adClicks', 'daily')}${sortHeader('PLG CTR', 'ctr', 'daily')}${sortHeader('PLG销量', 'adSold', 'daily')}${sortHeader('PLG销售额', 'adSales', 'daily')}${sortHeader('PLG广告费', 'adFees', 'daily')}${sortHeader('PLG ROAS', 'roas', 'daily')}${sortHeader('PLP曝光', 'plpImpressions', 'daily')}${sortHeader('PLP点击', 'plpClicks', 'daily')}${sortHeader('PLP广告费', 'plpFees', 'daily')}${sortHeader('PLP ROAS', 'plpRoas', 'daily')}</tr></thead><tbody>${slice.map(row => `<tr>
         <td>${row.date}</td><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td style="text-align:left"><span class="badge ${row.hasDailyTraffic ? 'green' : 'amber'}">${row.hasDailyTraffic ? '完整' : '缺Traffic'}</span></td>
         <td>${row.hasDailyTraffic ? fmt(row.trafficTotalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficPageViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficEbayViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficExternalViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficSold) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficConversion) : '—'}</td>
         <td>${row.hasDailyTraffic ? fmt(row.trafficNaturalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficNaturalViews) : '—'}</td><td>${fmt(row.organicSold)}</td><td>${row.hasDailyTraffic ? pct(row.trafficNaturalCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.organicSold / row.trafficNaturalViews || 0) : '—'}</td>
         <td>${fmt(row.adImpressions)}</td><td>${fmt(row.adClicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.adSold)}</td><td>${money(row.adSales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td><td>${row.plpImpressions == null ? '—' : fmt(row.plpImpressions)}</td><td>${row.plpClicks == null ? '—' : fmt(row.plpClicks)}</td><td>${row.plpFees == null ? '—' : money(row.plpFees)}</td><td>${row.plpRoas == null ? '—' : fmt(row.plpRoas, 2)}</td>
-      </tr>`).join('')}</tbody></table></div>`;
+      </tr>`).join('')}</tbody></table></div>${dailyPager(total, page, pages)}`;
     }
 
     function importPage() {
@@ -1722,6 +1744,16 @@
         render();
       }));
       document.querySelectorAll('[data-detail]').forEach(button => button.addEventListener('click', () => { ui.detail = button.dataset.detail; render(); }));
+      // 「每日记录」分页（2026-11-25 新增）
+      document.querySelectorAll('[data-daily-page]').forEach(button => button.addEventListener('click', () => {
+        ui.dailyPageNo = Number(button.dataset.dailyPage) || 1;
+        render();
+      }));
+      document.getElementById('dailyPageSize')?.addEventListener('change', e => {
+        ui.dailyPageSize = Number(e.target.value) || 200;
+        ui.dailyPageNo = 1;
+        render();
+      });
       document.querySelectorAll('th[data-sort-key]').forEach(header => header.addEventListener('click', () => {
         const sameColumn = ui.sort.table === header.dataset.sortTable && ui.sort.key === header.dataset.sortKey;
         ui.sort = { table: header.dataset.sortTable, key: header.dataset.sortKey, dir: sameColumn ? ui.sort.dir * -1 : 1 };
@@ -1739,9 +1771,9 @@
         location.href = url.toString();
       });
       const query = document.getElementById('queryFilter');
-      query?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
-      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; render(); });
-      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; render(); });
+      query?.addEventListener('change', e => { ui.query = e.target.value.trim(); ui.dailyPageNo = 1; render(); });
+      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; ui.dailyPageNo = 1; render(); });
+      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; ui.dailyPageNo = 1; render(); });
       document.getElementById('trafficSourceFilter')?.addEventListener('change', e => { ui.trafficSource = e.target.value; render(); });
       document.getElementById('listingStatusFilter')?.addEventListener('change', e => { ui.listingStatus = e.target.value; render(); });
       document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => {
