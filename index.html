@@ -234,7 +234,7 @@
       { key: 'AD600 Elite', label: 'AD600 Elite', sku: 'TD52110512', titleTokens: ['artidiag600elite', 'ad600elite'] },
       { key: 'UltraDiag900 E', label: 'UltraDiag900 E', sku: 'TD52110602', titleTokens: ['ultradiag900e', 'ud900e'] }
     ];
-    const FRONTEND_VERSION = 'v20261117-刊登日起算';
+    const FRONTEND_VERSION = 'v20261125-覆盖矩阵';
     const PRODUCT_ALL = 'all';
     const PRODUCT_UNKNOWN = 'unknown';
     // === MANUAL-SOLD-EXCLUSIONS-START ===
@@ -457,6 +457,10 @@
         sources: structuredClone(fullState.sources || []),
         products: structuredClone(fullState.products),
         productCounts: structuredClone(fullState.productCounts || null),
+        // 报表覆盖台账（2026-11-25 新增）：**必须透传** —— 这里是白名单式重建，
+        // 漏一个字段页面就读不到。「每日记录 · 报表更新情况」整屏都靠它；
+        // 它记的是「哪天下过哪份报表」这种店铺级事实，不随产品切换变化，所以不做产品过滤。
+        coverage: structuredClone(fullState.coverage || null),
         ads: {
           ...structuredClone(ads),
           plpRows: pickAds(ads.plpRows),
