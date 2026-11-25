@@ -2130,13 +2130,10 @@
         if (!rows.length) return `<section class="panel"><div class="panel-head"><h3>${title}</h3><small>${hint}</small></div><div class="empty" style="padding:22px">当前筛选下没有符合条件的行</div></section>`;
         const body = rows.map(row => {
           const roas = row.adFees > 0 ? row.sales / row.adFees : null;
-          const badge = kind === 'waste' ? '<span class="badge red">建议加否定</span>'
-            : roas != null && roas >= 4 ? '<span class="badge green">高效·可提价</span>'
-              : roas != null && roas >= 2 ? '<span class="badge amber">持平·可观察</span>' : '<span class="badge">低效</span>';
-          return `<tr><td class="t-text" title="${esc(wordOf(row, title.includes('搜索词') ? 'searches' : 'keywords'))}">${esc((wordOf(row, title.includes('搜索词') ? 'searches' : 'keywords') || '').slice(0, 46))}</td><td class="t-text">${esc(row.matchType || '—')}</td><td class="t-text">${esc(String(row.campaign || '').replace(/US\.TD\.(PLP|PLG)\./, '').slice(0, 26))}</td><td>${fmt(row.clicks || 0)}</td><td>${money(row.adFees || 0)}</td><td>${fmt(row.sold || 0)}</td><td>${money(row.sales || 0)}</td><td>${roas == null ? '—' : fmt(roas, 2)}</td><td class="t-text">${badge}</td></tr>`;
+          return `<tr><td class="t-text" title="${esc(wordOf(row, title.includes('搜索词') ? 'searches' : 'keywords'))}">${esc((wordOf(row, title.includes('搜索词') ? 'searches' : 'keywords') || '').slice(0, 46))}</td><td class="t-text">${esc(row.matchType || '—')}</td><td class="t-text">${esc(String(row.campaign || '').replace(/US\.TD\.(PLP|PLG)\./, '').slice(0, 26))}</td><td>${fmt(row.clicks || 0)}</td><td>${money(row.adFees || 0)}</td><td>${fmt(row.sold || 0)}</td><td>${money(row.sales || 0)}</td><td>${roas == null ? '—' : fmt(roas, 2)}</td></tr>`;
         }).join('');
         return `<section class="panel"><div class="panel-head"><h3>${title}</h3><small>${hint}</small></div>
-          <div class="table-wrap"><table><thead><tr><th class="t-text">词</th><th class="t-text">匹配方式</th><th class="t-text">活动</th><th>点击</th><th>广告费</th><th>销量</th><th>销售额</th><th>ROAS</th><th class="t-text">建议</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
+          <div class="table-wrap"><table><thead><tr><th class="t-text">词</th><th class="t-text">匹配方式</th><th class="t-text">活动</th><th>点击</th><th>广告费</th><th>销量</th><th>销售额</th><th>ROAS</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
       };
       const wasteOf = rows => rows.filter(row => (row.clicks || 0) >= 3 && !(row.sold > 0)).sort((a, b) => (b.adFees || 0) - (a.adFees || 0)).slice(0, 20);
       const winnerOf = rows => rows.filter(row => row.sold > 0).sort((a, b) => (b.sales / (b.adFees || 1)) - (a.sales / (a.adFees || 1))).slice(0, 20);
