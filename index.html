@@ -1290,6 +1290,7 @@
           ${metric('总广告费', money(adFees + plpFees), `PLG ${money(adFees)} + PLP ${money(plpFees)}`)}
           ${metric('综合 ROAS', fmt((adSales + plpSales) / (adFees + plpFees) || 0, 2), '广告销售额 ÷ 总广告费')}
         </section>
+        ${weeklyCompare()}
         <section class="dashboard-grid">
           <div class="panel"><div class="panel-head"><h3>Item 总曝光排名</h3><small>Traffic 整体表现</small></div><div id="itemChart" class="chart"></div></div>
           <div class="panel"><div class="panel-head"><h3>Item eBay PV 排名</h3><small>Traffic 站内 Page views</small></div><div id="ebayPvChart" class="chart"></div></div>
@@ -1316,6 +1317,70 @@
         <div class="field field-auto"><label for="itemStatusFilter">在售状态</label><select class="input" id="itemStatusFilter">${options.map(([value, label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态只筛本表，搜索与日期作用于整页</span>
       </div>`;
+    }
+
+    // 周度对比（2026-11-26）：自然周（周一~周日）逐周合计，可选用「最近几周」，跟随机型/日期/店铺筛选。
+    // 口径与经营看板一致：Traffic 取日度逐日相加；广告取 PLG＋PLP 链接行（不含关键词/搜索词，避免同一批曝光算两遍）。
+    function weeklyCompare() {
+      const weekCount = ui.weekCount == null ? 8 : Number(ui.weekCount);   // 0 = 全部
+      const weekOf = date => {
+        const day = new Date(String(date) + 'T00:00:00Z');
+        day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7));   // 回退到本周一
+        return day.toISOString().slice(0, 10);
+      };
+      const buckets = new Map();
+      const bucketOf = week => {
+        if (!buckets.has(week)) buckets.set(week, { adFees: 0, adSales: 0, adImpressions: 0, adClicks: 0, adSold: 0, trafficImpressions: 0, searchImpressions: 0, pageViews: 0, trafficSold: 0 });
+        return buckets.get(week);
+      };
+      // Traffic：总曝光/总PV/销量 取日度聚合行（字段是 traffic* 前缀，已含「销量补足」）；
+      // 搜索曝光在聚合行里没有，直接用原始单日报行累加（dataState 已按机型过滤）。
+      aggregateDaily().forEach(row => {
+        if (!row.hasDailyTraffic || !row.date) return;
+        if (ui.start && row.date < ui.start) return;
+        if (ui.end && row.date > ui.end) return;
+        const cell = bucketOf(weekOf(row.date));
+        cell.trafficImpressions += Number(row.trafficTotalImpressions) || 0;
+        cell.pageViews += Number(row.trafficPageViews) || 0;
+        cell.trafficSold += Number(row.trafficSold) || 0;
+      });
+      (dataState.trafficRaw || []).forEach(row => {
+        const day = row.start === row.end ? row.start : '';
+        if (!day) return;
+        if (ui.start && day < ui.start) return;
+        if (ui.end && day > ui.end) return;
+        bucketOf(weekOf(day)).searchImpressions += Number(row.totalSearch) || ((Number(row.top20Promoted) || 0) + (Number(row.top20Organic) || 0) + (Number(row.restSearch) || 0));
+      });
+      adDetailRows().forEach(row => {
+        if (!row.date) return;
+        const cell = bucketOf(weekOf(row.date));
+        cell.adImpressions += row.impressions || 0;
+        cell.adClicks += row.clicks || 0;
+        cell.adSold += row.sold || 0;
+        cell.adSales += row.sales || 0;
+        cell.adFees += row.adFees || 0;
+      });
+      let weeks = [...buckets.keys()].sort();
+      if (weekCount > 0 && weeks.length > weekCount) weeks = weeks.slice(-weekCount);
+      const METRICS = [
+        ['广告花费（USD）', cell => money(cell.adFees)],
+        ['广告销售额（USD）', cell => money(cell.adSales)],
+        ['广告曝光', cell => fmt(cell.adImpressions)],
+        ['广告点击', cell => fmt(cell.adClicks)],
+        ['广告销量', cell => fmt(cell.adSold)],
+        ['总曝光（Traffic）', cell => fmt(cell.trafficImpressions)],
+        ['搜索曝光', cell => fmt(cell.searchImpressions)],
+        ['页面浏览总数', cell => fmt(cell.pageViews)],
+        ['总销量（Traffic）', cell => fmt(cell.trafficSold)],
+        ['ROAS（广告销售额÷广告花费）', cell => cell.adFees > 0 ? fmt(cell.adSales / cell.adFees, 2) : '—'],
+        ['广告费占销售额', cell => cell.adSales > 0 ? pct(cell.adFees / cell.adSales) : '—']
+      ];
+      const options = [[4, '最近 4 周'], [6, '最近 6 周'], [8, '最近 8 周'], [12, '最近 12 周'], [0, '全部周']];
+      const head = weeks.map(week => `<th>${esc(week.slice(5).replace('-', '/'))}~${esc(covAddDays(week, 6).slice(5).replace('-', '/'))}</th>`).join('');
+      const body = METRICS.map(([label, render]) => `<tr><td class="t-text">${label}</td>${weeks.map(week => `<td>${render(buckets.get(week))}</td>`).join('')}</tr>`).join('');
+      return `<section class="panel"><div class="panel-head"><h3>周度对比</h3>
+          <span class="actions"><small style="margin-right:8px">自然周（周一~周日）逐周合计；口径与经营看板一致，跟随产品／日期筛选</small><span class="field"><select class="input" id="weekCountSelect" style="width:auto">${options.map(([value, label]) => `<option value="${value}" ${weekCount === value ? 'selected' : ''}>${label}</option>`).join('')}</select></span></span></div>
+        <div class="table-wrap"><table><thead><tr><th class="t-text">对比指标</th>${head}</tr></thead><tbody>${body}</tbody></table></div></section>`;
     }
 
     function itemSummaryTable(rows) {
@@ -2327,6 +2392,7 @@
       itemQuery?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
       document.getElementById('itemStatusFilter')?.addEventListener('change', e => { ui.itemStatus = e.target.value; render(); });
       document.getElementById('campaignToggle')?.addEventListener('click', () => { ui.campaignExpand = !ui.campaignExpand; render(); });
+      document.getElementById('weekCountSelect')?.addEventListener('change', event => { ui.weekCount = Number(event.target.value); render(); });
       document.getElementById('filterReset')?.addEventListener('click', () => {
         ui.query = '';
         ui.trafficPeriod = 'daily-range';
