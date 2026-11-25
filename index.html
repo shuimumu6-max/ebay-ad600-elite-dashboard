@@ -1128,6 +1128,20 @@
         const plp = plpMap.get(itemId);
         const ebayViews = traffic ? traffic.promotedEbayViews + traffic.organicEbayViews : 0;
         const externalViews = traffic ? traffic.promotedExternalViews + traffic.organicExternalViews : 0;
+        // 促销活动查表：两个来源合一 —— ① 本地看板：/shop/<id>/promotions.json（promotionsByItem）
+        // ② 线上看板：构建端已把 promo* 并进 bundle.activeListings.items → activeMap。多活动时优先「进行中」。
+        const promoOfItem = id => {
+          const fromMap = dataState.promotionsByItem && dataState.promotionsByItem.get(String(id));
+          const pick = list => (list.find(e => e.status === 'Active') || list[0]);
+          let e = (fromMap && fromMap.length) ? pick(fromMap) : null;
+          if (!e) {
+            const a = activeMap.get(id);
+            if (!a || !a.promoName) return null;
+            return { name: a.promoName, status: a.promoStatus, type: a.promoType, rule: a.promoRule, start: a.promoStart, end: a.promoEnd, price: a.promoPrice, original: a.promoOriginal, discount: a.promoDiscount, count: a.promoCount || 0 };
+          }
+          const discount = (e.discount != null) ? e.discount : ((e.original != null && e.price != null) ? Math.round((e.original - e.price) * 100) / 100 : null);
+          return { ...e, discount, count: e.count || fromMap.length };
+        };
         return {
           itemId,
           listingStatus: !dataState.activeListings ? 'unknown' : activeMap.has(itemId) ? 'active' : 'absent',
@@ -1141,6 +1155,13 @@
           rosterWatchers: activeMap.has(itemId) ? activeMap.get(itemId).watchers : null,
           rosterBids: activeMap.has(itemId) ? activeMap.get(itemId).bids : null,
           rosterVariations: activeMap.get(itemId)?.variationRows || 0,
+          // 促销活动（2026-11-26 新增）：来自 Seller Hub → Marketing → Your discounts 的报告页抓取，
+          // 构建端按 itemId 并进在售名单（<店>\12-促销活动\活动-<日期>.json）。没参加的链接为 null → 页面显示 —
+          ...(() => { const p = promoOfItem(itemId); return {
+            rosterPromoName: p?.name || '', rosterPromoType: p?.type || '', rosterPromoRule: p?.rule || '',
+            rosterPromoStatus: p?.status || '', rosterPromoStart: p?.start || '', rosterPromoEnd: p?.end || '',
+            rosterPromoPrice: p?.price ?? null, rosterPromoOriginal: p?.original ?? null,
+            rosterPromoDiscount: p?.discount ?? null, rosterPromoCount: p?.count || 0 }; })(),
           link: `https://www.ebay.com/itm/${itemId}`,
           listingStartDate: listingDates.get(itemId) || '',
           listingAgeDays: listingAgeDays(listingDates.get(itemId)),
@@ -1323,7 +1344,7 @@
       return `<div class="table-toolbar">
         <div class="field field-search"><label for="itemTableQuery">搜索 Item ID 或标题</label><input class="input" id="itemTableQuery" type="search" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
         <div class="field field-auto"><label for="itemStatusFilter">在售状态</label><select class="input" id="itemStatusFilter">${options.map(([value, label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
-        <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态只筛本表，搜索与日期作用于整页</span>
+        <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态只筛本表，搜索与日期作用于整页${dataState.promotions?.tagged ? `　·　<b>促销数据</b>：${esc(String(dataState.promotions.at || '').slice(0, 10))} 抓取，${fmt(dataState.promotions.campaigns)} 个活动覆盖 ${fmt(dataState.promotions.tagged)} 个链接（其余链接显示「—」＝本次抓取未覆盖，不代表没有活动）` : ''}</span>
       </div>`;
     }
 
@@ -1819,62 +1840,26 @@
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
         ${listingStatusPanel()}
-        ${stockHealthPanel(rows)}
         <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
         <div class="snapshot-note">「当前售价」取该链接最近一次导出报表里的当前价（Price (Current or Last Price)，已含当时生效的促销/降价），不是标价、也不是成交均价；同一链接在区间内调过价时，这里显示最新那个价。</div>
         ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
         <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(rows.length)} 个 Item</small></div>${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
     }
 
-    // 库存与链接健康巡检（2026-11-26）：运营每天该看的四种链接 —— 断货 / 低库存（可售天数 ≤7）/
-    // 零曝光僵尸 / 正常。可售天数＝库存 ÷ 近 7 日日均销量（Traffic 日度；没有销量的不编造，显示「—」）。
-    function stockHealthPanel(rows) {
-      const latest = reportBounds().max || '';
-      const within = (day, days) => Boolean(day && latest && day > covAddDays(latest, -days) && day <= latest);
-      const sold7 = new Map(), impressions14 = new Map();
-      (dataState.trafficRaw || []).forEach(row => {
-        const day = row.start === row.end ? row.start : '';
-        if (!day) return;
-        if (within(day, 7)) sold7.set(row.itemId, (sold7.get(row.itemId) || 0) + (Number(row.quantitySold) || 0));
-        if (within(day, 14)) impressions14.set(row.itemId, (impressions14.get(row.itemId) || 0) + (Number(row.totalImpressions) || 0));
-      });
-      const list = rows.filter(row => row.listingStatus === 'active').map(row => {
-        const stock = row.rosterAvailable == null ? null : Number(row.rosterAvailable);
-        const sold = sold7.get(row.itemId) || 0;
-        const perDay = sold / 7;
-        const cover = stock != null && perDay > 0 ? Math.round((stock / perDay) * 10) / 10 : null;
-        const impressions = impressions14.get(row.itemId) || 0;
-        const [state, tone] = stock === 0 ? ['断货', 'red']
-          : (cover != null && cover <= 7) ? ['低库存', 'amber']
-            : impressions === 0 ? ['零曝光', 'amber'] : ['正常', 'green'];
-        return { ...row, stock, sold7: sold, cover, impressions14: impressions, healthState: state, healthTone: tone };
-      }).sort((a, b) => (a.cover == null ? Number.MAX_SAFE_INTEGER : a.cover) - (b.cover == null ? Number.MAX_SAFE_INTEGER : b.cover) || b.sold7 - a.sold7);
-      if (!list.length) return '';
-      const counts = state => list.filter(row => row.healthState === state).length;
-      const body = list.slice(0, 30).map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.stock == null ? '—' : fmt(row.stock)}</td><td>${fmt(row.sold7)}</td><td>${row.cover == null ? '—' : fmt(row.cover, 1) + ' 天'}</td><td>${fmt(row.impressions14)}</td><td class="t-text"><span class="badge ${row.healthTone}">${row.healthState}</span></td></tr>`).join('');
-      return `<section class="metrics" style="grid-template-columns:repeat(4,minmax(0,1fr))">
-          ${metric('断货（在售但库存 0）', fmt(counts('断货')), '名单库存＝0，先确认是否要补货/下架')}
-          ${metric('低库存（可售 ≤7 天）', fmt(counts('低库存')), '库存 ÷ 近 7 日日均销量')}
-          ${metric('零曝光（近 14 天）', fmt(counts('零曝光')), '有流量记录的链接近 14 天 0 曝光，检查是否被降权/断码')}
-          ${metric('在售链接合计', fmt(list.length), `名单日期 ${esc(dataState.activeListings?.date || '—')}`)}
-        </section>
-        <section class="panel"><div class="panel-head"><h3>库存与链接健康</h3><small>按「可售天数」升序，最多 30 行；可售天数＝库存 ÷ 近 7 日日均销量</small></div>
-          <div class="table-wrap"><table><thead><tr><th>Item ID</th><th class="t-text">标题</th><th>库存</th><th>近 7 日销量</th><th>可售天数</th><th>近 14 日曝光</th><th class="t-text">状态</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
-    }
-
     function itemFullTable(rows, trafficRows, plgStart, plgEnd) {
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
       const samePeriod = Boolean(trafficSelection().complete && trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const sorted = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
-      return `<div class="table-wrap"><table><thead><tr><th colspan="9" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
-        ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}${sortHeader('上架日期', 'listingStartDate', 'detail')}${sortHeader('距今上架时间', 'listingAgeDays', 'detail')}${sortHeader('在售状态', 'listingStatusText', 'detail')}${sortHeader('标价', 'rosterPrice', 'detail')}${sortHeader('库存', 'rosterAvailable', 'detail')}${sortHeader('已售（名单）', 'rosterSold', 'detail')}${sortHeader('观察', 'rosterWatchers', 'detail')}${sortHeader('标价', 'rosterPrice', 'detail')}${sortHeader('库存', 'rosterAvailable', 'detail')}${sortHeader('已售（名单）', 'rosterSold', 'detail')}${sortHeader('观察', 'rosterWatchers', 'detail')}
+      return `<div class="table-wrap"><table><thead><tr><th colspan="13" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
+        ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}${sortHeader('上架日期', 'listingStartDate', 'detail')}${sortHeader('距今上架时间', 'listingAgeDays', 'detail')}${sortHeader('在售状态', 'listingStatusText', 'detail')}${sortHeader('标价', 'rosterPrice', 'detail')}${sortHeader('库存', 'rosterAvailable', 'detail')}${sortHeader('已售（名单）', 'rosterSold', 'detail')}${sortHeader('观察', 'rosterWatchers', 'detail')}${sortHeader('参加活动', 'rosterPromoName', 'detail')}${sortHeader('折扣后价', 'rosterPromoPrice', 'detail')}${sortHeader('折扣金额', 'rosterPromoDiscount', 'detail')}${sortHeader('活动起止', 'rosterPromoEnd', 'detail')}
         ${sortHeader('总PV（Total page views）', 'totalPageViews', 'detail')}${sortHeader('Impression', 'totalImpressions', 'detail')}${sortHeader('站内PV（eBay）', 'ebayViews', 'detail')}${sortHeader('站外PV（External）', 'externalViews', 'detail')}${sortHeader('销量（Traffic）', 'quantitySold', 'detail')}${sortHeader('Click-through rate', 'totalCtr', 'detail')}${sortHeader('Sales conversion rate', 'totalConversion', 'detail')}${sortHeader('PV核对（日度减累计）', 'pvAudit', 'detail')}
         ${sortHeader('当前售价', 'price', 'detail', 'plg-col')}${sortHeader('报表总销量', 'plgTotalSold', 'detail', 'plg-col')}<th class="plg-col">费率</th><th class="plg-col">建议费率</th>${sortHeader('PLG Impressions', 'adImpressions', 'detail', 'plg-col')}${sortHeader('PLG Clicks', 'adClicks', 'detail', 'plg-col')}${sortHeader('CTR', 'adCtr', 'detail', 'plg-col')}${sortHeader('PLG Sold', 'adSold', 'detail', 'plg-col')}${sortHeader('PLG Sales', 'adSales', 'detail', 'plg-col')}${sortHeader('Ad fees', 'adFees', 'detail', 'plg-col')}${sortHeader('ROAS', 'roas', 'detail', 'plg-col')}
         <th class="plp-col">Impressions</th><th class="plp-col">Clicks</th><th class="plp-col">CTR</th><th class="plp-col">Sold quantity</th><th class="plp-col">Ad fees</th><th class="plp-col">Sales</th><th class="plp-col">Conversion rate</th><th class="plp-col">ROAS</th><th class="plp-col">Average CPC</th><th class="plp-col">ACOS</th><th class="plp-col">主推关键词</th><th class="plp-col">建议出价</th><th class="plp-col">实际出价</th>
         ${sortHeader('曝光', 'naturalImpressions', 'detail')}${sortHeader('eBay Page views', 'naturalViews', 'detail')}${sortHeader('SOLD', 'naturalSold', 'detail')}${sortHeader('点击率', 'naturalCtr', 'detail')}${sortHeader('Sales conversion rate', 'naturalConversion', 'detail')}
         <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
       </tr></thead><tbody>${sorted.map(row => `<tr>
-        <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td><td style="min-width:160px">${esc(row.listingStatusText)}</td>${row.rosterPrice ? `<td>${row.rosterVariations > 1 && row.rosterPriceMax > row.rosterPrice ? `${money(row.rosterPrice)}~${money(row.rosterPriceMax)}` : money(row.rosterPrice)}</td>` : '<td>—</td>'}<td${row.rosterAvailable === 0 ? ' style="color:var(--red);font-weight:700"' : ''}>${row.rosterAvailable == null ? '—' : fmt(row.rosterAvailable)}</td><td>${row.rosterSold == null ? '—' : fmt(row.rosterSold)}</td><td>${row.rosterWatchers == null ? '—' : fmt(row.rosterWatchers)}${row.rosterBids ? ` / ${fmt(row.rosterBids)}` : ''}</td>${row.rosterPrice ? `<td>${row.rosterVariations > 1 && row.rosterPriceMax > row.rosterPrice ? `${money(row.rosterPrice)}~${money(row.rosterPriceMax)}` : money(row.rosterPrice)}</td>` : '<td>—</td>'}<td${row.rosterAvailable === 0 ? ' style="color:var(--red);font-weight:700"' : ''}>${row.rosterAvailable == null ? '—' : fmt(row.rosterAvailable)}</td><td>${row.rosterSold == null ? '—' : fmt(row.rosterSold)}</td><td>${row.rosterWatchers == null ? '—' : fmt(row.rosterWatchers)}${row.rosterBids ? ` / ${fmt(row.rosterBids)}` : ''}</td>
+        <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td><td style="min-width:160px">${esc(row.listingStatusText)}</td>${row.rosterPrice ? `<td>${row.rosterVariations > 1 && row.rosterPriceMax > row.rosterPrice ? `${money(row.rosterPrice)}~${money(row.rosterPriceMax)}` : money(row.rosterPrice)}</td>` : '<td>—</td>'}<td${row.rosterAvailable === 0 ? ' style="color:var(--red);font-weight:700"' : ''}>${row.rosterAvailable == null ? '—' : fmt(row.rosterAvailable)}</td><td>${row.rosterSold == null ? '—' : fmt(row.rosterSold)}</td><td>${row.rosterWatchers == null ? '—' : fmt(row.rosterWatchers)}${row.rosterBids ? ` / ${fmt(row.rosterBids)}` : ''}</td>
+        ${row.rosterPromoName ? `<td style="min-width:150px" title="${esc(row.rosterPromoRule)}${row.rosterPromoType ? '（' + esc(row.rosterPromoType) + '）' : ''}">${esc(row.rosterPromoName)}${row.rosterPromoCount > 1 ? ` <span class="badge amber">${row.rosterPromoCount} 个活动</span>` : ''}</td>` : '<td>—</td>'}${row.rosterPromoPrice != null ? `<td>${money(row.rosterPromoPrice)}</td>` : '<td>—</td>'}${row.rosterPromoDiscount != null ? `<td style="color:var(--red)">−${money(row.rosterPromoDiscount)}</td>` : '<td>—</td>'}${row.rosterPromoEnd ? `<td style="white-space:nowrap">${esc(row.rosterPromoStart || '?')} → ${esc(row.rosterPromoEnd)}${row.rosterPromoStatus && row.rosterPromoStatus !== 'Active' ? ` <span class="badge">${esc(row.rosterPromoStatus)}</span>` : ''}</td>` : '<td>—</td>'}
         <td>${row.hasTraffic ? fmt(row.totalPageViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}${row.salesMismatch ? ' <span class="badge amber">待核对</span>' : ''}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td style="white-space:normal;min-width:180px">${esc(row.pvAudit)}</td>
         <td class="plg-col">${row.hasPlg ? money(row.price) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td class="plg-col">—</td><td class="plg-col">—</td><td class="plg-col">${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td class="plg-col">${row.hasPlg ? pct(row.adCtr) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adSold) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adSales) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adFees) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
         <td class="plp-col">${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpCtr) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpFees) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpSales) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpConversion) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpAvgCpc) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpAcos) : '—'}</td><td class="plp-col">—</td><td class="plp-col">—</td><td class="plp-col">—</td>
@@ -2237,7 +2222,7 @@
         row('曝光构成（Top20 搜索位 / 其余搜索位 / 非搜索位）', 'Traffic 单日报', '报表列 <code>Top 20 search spot impressions</code>（广告＋自然）、<code>Rest of search spot impressions</code>、<code>Non-search impressions</code>（广告＋自然）；三者相加＝总曝光'),
         row('链接总 CTR', '同上', '站内 PV ÷ 总曝光（与后台 CTR 定义一致，不用站外）'),
         row('Item 标价 / 库存 / 已售 / 观察 / 出价（Item 明细页）', '在售名单快照<br><code>Start price</code>、<code>Available quantity</code>、<code>Sold quantity</code>、<code>Watchers</code>、<code>Bids</code>', '取最新一份在售名单快照。多变体链接在名单里是<strong>多行</strong>：库存与已售<strong>求和</strong>、观察／出价取<strong>最大</strong>、标价显示<strong>区间</strong>（225.00~249.00）。只对在册链接有值，历史链接显示「—」；「零库存」＝名单里 <code>Available quantity = 0</code> 的在售链接（<strong>不等于已下架</strong>，需人工确认）'),
-        row('为什么没有「参加的活动 / 折扣金额 / 成交价 / 活动起止」', '现有报表都不含这些字段（已实测排除）', '① 在售名单的 <code>Current price</code> <strong>不是促销价</strong>（原店 736 个链接 0 个有差；新店的"差"其实是变体价为 0）；② PLG/PLP 的 <code>Price (Current or Last Price)</code> 基本等于标价（原店 0 个低于标价），也不是促销成交价。这两类字段只存在于 <strong>Seller Hub → Marketing → Promotions</strong> 页面（活动名／类型 Markdown·Coupon／折扣／起止／参与 item），需要新增该数据源后再上（方案：人工打开该页 → 被动读成清单 → 入库）'),
+        row('参加的活动 / 折扣后价 / 折扣金额 / 活动起止（Item 明细页）', 'Seller Hub → Marketing → Your discounts 的活动报告页（新增数据源，2026-11-26）', '下载端<b>只读</b>该页面抓回活动清单（不点提交类按钮）→ 入库到 <code>&lt;店&gt;\12-促销活动\活动-&lt;日期&gt;.json</code> → 构建端按 <strong>itemId</strong> 并进在售名单。<br>字段：活动名／类型（Sale event·Coupon）／折扣规则文案／活动起止／该链接的<b>划线价</b>与<b>折扣后价</b>（<b>折扣金额</b>＝两者之差）。<br>同一链接参加多个活动时优先显示「进行中」的那个并在旁边标出活动数；没有参加活动的链接显示「—」。'),
         row('广告销售额 / 总广告费 / 综合 ROAS', 'PLG ＋ PLP 链接', 'PLG 取 <code>Total Promoted Listings Sales</code>、<code>Ad fees</code>；PLP 取 <code>Sales</code>、<code>Ad fees</code>；两者相加。ROAS＝销售额÷广告费'),
         row('当前在售 / 历史链接 / 不在最新名单', '在售名单快照<br><code>在售名单-report-YYYY-MM-DD-snapshot-*.csv</code>', '按 <code>Item number</code> 判定：在名单＝在售；曾在历史数据里出现、不在最新名单＝历史链接（不直接判下架）'),
         row('上架日期 / 距今上架时间', 'Traffic 报表 <code>Item Start Date</code>', '取该链接在报表里的上架日；距今＝今天－上架日（自然日）'),
