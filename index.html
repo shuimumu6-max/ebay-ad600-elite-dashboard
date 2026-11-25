@@ -450,6 +450,10 @@
         return product === ui.product || (product === PRODUCT_UNKNOWN && ui.product === PRODUCTS[0].key);
       });
       dataState = {
+        // 展开 + 覆盖：**别改回白名单**。白名单式重建把新加的字段悄悄丢掉过两次
+        // （coverage 覆盖台账因此整屏显示「没有覆盖台账」）。展开之后新字段默认透传，
+        // 需要按产品过滤的字段在下面显式覆盖。
+        ...fullState,
         plgRaw: pick(fullState.plgRaw),
         trafficRaw: pick(fullState.trafficRaw),
         itemHistory: fullState.itemHistory || {},
@@ -2209,9 +2213,16 @@
             if (seeded.itemHistory && Object.keys(seeded.itemHistory).length) {
               fullState.itemHistory = { ...(fullState.itemHistory || {}), ...seeded.itemHistory };
             }
+            // 覆盖台账自愈（2026-11-25）：本地存的是老版本状态（这种状态在种数据时被白名单丢掉了
+            // coverage），而预置 bundle 里有 —— 直接补上，用户不用清缓存/清数据就能看到。
+            if (seeded.coverage && !fullState.coverage) fullState.coverage = seeded.coverage;
           }
           if (seeded && seeded.bundleId !== localStorage.getItem('ebay-preloaded-bundle')) {
+            // 用「展开 + 覆盖」而不是白名单：2026-11-25 被这个坑过两次 ——
+            // 白名单式重建会把新加的店铺级字段（coverage 覆盖台账）悄悄丢掉，
+            // 页面就永远读不到，还查不出原因。展开之后新字段默认透传。
             fullState = {
+              ...seeded,
               plgRaw: seeded.plgRaw || [],
               trafficRaw: seeded.trafficRaw || [],
               activeListings: seeded.activeListings || null,
