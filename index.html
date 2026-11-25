@@ -308,7 +308,7 @@
     // fullState = 全量数据（含两个产品）；dataState = 当前产品视图，页面函数一律读 dataState。
     let fullState = structuredClone(DEFAULT_STATE);
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { coverageSpan: 30, coverageOpen: [], dailyPageNo: 1, dailyPageSize: 200, page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], campaignExpand: false, adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', itemStatus: 'all', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+    let ui = { coverageSpan: 30, coverageOpen: [], dailyPageNo: 1, dailyPageSize: 200, page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], campaignExpand: false, adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', itemStatus: 'all', promoFilter: 'all', detail: 'item', sort: { table: '', key: '', dir: 0 } };
     let charts = [];
     // 仅 builder 模式（手工上传 CSV）使用：在售名单里的 itemId→SKU
     let skuByItemId = new Map();
@@ -1303,7 +1303,8 @@
       const plpSales = sum(rows, 'plpSales');
       const plpFees = sum(rows, 'plpFees');
       // 在售状态只筛下表（页头指标保持整体口径，沿用 Item 明细页的既有约定；搜索与日期仍是整页口径）
-      const tableRows = (ui.itemStatus || 'all') === 'all' ? rows : rows.filter(row => row.listingStatus === ui.itemStatus);
+      const afterStatus = (ui.itemStatus || 'all') === 'all' ? rows : rows.filter(row => row.listingStatus === ui.itemStatus);
+      const tableRows = filterByPromo(afterStatus);
       return `<div class="page-head"><div><h2>经营看板</h2><p>按同一 Item 和日期统一查看整体流量、自然流量、PLG 与 PLP 广告表现。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>
         ${filterPanel('PLG', true)}
         <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>统计范围：${rangeText(ui.start, ui.end)}；Traffic：${trafficRange}；PLG：${rangeText(plgStart, plgEnd)}；PLP：${rangeText(plpStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
@@ -1335,7 +1336,16 @@
       return `<div class="page-head"><div><h2>经营看板</h2><p>${SHARED_READONLY ? '等待维护者更新报表后自动生成。' : '上传两类 eBay CSV 后自动生成。'}</p></div></div><div class="panel empty">${icon('chart-no-axes-combined', 30)}<div>还没有可展示的数据</div>${SHARED_READONLY ? '' : `<div style="margin-top:14px"><button class="btn primary" id="topUploadBtn">${icon('upload')}上传 Traffic + PLG</button></div>`}</div>`;
     }
 
-    // Item 表工具条（2026-11-25 新增）：搜索（与顶部同一个值）+ 在售状态 + 显示行数。
+    // 促销筛选（2026-11-26）：全部 / 参加活动（任一）/ 未参加任何活动 / 指定活动名 —— 只筛本表（与在售状态同口径）
+    function filterByPromo(rows) {
+      const f = ui.promoFilter || 'all';
+      if (f === 'all') return rows;
+      if (f === '__any__') return rows.filter(row => row.rosterPromoName);
+      if (f === '__none__') return rows.filter(row => !row.rosterPromoName);
+      return rows.filter(row => row.rosterPromoName === f);
+    }
+
+    // Item 表工具条（2026-11-25 新增）：搜索（与顶部同一个值）+ 在售状态 + 促销活动 + 显示行数。
     // 在售状态只筛本表；搜索与日期沿用整页口径（与原来一致）。
     function itemTableToolbar(allRows, shownRows) {
       const current = ui.itemStatus || 'all';
@@ -1344,7 +1354,12 @@
       return `<div class="table-toolbar">
         <div class="field field-search"><label for="itemTableQuery">搜索 Item ID 或标题</label><input class="input" id="itemTableQuery" type="search" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
         <div class="field field-auto"><label for="itemStatusFilter">在售状态</label><select class="input" id="itemStatusFilter">${options.map(([value, label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
-        <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态只筛本表，搜索与日期作用于整页${dataState.promotions?.tagged ? `　·　<b>促销数据</b>：${esc(String(dataState.promotions.at || '').slice(0, 10))} 抓取，${fmt(dataState.promotions.campaigns)} 个活动覆盖 ${fmt(dataState.promotions.tagged)} 个链接（其余链接显示「—」＝本次抓取未覆盖，不代表没有活动）` : ''}</span>
+        <div class="field field-auto"><label for="itemPromoFilter">促销活动</label><select class="input" id="itemPromoFilter">
+          ${[['all', '全部'], ['__any__', '参加活动（任一）'], ['__none__', '未参加任何活动'],
+            ...[...new Set(allRows.map(r => r.rosterPromoName).filter(Boolean))].sort().map(n => [n, n])]
+            .map(([value, label]) => `<option value=\"${esc(value)}\" ${(ui.promoFilter || 'all') === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+        </select></div>
+        <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态与促销筛选只筛本表，搜索与日期作用于整页${dataState.promotions?.tagged ? `　·　<b>促销数据</b>：${esc(String(dataState.promotions.at || '').slice(0, 10))} 抓取，${fmt(dataState.promotions.campaigns)} 个活动覆盖 ${fmt(dataState.promotions.tagged)} 个链接（其余链接显示「—」＝本次抓取未覆盖，不代表没有活动）` : ''}</span>
       </div>`;
     }
 
@@ -1850,8 +1865,8 @@
       if (!rows.length) return `<div class="empty">当前筛选范围没有 Item 数据</div>`;
       const samePeriod = Boolean(trafficSelection().complete && trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const sorted = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
-      return `<div class="table-wrap"><table><thead><tr><th colspan="13" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
-        ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}${sortHeader('上架日期', 'listingStartDate', 'detail')}${sortHeader('距今上架时间', 'listingAgeDays', 'detail')}${sortHeader('在售状态', 'listingStatusText', 'detail')}${sortHeader('标价', 'rosterPrice', 'detail')}${sortHeader('库存', 'rosterAvailable', 'detail')}${sortHeader('已售（名单）', 'rosterSold', 'detail')}${sortHeader('观察', 'rosterWatchers', 'detail')}${sortHeader('参加活动', 'rosterPromoName', 'detail')}${sortHeader('折扣后价', 'rosterPromoPrice', 'detail')}${sortHeader('折扣金额', 'rosterPromoDiscount', 'detail')}${sortHeader('活动起止', 'rosterPromoEnd', 'detail')}
+      return `<div class="table-wrap"><table><thead><tr><th colspan="14" style="text-align:center">基础信息</th><th colspan="8" style="text-align:center;background:#eef5fb">链接汇总数据</th><th colspan="11" style="text-align:center;background:#fff7e8">PLG 数据</th><th colspan="13" style="text-align:center;background:#f4f0fb">PLP 数据（已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item）</th><th colspan="5" style="text-align:center;background:#edf7f1">自然流量</th><th colspan="13" style="text-align:center;background:#f2f3f5">PLP 数据（Smart）</th></tr><tr>
+        ${sortHeader('Item ID', 'itemId', 'detail')}${sortHeader('标题', 'title', 'detail')}${sortHeader('上架日期', 'listingStartDate', 'detail')}${sortHeader('距今上架时间', 'listingAgeDays', 'detail')}${sortHeader('在售状态', 'listingStatusText', 'detail')}${sortHeader('标价', 'rosterPrice', 'detail')}${sortHeader('库存', 'rosterAvailable', 'detail')}${sortHeader('已售（名单）', 'rosterSold', 'detail')}${sortHeader('观察', 'rosterWatchers', 'detail')}${sortHeader('参加活动', 'rosterPromoName', 'detail')}${sortHeader('活动类型', 'rosterPromoType', 'detail')}${sortHeader('折扣后价', 'rosterPromoPrice', 'detail')}${sortHeader('折扣金额', 'rosterPromoDiscount', 'detail')}${sortHeader('活动起止', 'rosterPromoEnd', 'detail')}
         ${sortHeader('总PV（Total page views）', 'totalPageViews', 'detail')}${sortHeader('Impression', 'totalImpressions', 'detail')}${sortHeader('站内PV（eBay）', 'ebayViews', 'detail')}${sortHeader('站外PV（External）', 'externalViews', 'detail')}${sortHeader('销量（Traffic）', 'quantitySold', 'detail')}${sortHeader('Click-through rate', 'totalCtr', 'detail')}${sortHeader('Sales conversion rate', 'totalConversion', 'detail')}${sortHeader('PV核对（日度减累计）', 'pvAudit', 'detail')}
         ${sortHeader('当前售价', 'price', 'detail', 'plg-col')}${sortHeader('报表总销量', 'plgTotalSold', 'detail', 'plg-col')}<th class="plg-col">费率</th><th class="plg-col">建议费率</th>${sortHeader('PLG Impressions', 'adImpressions', 'detail', 'plg-col')}${sortHeader('PLG Clicks', 'adClicks', 'detail', 'plg-col')}${sortHeader('CTR', 'adCtr', 'detail', 'plg-col')}${sortHeader('PLG Sold', 'adSold', 'detail', 'plg-col')}${sortHeader('PLG Sales', 'adSales', 'detail', 'plg-col')}${sortHeader('Ad fees', 'adFees', 'detail', 'plg-col')}${sortHeader('ROAS', 'roas', 'detail', 'plg-col')}
         <th class="plp-col">Impressions</th><th class="plp-col">Clicks</th><th class="plp-col">CTR</th><th class="plp-col">Sold quantity</th><th class="plp-col">Ad fees</th><th class="plp-col">Sales</th><th class="plp-col">Conversion rate</th><th class="plp-col">ROAS</th><th class="plp-col">Average CPC</th><th class="plp-col">ACOS</th><th class="plp-col">主推关键词</th><th class="plp-col">建议出价</th><th class="plp-col">实际出价</th>
@@ -1859,7 +1874,7 @@
         <th>Impressions</th><th>Clicks</th><th>CTR</th><th>Sold quantity</th><th>Ad fees</th><th>Sales</th><th>Conversion rate</th><th>ROAS</th><th>Average CPC</th><th>ACOS</th><th>主推关键词</th><th>建议出价</th><th>实际出价</th>
       </tr></thead><tbody>${sorted.map(row => `<tr>
         <td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.listingStartDate ? esc(row.listingStartDate) : '—'}</td><td>${row.listingAgeDays == null ? '—' : fmt(row.listingAgeDays) + ' 天'}</td><td style="min-width:160px">${esc(row.listingStatusText)}</td>${row.rosterPrice ? `<td>${row.rosterVariations > 1 && row.rosterPriceMax > row.rosterPrice ? `${money(row.rosterPrice)}~${money(row.rosterPriceMax)}` : money(row.rosterPrice)}</td>` : '<td>—</td>'}<td${row.rosterAvailable === 0 ? ' style="color:var(--red);font-weight:700"' : ''}>${row.rosterAvailable == null ? '—' : fmt(row.rosterAvailable)}</td><td>${row.rosterSold == null ? '—' : fmt(row.rosterSold)}</td><td>${row.rosterWatchers == null ? '—' : fmt(row.rosterWatchers)}${row.rosterBids ? ` / ${fmt(row.rosterBids)}` : ''}</td>
-        ${row.rosterPromoName ? `<td style="min-width:150px" title="${esc(row.rosterPromoRule)}${row.rosterPromoType ? '（' + esc(row.rosterPromoType) + '）' : ''}">${esc(row.rosterPromoName)}${row.rosterPromoCount > 1 ? ` <span class="badge amber">${row.rosterPromoCount} 个活动</span>` : ''}</td>` : '<td>—</td>'}${row.rosterPromoPrice != null ? `<td>${money(row.rosterPromoPrice)}</td>` : '<td>—</td>'}${row.rosterPromoDiscount != null ? `<td style="color:var(--red)">−${money(row.rosterPromoDiscount)}</td>` : '<td>—</td>'}${row.rosterPromoEnd ? `<td style="white-space:nowrap">${esc(row.rosterPromoStart || '?')} → ${esc(row.rosterPromoEnd)}${row.rosterPromoStatus && row.rosterPromoStatus !== 'Active' ? ` <span class="badge">${esc(row.rosterPromoStatus)}</span>` : ''}</td>` : '<td>—</td>'}
+        ${row.rosterPromoName ? `<td style="min-width:150px" title="${esc(row.rosterPromoRule)}${row.rosterPromoType ? '（' + esc(row.rosterPromoType) + '）' : ''}">${esc(row.rosterPromoName)}${row.rosterPromoCount > 1 ? ` <span class="badge amber">${row.rosterPromoCount} 个活动</span>` : ''}</td>` : '<td>—</td>'}${row.rosterPromoType ? `<td class=\"t-text\" style=\"white-space:nowrap\">${esc(row.rosterPromoType)}</td>` : '<td>—</td>'}${row.rosterPromoPrice != null ? `<td>${money(row.rosterPromoPrice)}</td>` : '<td>—</td>'}${row.rosterPromoDiscount != null ? `<td style="color:var(--red)">−${money(row.rosterPromoDiscount)}</td>` : '<td>—</td>'}${row.rosterPromoEnd ? `<td style="white-space:nowrap">${esc(row.rosterPromoStart || '?')} → ${esc(row.rosterPromoEnd)}${row.rosterPromoStatus && row.rosterPromoStatus !== 'Active' ? ` <span class="badge">${esc(row.rosterPromoStatus)}</span>` : ''}</td>` : '<td>—</td>'}
         <td>${row.hasTraffic ? fmt(row.totalPageViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.totalImpressions) : '—'}</td><td>${row.hasTraffic ? fmt(row.ebayViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.externalViews) : '—'}</td><td>${row.hasTraffic ? fmt(row.quantitySold) : '—'}${row.salesMismatch ? ' <span class="badge amber">待核对</span>' : ''}</td><td>${row.hasTraffic ? pct(row.totalCtr) : '—'}</td><td>${row.hasTraffic ? pct(row.totalConversion) : '—'}</td><td style="white-space:normal;min-width:180px">${esc(row.pvAudit)}</td>
         <td class="plg-col">${row.hasPlg ? money(row.price) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.plgTotalSold) : '—'}</td><td class="plg-col">—</td><td class="plg-col">—</td><td class="plg-col">${row.hasPlg ? fmt(row.adImpressions) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adClicks) : '—'}</td><td class="plg-col">${row.hasPlg ? pct(row.adCtr) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.adSold) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adSales) : '—'}</td><td class="plg-col">${row.hasPlg ? money(row.adFees) : '—'}</td><td class="plg-col">${row.hasPlg ? fmt(row.roas, 2) : '—'}</td>
         <td class="plp-col">${row.hasPlp ? fmt(row.plpImpressions) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpClicks) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpCtr) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpSold) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpFees) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpSales) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpConversion) : '—'}</td><td class="plp-col">${row.hasPlp ? fmt(row.plpRoas, 2) : '—'}</td><td class="plp-col">${row.hasPlp ? money(row.plpAvgCpc) : '—'}</td><td class="plp-col">${row.hasPlp ? pct(row.plpAcos) : '—'}</td><td class="plp-col">—</td><td class="plp-col">—</td><td class="plp-col">—</td>
@@ -2556,6 +2571,7 @@
       const itemQuery = document.getElementById('itemTableQuery');
       itemQuery?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
       document.getElementById('itemStatusFilter')?.addEventListener('change', e => { ui.itemStatus = e.target.value; render(); });
+      document.getElementById('itemPromoFilter')?.addEventListener('change', e => { ui.promoFilter = e.target.value; render(); });
       document.getElementById('campaignToggle')?.addEventListener('click', () => { ui.campaignExpand = !ui.campaignExpand; render(); });
       document.getElementById('weekCountSelect')?.addEventListener('change', event => { ui.weekCount = Number(event.target.value); render(); });
       document.getElementById('kpiWeeksSelect')?.addEventListener('change', event => { ui.kpiWeeks = Number(event.target.value); render(); });
@@ -2694,7 +2710,7 @@
       skuByItemId = new Map();
       applyProduct();
       await saveState();
-      ui = { coverageSpan: 30, coverageOpen: [], dailyPageNo: 1, dailyPageSize: 200, page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], campaignExpand: false, adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', itemStatus: 'all', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      ui = { coverageSpan: 30, coverageOpen: [], dailyPageNo: 1, dailyPageSize: 200, page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], campaignExpand: false, adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', itemStatus: 'all', promoFilter: 'all', detail: 'item', sort: { table: '', key: '', dir: 0 } };
       render();
       toast('数据已清空。');
     }
