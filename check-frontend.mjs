@@ -72,28 +72,47 @@ ok('默认「全部」视图包含两个产品且行数不变', () => {
   assert.equal(api.dataState.trafficRaw.length, bundle.trafficRaw.length);
 });
 
-ok('切到 900E：只保留 900E 行，广告数据置空', () => {
+ok('切到 900E：只保留 900E 行；广告数据按产品过滤（2026-11-25 修）', () => {
   api.setUiProduct('UltraDiag900 E');
   api.applyProduct();
   assert.ok(api.dataState.plgRaw.length > 0 && api.dataState.trafficRaw.length > 0);
   assert.ok([...api.dataState.plgRaw, ...api.dataState.trafficRaw].every(row => row.product === 'UltraDiag900 E'));
   assert.ok((api.dataState.activeListings?.items || []).every(row => row.product === 'UltraDiag900 E'));
-  assert.equal((api.dataState.ads.plpRows || []).length, 0);
-  assert.equal((api.dataState.ads.keywordRows || []).length, 0);
-  assert.equal((api.dataState.ads.searchRows || []).length, 0);
+  // 900E 现在确实有 PLP / 关键词 / 搜索词数据（campaign 页 + 整店报表），三个集合都应非空。
+  // 关键词/搜索词行没有 product 字段，靠 productOf 从活动名推 —— 每条都必须是 900E。
+  for (const field of ['plpRows', 'keywordRows', 'searchRows']) {
+    const rows = api.dataState.ads[field] || [];
+    assert.ok(rows.length > 0, `900E 的 ${field} 被误清空`);
+    for (const row of rows) {
+      assert.equal(row.product || api.productOf(row), 'UltraDiag900 E', `${field} 混入了非 900E 的行：${row.campaign}`);
+    }
+  }
 });
 
-ok('900E 显示广告数据空态提示', () => {
-  const notice = api.productNotice();
-  assert.ok(notice.includes('暂无 PLP'), `空态提示内容不对：${notice}`);
-  assert.ok(notice.includes('UltraDiag900 E'));
+ok('900E 不再显示「暂无广告数据」空态（它已经有数据了）', () => {
+  assert.equal(api.productNotice(), '', `900E 有数据时不应提示空态：${api.productNotice()}`);
 });
 
-ok('切到 600E：只保留 600E 行，广告数据保留', () => {
+ok('切到 600E：只保留 600E 行；广告数据同样按产品过滤，且不丢「推不出产品」的快照行', () => {
   api.setUiProduct('AD600 Elite');
   api.applyProduct();
   assert.ok([...api.dataState.plgRaw, ...api.dataState.trafficRaw].every(row => row.product === 'AD600 Elite'));
   assert.ok((api.dataState.ads.plpRows || []).length > 0, '600E 的 PLP 数据被误清空');
+  assert.ok((api.dataState.ads.keywordRows || []).length > 0, '600E 的关键词被误清空');
+  assert.ok((api.dataState.ads.searchRows || []).length > 0, '600E 的搜索词被误清空');
+  // 600E 视图里绝不能出现 900E 的行
+  for (const field of ['plpRows', 'keywordRows', 'searchRows']) {
+    for (const row of api.dataState.ads[field] || []) {
+      assert.notEqual(row.product || api.productOf(row), 'UltraDiag900 E', `${field} 混入了 900E 的行：${row.campaign}`);
+    }
+  }
+  // 广告快照那批短名活动（PLP-EX / PLP-PH / PLP-ST-*）的关键词/搜索词行既无 itemId 也无 title，
+  // 推不出产品；它们属 600E（同活动 plpRows 标题是 TOPDON AD600/ArtiDiag600），必须保留在 600E 视图，
+  // 否则会静默丢掉 318 条关键词 + 382 条搜索词。
+  const guessable = rows => rows.filter(row => !row.product && api.productOf(row) === api.PRODUCT_UNKNOWN).length;
+  const unAttr = guessable(api.dataState.ads.keywordRows) + guessable(api.dataState.ads.searchRows);
+  const fullUnAttr = guessable(bundle.ads.keywordRows || []) + guessable(bundle.ads.searchRows || []);
+  assert.equal(unAttr, fullUnAttr, `600E 视图丢了「推不出产品」的行：保留 ${unAttr} 条，应保留 ${fullUnAttr} 条`);
   assert.equal(api.productNotice(), '', '600E 不应显示空态提示');
 });
 
@@ -505,7 +524,12 @@ ok('默认口径为「日报逐日相加」：范围=链接刊登日~最新日�
   assert.ok(range600.days > 0, '600E 应有日报');
   assert.equal(api.listingStartDate(), '2026-09-23', `600E 刊登开始日应为 2026-09-23，实际 ${api.listingStartDate()}`);
   assert.equal(range600.start, '2026-09-23', `600E 默认起点应为刊登日 2026-09-23，实际 ${range600.start}`);
-  assert.equal(range600.end, '2026-11-15', `600E 默认终点应为最新日报 2026-11-15，实际 ${range600.end}`);
+  // 终点 = 最新一份「单日」日报的日期。**不要把日期写死** —— 每天补数都会往后走，
+  // 写死的断言会在数据前进后静默失效（2026-11-25 就是这么撞上的：写 11-15、实际已 11-23）。
+  const dailyDates600 = [...new Set(bundle.trafficRaw
+    .filter(row => row.product === 'AD600 Elite' && row.start && row.start === row.end)
+    .map(row => row.start))].sort();
+  assert.equal(range600.end, dailyDates600.at(-1), `600E 默认终点应为最新日报 ${dailyDates600.at(-1)}，实际 ${range600.end}`);
 
   // ③ 900E 的起点是它自己的刊登日 2026-10-28（复用链接的 itemId 创建日），与 600E 不同
   api.setUiProduct('UltraDiag900 E');
@@ -516,13 +540,21 @@ ok('默认口径为「日报逐日相加」：范围=链接刊登日~最新日�
   assert.ok(range900.days < range600.days, `900E 日报天数应少于 600E（${range900.days} vs ${range600.days}）`);
 
   // ④ 日期控件可选范围 = 刊登日 ~ 最新日报；未来/无报表日期不可选
+  //   上限同样**不写死**，取 900E 自己的最新单日日报日（每天补数会往后走）。
+  const latestDaily900 = [...new Set(bundle.trafficRaw
+    .filter(row => row.product === 'UltraDiag900 E' && row.start && row.start === row.end)
+    .map(row => row.start))].sort().at(-1);
   const bounds900 = api.reportBounds();
   assert.equal(bounds900.min, '2026-10-28', `900E 日期下限应为刊登日，实际 ${bounds900.min}`);
-  assert.equal(bounds900.max, '2026-11-15', `日期上限应为最新日报日，实际 ${bounds900.max}`);
+  assert.equal(bounds900.max, latestDaily900, `日期上限应为最新日报日 ${latestDaily900}，实际 ${bounds900.max}`);
   const panelHtml = api.filterPanel('PLG');
-  assert.ok(/id="startFilter"[^>]*min="2026-10-28"[^>]*max="2026-11-15"/.test(panelHtml), '开始日期框应带 min/max 约束');
-  assert.ok(/id="endFilter"[^>]*min="2026-10-28"[^>]*max="2026-11-15"/.test(panelHtml), '结束日期框应带 min/max 约束');
-  assert.ok(!/max="2026-11-18"/.test(panelHtml), '未来日期不应出现在可选上限里');
+  assert.ok(new RegExp(`id="startFilter"[^>]*min="2026-10-28"[^>]*max="${latestDaily900}"`).test(panelHtml), `开始日期框应带 min/max 约束（max=${latestDaily900}）`);
+  assert.ok(new RegExp(`id="endFilter"[^>]*min="2026-10-28"[^>]*max="${latestDaily900}"`).test(panelHtml), `结束日期框应带 min/max 约束（max=${latestDaily900}）`);
+  // 上限必须等于「最新日报日」而不是「今天」——否则未来/无报表日期会变成可勾选
+  const todayIso = new Date().toISOString().slice(0, 10);
+  assert.ok(latestDaily900 <= todayIso, `最新日报日 ${latestDaily900} 不应晚于今天 ${todayIso}`);
+  assert.ok(!new RegExp(`max="${todayIso}"`).test(panelHtml) || todayIso === latestDaily900,
+    '未来（无报表）日期不应出现在可选上限里');
 
   // ⑤ 用默认范围取数时，必须走日报分支
   api.setUiProduct('AD600 Elite');
@@ -617,7 +649,24 @@ ok('复用链接全计入 900E：曝光保留、前身期出单剔零并留痕�
   const selection = api.trafficSelection();
   assert.equal(range.start, '2026-10-28', `900E 默认起点应为刊登日，实际 ${range.start}`);
   assert.equal(selection.complete, true, `900E 默认范围应完整覆盖：${selection.note}`);
-  assert.equal(selection.rows.reduce((sum, row) => sum + (Number(row.quantitySold) || 0), 0), 0, '900E 默认范围销量应为 0（前身出单已剔、本体无出单）');
+  // 区间销量：不再断言「恒为 0」（2026-11-25：区间右端随数据前进到 11-23，纳入了 11-17 的 1 台真实出单
+  // ——标题就是 UD900E、isForeignEra=false，属本体期正常出单）。
+  // 改为数据驱动断言，同时守住两条不变量：
+  //  ① 前身期（ONE Lite / EL-50448 标题）的出单不得计入；
+  //  ② 只有「单日」日报能计入 —— 区间累计报表的销量不许当日报用（用户口径：不用累计值编造日度数据）。
+  const expectDailySales = bundle.trafficRaw
+    .filter(row => row.product === 'UltraDiag900 E' && row.start === row.end
+      && row.start >= range.start && row.start <= range.end && !api.isForeignEra(row))
+    .reduce((sum, row) => sum + (Number(row.quantitySold) || 0), 0);
+  const actualSales = selection.rows.reduce((sum, row) => sum + (Number(row.quantitySold) || 0), 0);
+  assert.equal(actualSales, expectDailySales,
+    `区间销量应等于区间内「单日 + 非前身期」日报合计 ${expectDailySales}，实际 ${actualSales}`);
+  // 反证：区间累计行里确实有销量，若被算进来合计就会明显变大
+  const cumulativeSales = bundle.trafficRaw
+    .filter(row => row.product === 'UltraDiag900 E' && row.start !== row.end && !api.isForeignEra(row))
+    .reduce((sum, row) => sum + (Number(row.quantitySold) || 0), 0);
+  assert.ok(cumulativeSales > 0 && actualSales < cumulativeSales,
+    `累计报表销量（${cumulativeSales}）不应混进日报口径（${actualSales}）`);
 
   api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
   api.setUiProduct('all');
