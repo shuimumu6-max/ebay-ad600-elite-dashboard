@@ -1361,6 +1361,19 @@
       return [...plg, ...plp].filter(row => withinAdsRange(row) && (!ui.campaigns.length || ui.campaigns.includes(row.campaign)));
     }
 
+    // 活动起始日（2026-11-25 新增）：报表里的 Campaign start date 那列**会偏晚**
+    // （实测新店 CSGP 标 11-17、真实数据自 11-10），而它的用途是判断"某天没数据是不是发生在活动开始之前"，
+    // 所以显示值取 min(报表标注, 我方最早有数据的日期) —— 保守下界，不会把"其实开始得更早"误判成"还没开始"。
+    function campaignStartOf(name) {
+      const ads = dataState.ads || {};
+      const key = clean(name);
+      const claim = (ads.campaignStarts || {})[key] || '';
+      const earliest = (ads.campaignEarliest || {})[key] || '';
+      if (!claim) return { show: earliest, claim: '', earliest };
+      if (earliest && earliest < claim) return { show: earliest, claim, earliest };
+      return { show: claim, claim, earliest };
+    }
+
     function adCampaignRows() {
       const map = new Map();
       adDetailRows().forEach(row => {
@@ -1369,7 +1382,9 @@
         item.adTypes.add(row.adType); item.dates.add(row.date); item.items.add(row.itemId);
         ['impressions','clicks','sold','sales','adFees'].forEach(field => item[field] += row[field] || 0);
       });
-      return [...map.values()].map(row => ({ ...row, adType: [...row.adTypes].join('/'), days: row.dates.size, itemCount: row.items.size, ctr: row.clicks / row.impressions || 0, conversion: row.sold / row.clicks || 0, avgCpc: row.adFees / row.clicks || 0, roas: row.sales / row.adFees || 0 }));
+      return [...map.values()].map(row => ({ ...row, adType: [...row.adTypes].join('/'), days: row.dates.size, itemCount: row.items.size, ctr: row.clicks / row.impressions || 0, conversion: row.sold / row.clicks || 0, avgCpc: row.adFees / row.clicks || 0, roas: row.sales / row.adFees || 0, startInfo: campaignStartOf(row.campaign) }))
+        // 扁平排序键：sortRows 只认 a[key]，嵌套字段排不了
+        .map(row => ({ ...row, adStart: row.startInfo.show || '' }));
     }
 
     function campaignChips() {
@@ -1377,12 +1392,25 @@
       return `<div class="campaign-chips"><button class="campaign-chip ${ui.campaigns.length ? '' : 'active'}" data-campaign="">全部 Campaign</button>${names.map(name => `<button class="campaign-chip ${ui.campaigns.includes(name) ? 'active' : ''}" data-campaign="${esc(name)}">${esc(name.replace('US.TD.PLG.topdon_scanner.', ''))}</button>`).join('')}</div>`;
     }
 
+    // 起始日显示（2026-11-25 新增）：主值取保守下界，鼠标悬停给出报表原值与我方最早数据日，
+    // 便于判断「某天没有数据」是不是发生在活动开始之前。
+    function startCell(row) {
+      const info = row.startInfo || {};
+      if (!info.show) return '<td class="ad-start">—</td>';
+      const bits = [];
+      if (info.claim) bits.push(`报表标注起始日 ${info.claim}`);
+      if (info.earliest && info.earliest !== info.show) bits.push(`我方最早有数据 ${info.earliest}`);
+      const title = bits.length ? ` title="${esc(bits.join('；'))}"` : '';
+      const mark = info.earliest && info.claim && info.earliest < info.claim ? ' *' : '';
+      return `<td class="ad-start"${title}>${esc(info.show)}${mark}</td>`;
+    }
+
     function campaignOverview() {
       const campaigns = adCampaignRows();
       const impressions = sum(campaigns, 'impressions'), clicks = sum(campaigns, 'clicks'), sold = sum(campaigns, 'sold'), sales = sum(campaigns, 'sales'), fees = sum(campaigns, 'adFees');
-      const cards = [...campaigns].sort((a,b) => b.impressions-a.impressions).map(row => `<article class="panel campaign-card"><div class="campaign-card-head"><strong>${esc(row.campaign)}</strong><span class="badge ${row.adType.includes('PLP') ? 'blue' : 'amber'}">${esc(row.adType)}</span></div><div class="campaign-card-grid"><div><span>曝光</span><strong>${fmt(row.impressions)}</strong></div><div><span>点击 / CTR</span><strong>${fmt(row.clicks)} / ${pct(row.ctr)}</strong></div><div><span>销量 / CVR</span><strong>${fmt(row.sold)} / ${pct(row.conversion)}</strong></div><div><span>广告费</span><strong>${money(row.adFees)}</strong></div><div><span>ROAS</span><strong>${fmt(row.roas,2)}</strong></div><div><span>平均 CPC</span><strong>${money(row.avgCpc)}</strong></div><div><span>销售额</span><strong>${money(row.sales)}</strong></div><div><span>Item 数</span><strong>${fmt(row.itemCount)}</strong></div><div><span>数据天数</span><strong>${fmt(row.days)}</strong></div></div></article>`).join('');
-      const table = sortRows(campaigns, 'campaigns').map(row => `<tr><td>${esc(row.campaign)}</td><td>${esc(row.adType)}</td><td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.avgCpc)}</td><td>${fmt(row.roas,2)}</td></tr>`).join('');
-      return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="table-wrap"><table id="campaignTable"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}</tr></thead><tbody>${table}</tbody></table></div></section>`;
+      const cards = [...campaigns].sort((a,b) => b.impressions-a.impressions).map(row => `<article class="panel campaign-card"><div class="campaign-card-head"><strong>${esc(row.campaign)}</strong><span class="badge ${row.adType.includes('PLP') ? 'blue' : 'amber'}">${esc(row.adType)}</span></div><div class="campaign-card-grid"><div><span>起始日</span><strong title="${esc(`报表标注 ${row.startInfo?.claim || '—'}；我方最早有数据 ${row.startInfo?.earliest || '—'}`)}">${esc(row.startInfo?.show || '—')}${row.startInfo?.earliest && row.startInfo?.claim && row.startInfo.earliest < row.startInfo.claim ? ' *' : ''}</strong></div><div><span>曝光</span><strong>${fmt(row.impressions)}</strong></div><div><span>点击 / CTR</span><strong>${fmt(row.clicks)} / ${pct(row.ctr)}</strong></div><div><span>销量 / CVR</span><strong>${fmt(row.sold)} / ${pct(row.conversion)}</strong></div><div><span>广告费</span><strong>${money(row.adFees)}</strong></div><div><span>ROAS</span><strong>${fmt(row.roas,2)}</strong></div><div><span>平均 CPC</span><strong>${money(row.avgCpc)}</strong></div><div><span>销售额</span><strong>${money(row.sales)}</strong></div><div><span>Item 数</span><strong>${fmt(row.itemCount)}</strong></div><div><span>数据天数</span><strong>${fmt(row.days)}</strong></div></div></article>`).join('');
+      const table = sortRows(campaigns, 'campaigns').map(row => `<tr><td>${esc(row.campaign)}</td><td>${esc(row.adType)}</td>${startCell(row)}<td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.avgCpc)}</td><td>${fmt(row.roas,2)}</td></tr>`).join('');
+      return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="snapshot-note">「起始日」取报表标注的 Campaign start date 与我方最早有数据日中**更早**的那个（带 <b>*</b> 表示报表标注偏晚，悬停可看两个值）—— 用它判断某天缺数据是否发生在活动开始之前。</div><div class="table-wrap"><table id="campaignTable"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns')}${sortHeader('起始日','adStart','campaigns')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}</tr></thead><tbody>${table}</tbody></table></div></section>`;
     }
 
     function adFilterState(tab = ui.adTab) {
