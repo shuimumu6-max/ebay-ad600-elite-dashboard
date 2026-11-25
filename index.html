@@ -85,6 +85,21 @@
     .badge.green { color: var(--green); background: var(--green-soft); }
     .badge.amber { color: var(--amber); background: var(--amber-soft); }
     .badge.red { color: var(--red); background: var(--red-soft); }
+    /* 报表更新情况（2026-11-25 改版）：覆盖矩阵与缺失清单 */
+    .cov-cell { text-align: center; font-weight: 700; font-size: 13px; }
+    .cov-have { color: var(--green); }
+    .cov-partial { color: #b26a00; }
+    .cov-blank { color: var(--amber); }
+    .cov-miss { color: var(--red); }
+    .cov-scroll { max-height: 520px; overflow: auto; }
+    .cov-matrix td, .cov-matrix th { text-align: center; }
+    .cov-matrix td:first-child, .cov-matrix th:first-child { text-align: left; position: sticky; left: 0; background: var(--panel); z-index: 1; }
+    .cov-gaps { display: flex; flex-direction: column; gap: 14px; }
+    .cov-type { border-top: 1px solid var(--line); padding-top: 10px; }
+    .cov-type:first-child { border-top: 0; padding-top: 0; }
+    .cov-type-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+    .cov-gap-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 3px 0; font-size: 12px; }
+    .cov-gap-line code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
     .empty { padding: 58px 20px; color: var(--muted); text-align: center; }
     .empty svg { width: 30px; height: 30px; margin-bottom: 8px; color: #9aa6b3; }
     .filters { padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -209,7 +224,7 @@
     // fullState = 全量数据（含两个产品）；dataState = 当前产品视图，页面函数一律读 dataState。
     let fullState = structuredClone(DEFAULT_STATE);
     let dataState = structuredClone(DEFAULT_STATE);
-    let ui = { page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 }, dailyPageNo: 1, dailyPageSize: 200 };
+    let ui = { coverageSpan: 30, coverageOpen: [], page: 'dashboard', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 }, dailyPageNo: 1, dailyPageSize: 200 };
     let charts = [];
     // 仅 builder 模式（手工上传 CSV）使用：在售名单里的 itemId→SKU
     let skuByItemId = new Map();
@@ -1240,56 +1255,248 @@
         </div>${swapHtml}</div></section>`;
     }
 
+    // ── 每日记录 · 报表更新情况（2026-11-25 改版）──────────────────────────────
+    // 这一屏回答的是判断题：「各类报表哪天已经下载、哪天 eBay 明确回空、哪天还没下」。
+    // 每日指标不在这里看（去「经营看板 / Item 明细」）。
+    // 判据全部来自构建端写进 bundle 的 coverage 台账（只记事实，不做推测）：
+    //   ● 有数据        = 这份报表解析出了数据行
+    //   ○ 已核实无数据  = 归档里有 eBay 回空的空报表（占位文件）
+    //   ✕ 缺            = 上面两种文件都没有
+    // 为什么不用「曝光 > 0」判缺（2026-11-25 实证）：eBay 在当天没有搜索发生时会给
+    // 「全量关键词行、曝光全 0」的空壳报表，按曝光判会把它们当缺口 —— 那轮 21 条补数命令
+    // 全部回空后逐条核对，确认当天曝光确实都是 0。所以这里只认「有没有文件」。
+    const COVERAGE_TYPES = [
+      { key: 'trafficDaily', label: 'Traffic 日度', note: '每天一份（单日报表）' },
+      { key: 'plg', label: 'PLG', note: '广告活动报表（General）' },
+      { key: 'listing', label: 'PLP 链接', ad: true, note: '按活动、单日下载' },
+      { key: 'keyword', label: 'PLP 关键词', ad: true, note: '按活动、单日下载' },
+      { key: 'search', label: 'PLP 搜索词', ad: true, note: '按活动、单日下载' }
+    ];
+    const COV_GLYPH = { have: '●', partial: '◐', blank: '○', miss: '✕' };
+
+    const covNorm = value => clean(value).replace(/\s+/g, ' ').toLowerCase();
+    const covAddDays = (iso, days) => { const date = new Date(`${iso}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); };
+
+    function coverageState() {
+      const cov = dataState.coverage || null;
+      return {
+        present: Boolean(cov),
+        days: (cov && cov.days) || {},
+        empty: (cov && cov.empty) || {},
+        ranges: (cov && cov.trafficRanges) || [],
+        active: (cov && cov.activeDays) || []
+      };
+    }
+
+    // 某个广告类型下出现过的活动。链接报表是**按产品过滤后**的行，关键词/搜索词是全量的；
+    // 行里的活动名可能带连续空格（`US. TD. PLP.  ad600 elite...`），所以一律归一化后比。
+    // 本店负责的活动（与「广告活动」面板同一来源）：PLG 行 + PLP 链接行的活动。
+    // 这两处已经是产品范围内的，并且已经剔除了 excludedCampaigns 里的「非我方活动」。
+    // 必须有这道过滤：整店优先促刊报表会带进来几十个不在我们范围的活动，全列出来纯噪音
+    // （实测新店 PLP 链接一份整店报表带 31 个活动）。
+    function coverageMineCampaigns() {
+      return new Set(unique([
+        ...dataState.plgRaw.map(row => row.campaign),
+        ...(dataState.ads.plpRows || []).map(row => row.campaign)
+      ]).map(covNorm));
+    }
+
+    function coverageCampaigns(kind) {
+      const { days, empty } = coverageState();
+      const mine = coverageMineCampaigns();
+      const map = new Map();
+      const add = (bag, date, name) => {
+        const key = covNorm(name);
+        if (!key) return;
+        if (!map.has(key)) map.set(key, { name, have: new Set(), blank: new Set() });
+        map.get(key)[bag].add(date);
+      };
+      Object.entries(days[kind] || {}).forEach(([date, names]) => (names || []).forEach(name => add('have', date, name)));
+      Object.entries(empty[kind] || {}).forEach(([date, names]) => (names || []).forEach(name => add('blank', date, name)));
+      return [...map.entries()].filter(([key]) => mine.has(key)).map(([, entry]) => {
+        const cover = [...entry.have, ...entry.blank].sort();
+        return { ...entry, cover, first: cover[0] || '', latest: [...entry.have].sort().pop() || '' };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    // 缺口 = 从该类（或该活动）最早有文件的那天起，到全店最新数据日为止，既没数据也没回空的日子。
+    // 下界用「我方最早有文件的那天」而不是报表里写的活动起始日：报表的 Campaign start date 不可靠。
+    function coverageGapDays(have, blank, from, to) {
+      const gaps = [];
+      if (!from || !to) return gaps;
+      for (let date = from; date <= to; date = covAddDays(date, 1)) if (!have.has(date) && !blank.has(date)) gaps.push(date);
+      return gaps;
+    }
+
+    function coverageModel() {
+      const { days, empty, ranges, active } = coverageState();
+      const all = new Set();
+      [days, empty].forEach(bag => Object.values(bag).forEach(byDay => Object.keys(byDay).forEach(date => all.add(date))));
+      active.forEach(date => all.add(date));
+      ranges.forEach(range => String(range).split('~').forEach(date => date && all.add(date)));
+      if (!all.size) return null;
+      const sorted = [...all].sort();
+      const earliest = sorted[0];
+      const latest = sorted[sorted.length - 1];
+      // 显示窗口右端不越过「全店最新数据日」：否则会把「今天还没到下载时点」天天报成缺
+      const span = Number(ui.coverageSpan) || 0;
+      const windowStart = span && covAddDays(latest, -(span - 1)) > earliest ? covAddDays(latest, -(span - 1)) : earliest;
+      const dates = sorted.filter(date => date >= windowStart && date <= latest);
+      const types = COVERAGE_TYPES.map(type => {
+        const have = new Set(Object.keys(days[type.key] || {}));
+        const blank = new Set(Object.keys(empty[type.key] || {}));
+        const cover = [...new Set([...have, ...blank])].sort();
+        const campaigns = type.ad ? coverageCampaigns(type.key) : [];
+        // 活动级缺口：类型级「有数据」只要求有一个活动有文件，所以类型级看不到谁缺了 —— 这里单独算。
+        const campaignGaps = campaigns
+          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, latest) }))
+          .filter(item => item.gaps.length);
+        // 「部分活动缺」的日子：类型级有数据，但至少一个活动那天没有文件。
+        // 只看每个活动自己范围内的缺口，避免把「活动还没开始」算进来。
+        const partialDays = new Set();
+        campaignGaps.forEach(item => item.gaps.forEach(date => { if (have.has(date)) partialDays.add(date); }));
+        return {
+          ...type, have, blank, cover, campaigns, campaignGaps, partialDays,
+          latestDay: [...have].sort().pop() || '',
+          gaps: coverageGapDays(have, blank, cover[0] || '', latest)
+        };
+      });
+      return { dates, earliest, latest, types, ranges, active };
+    }
+
+    function coverageCellInfo(type, date) {
+      const { days, empty } = coverageState();
+      const haveDay = days[type.key] || {};
+      const blankDay = empty[type.key] || {};
+      const have = haveDay[date] || [];
+      const blank = blankDay[date] || [];
+      // 关键：按「这一天的键存不存在」判断，不能按数组长度 —— Traffic 类型没有活动维度，
+      // 台账里存的是空数组 []，按长度判会把整列都显示成「缺」（渲染实测踩过）。
+      const has = (bag, key) => Object.prototype.hasOwnProperty.call(bag, key);
+      // partial：这天有数据，但至少一个活动缺（类型级只看「有没有」会全绿，掩盖活动级缺口）
+      const partial = (type.partialDays && type.partialDays.has(date)) || false;
+      return { status: has(haveDay, date) ? (partial ? 'partial' : 'have') : has(blankDay, date) ? 'blank' : 'miss', have, blank, partial };
+    }
+
+    function coverageSummary(model) {
+      const { ranges, active } = coverageState();
+      const gapBadge = type => {
+        const bits = [];
+        if (type.gaps.length) bits.push(`类型级 ${fmt(type.gaps.length)} 天`);
+        if (type.campaignGaps && type.campaignGaps.length) bits.push(`${fmt(type.campaignGaps.length)} 个活动有缺`);
+        if (!bits.length) return `<span class="badge green">没有缺口</span>`;
+        return `<span class="badge red">${bits.join(' ｜ ')}</span>`;
+      };
+      const adRows = model.types.map(type => `<tr>
+        <td>${esc(type.label)}</td>
+        <td>${type.latestDay || '—'}</td>
+        <td>${fmt(type.have.size)} 天</td>
+        <td>${type.blank.size ? fmt(type.blank.size) + ' 天' : '—'}</td>
+        <td>${gapBadge(type)}</td>
+        <td style="text-align:left;color:var(--muted)">${esc(type.ad ? `${type.note}（${fmt(type.campaigns.length)} 个活动）` : type.note)}</td>
+      </tr>`).join('');
+      const snapRows = `<tr>
+        <td>Traffic 累计</td><td>${ranges.length ? String(ranges[ranges.length - 1]).split('~')[1] : '—'}</td>
+        <td>${fmt(ranges.length)} 份</td><td>—</td><td><span class="badge blue">区间快照</span></td>
+        <td style="text-align:left;color:var(--muted)">累计报表是导出那一刻的快照，不按日判缺</td>
+      </tr><tr>
+        <td>在售商品名单</td><td>${active.length ? active[active.length - 1] : '—'}</td>
+        <td>${fmt(active.length)} 份</td><td>—</td><td><span class="badge blue">名单快照</span></td>
+        <td style="text-align:left;color:var(--muted)">在售名单是快照，且只能看最新一份；不按日判缺</td>
+      </tr>`;
+      return `<section class="panel"><div class="panel-head"><h3>各类报表状态</h3><small>最新数据日 = 该类最近一份**有真实数据**的日子；「缺」不算 eBay 回空</small></div>
+        <div class="table-wrap"><table><thead><tr><th>报表类型</th><th>最新数据日</th><th>有数据</th><th>eBay 回空</th><th>缺</th><th>说明</th></tr></thead><tbody>${adRows}${snapRows}</tbody></table></div></section>`;
+    }
+
+    function coverageMatrix(model) {
+      const head = model.types.map(type => `<th>${esc(type.label)}</th>`).join('');
+      const rows = model.dates.slice().reverse().map(date => {
+        const cells = model.types.map(type => {
+          const info = coverageCellInfo(type, date);
+          const missing = info.partial ? (type.campaignGaps || []).filter(item => item.gaps.includes(date)).map(item => item.entry.name) : [];
+          const title = [
+            info.have.length ? `有数据：${info.have.join('、')}` : '',
+            info.blank.length ? `eBay 回空（已核实无数据）：${info.blank.join('、')}` : '',
+            missing.length ? `但这些活动这天没有文件：${missing.join('、')}` : '',
+            info.status === 'miss' ? '没有这份报表' : ''
+          ].filter(Boolean).join('；');
+          return `<td class="cov-cell cov-${info.status}"${title ? ` title="${esc(title)}"` : ''}>${COV_GLYPH[info.status]}</td>`;
+        }).join('');
+        return `<tr><td>${date}</td>${cells}</tr>`;
+      }).join('');
+      return `<section class="panel"><div class="panel-head"><h3>覆盖矩阵</h3><small>● 有数据　◐ 部分活动缺　○ 已核实无数据（eBay 回空）　✕ 缺　　鼠标悬停看是哪个活动</small></div>
+        <div class="panel-body" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${[7, 30, 90, 0].map(n => `<button class="btn${Number(ui.coverageSpan) === n ? ' primary' : ''}" data-coverage-span="${n}" style="min-width:auto;padding:0 10px">${n ? `最近 ${n} 天` : '全部'}</button>`).join('')}<span style="color:var(--muted);font-size:12px">共 ${fmt(model.dates.length)} 天（${model.dates[0] || '—'} ~ ${model.dates[model.dates.length - 1] || '—'}）</span></div>
+        <div class="table-wrap cov-scroll"><table class="cov-matrix"><thead><tr><th>日期</th>${head}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    }
+
+    function coverageGapList(model) {
+      const blocks = model.types.map(type => {
+        const open = (ui.coverageOpen || []).includes(type.key);
+        let body;
+        if (!open) {
+          // 「类型级没有缺口」不等于「都齐了」：只要有 1 个活动有数据，类型级就算有 —— 必须把活动级也说出来
+          const typeLine = type.gaps.length
+            ? `<div class="cov-gap-line"><span class="badge red">类型级缺 ${fmt(type.gaps.length)} 天</span>${type.gaps.map(date => `<code>${date}</code>`).join('')}</div>`
+            : (type.campaignGaps && type.campaignGaps.length
+              ? `<div class="cov-gap-line"><span class="badge green">各类活动合起来覆盖完整</span><span style="color:var(--muted)">但 ${fmt(type.campaignGaps.length)} 个活动自己有缺口，点「展开活动」看</span></div>`
+              : `<div class="cov-gap-line"><span class="badge green">没有缺口</span></div>`);
+          body = typeLine;
+          if (type.blank.size) body += `<div class="cov-gap-line" style="color:var(--muted)">已核实无数据（eBay 回空，不用重下）：${[...type.blank].sort().map(date => `<code>${date}</code>`).join('')}</div>`;
+        } else {
+          body = type.campaigns.map(entry => {
+            const entryGaps = coverageGapDays(entry.have, entry.blank, entry.first, model.latest);
+            return `<div class="cov-gap-line"><strong>${esc(entry.name)}</strong>
+              <span style="color:var(--muted)">有数据 ${fmt(entry.have.size)} 天${entry.first ? `（${entry.first} ~ ${entry.latest || entry.first}）` : ''}</span>
+              ${entry.blank.size ? `<span class="badge amber">回空 ${fmt(entry.blank.size)} 天</span>` : ''}
+              ${entryGaps.length ? `<span class="badge red">缺 ${fmt(entryGaps.length)} 天</span>${entryGaps.map(date => `<code>${date}</code>`).join('')}` : `<span class="badge green">齐</span>`}</div>`;
+          }).join('') || `<div class="cov-gap-line" style="color:var(--muted)">这个类型下还没有任何活动数据</div>`;
+        }
+        return `<div class="cov-type"><div class="cov-type-head"><strong>${esc(type.label)}</strong>
+          ${type.ad ? `<button class="btn" data-coverage-toggle="${esc(type.key)}" style="min-width:auto;padding:0 10px">${open ? '收起活动' : `展开 ${fmt(type.campaigns.length)} 个活动`}</button>` : ''}
+          <span style="color:var(--muted)">${type.latestDay ? `最新数据日 ${type.latestDay}` : '还没有数据'}${type.campaignGaps && type.campaignGaps.length ? ` ｜ ${fmt(type.campaignGaps.length)} 个活动有缺` : ''}</span></div>${body}</div>`;
+      }).join('');
+      return `<section class="panel"><div class="panel-head"><h3>缺失清单</h3><small>「缺」= 既没有数据文件、也没有 eBay 回空的空报表；可直接复制给 VPS 当补数任务单</small></div>
+        <div class="panel-body cov-gaps">${blocks}</div></section>`;
+    }
+
+    function coverageGapText(model) {
+      const lines = [`报表缺口清单（产品范围：${ui.product}；数据范围 ${model.earliest} ~ ${model.latest}；生成于 ${new Date().toLocaleString('zh-CN')}）`];
+      model.types.forEach(type => {
+        lines.push('');
+        lines.push(`【${type.label}】最新数据日 ${type.latestDay || '—'}`);
+        if (type.blank.size) lines.push(`  已核实无数据（eBay 回空，不用重下）：${[...type.blank].sort().join(' ')}`);
+        const campaignGaps = type.campaigns
+          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, model.latest) }))
+          .filter(item => item.gaps.length);
+        if (!type.gaps.length && !campaignGaps.length) { lines.push('  没有缺口'); return; }
+        if (type.gaps.length) lines.push(`  类型级：缺 ${type.gaps.length} 天 ${type.gaps.join(' ')}`);
+        campaignGaps.forEach(({ entry, gaps }) => lines.push(`  · ${entry.name}\n      缺 ${gaps.length} 天：${gaps.join(' ')}`));
+      });
+      const { ranges, active } = coverageState();
+      lines.push('');
+      lines.push(`【快照类，不按日判缺】Traffic 累计 ${ranges.length} 份（最新 ${ranges.length ? String(ranges[ranges.length - 1]).split('~')[1] : '—'}）；在售名单 ${active.length} 份（最新 ${active.length ? active[active.length - 1] : '—'}）`);
+      return lines.join('\n');
+    }
+
     function dailyPage() {
-      const rows = dailyItemRecords();
-      const dates = unique(rows.map(row => row.date)).sort();
-      const itemCount = unique(rows.map(row => row.itemId)).length;
-      const trafficDates = unique(dataState.trafficRaw.filter(row => inProduct(row) && row.start && row.start === row.end).map(row => row.start)).sort();
-      const plgDates = unique(dataState.plgRaw.filter(row => inProduct(row)).map(row => row.date)).sort();
-      const missingTraffic = plgDates.filter(date => !trafficDates.includes(date));
-      return `<div class="page-head"><div><h2>Item 每日记录</h2><p>按“日期 + Item ID”合并单日 Traffic、PLG 和 PLP。</p></div><div class="actions"><button class="btn" id="dailyExportBtn">${icon('download')}导出每日记录</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传日报</button>`}</div></div>
-        ${filterPanel('每日记录')}
-        ${missingTraffic.length ? `<div class="snapshot-note">当前 PLG 有 ${fmt(plgDates.length)} 天日度数据，但单日 Traffic 有 ${fmt(trafficDates.length)} 天。缺少整体日度数据：${esc(missingTraffic.join('、'))}。请在 eBay 把 Traffic 报表开始和结束日期都设为同一天后下载。</div>` : `<div class="snapshot-note" style="color:var(--green);background:var(--green-soft);border-color:var(--green)">当前已导入的 PLG 日期均有对应单日 Traffic，可以查看完整 Item 日度表现。</div>`}
+      const model = coverageModel();
+      const head = `<div class="page-head"><div><h2>每日记录 · 报表更新情况</h2><p>判断各类报表哪天已经下载、哪天 eBay 明确回空、哪天还没下。只看文件在不在，不看指标。某天若活动本来就没跑，下载会回空 —— 把空报表入库后这里会显示成 ○ 已核实无数据。</p></div>
+        <div class="actions"><button class="btn" id="copyGapsBtn">${icon('copy')}复制缺失清单</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>`;
+      if (!model) {
+        return `${head}<div class="panel empty">${coverageState().present ? '当前店铺还没有任何报表覆盖记录。' : '这份数据里没有覆盖台账（coverage 字段）。用 app/dashboard-build.mjs 重新构建一次看板数据即可显示。'}</div>`;
+      }
+      const typeGaps = model.types.reduce((sum, type) => sum + type.gaps.length, 0);
+      const campaignGaps = model.types.reduce((sum, type) => sum + ((type.campaignGaps || []).reduce((n, item) => n + item.gaps.length, 0)), 0);
+      const totalGaps = typeGaps + campaignGaps;
+      return `${head}
         <section class="metrics">
-          ${metric('记录日期', fmt(dates.length), rangeText(dates[0], dates[dates.length - 1]))}
-          ${metric('Item 数', fmt(itemCount), '标题匹配 AD600 Elite')}
-          ${metric('PLG 日度记录', fmt(rows.filter(row => row.adImpressions || row.organicImpressions || row.totalSold).length), '广告与自然归因数据')}
-          ${metric('Traffic 日度记录', fmt(rows.filter(row => row.hasDailyTraffic).length), '整体链接表现数据')}
+          ${metric('最新数据日', model.latest, `各类报表最早 ${model.earliest}`)}
+          ${metric('还有缺口', totalGaps ? `${fmt(totalGaps)} 天` : '0 天', `类型级 ${fmt(typeGaps)} 天 ｜ 活动级 ${fmt(campaignGaps)} 天`)}
+          ${metric('已核实无数据', fmt(model.types.reduce((sum, type) => sum + type.blank.size, 0)) + ' 天', 'eBay 回空，不用重下')}
         </section>
-        <section class="panel"><div class="panel-head"><h3>每日 Item 明细</h3><small>${fmt(rows.length)} 行</small></div>${dailyRecordTable(rows)}</section>`;
-    }
-
-    // 分页条（2026-11-25 新增）：「每日记录」原来一次渲染 4000+ 行、单次 4 秒多，
-    // 而且 render() 每次交互都整页重建 → 输入筛选/点排序都会卡。改成只渲染当前页。
-    // 只影响「显示」：筛选、排序、汇总指标、导出（走数据不走 DOM）全都不变。
-    function dailyPager(total, page, pages) {
-      if (pages <= 1) return '';
-      const btn = (label, target, disabled) => `<button class="btn" data-daily-page="${target}"${disabled ? ' disabled' : ''} style="min-width:auto;padding:0 10px">${label}</button>`;
-      return `<div class="daily-pager" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:10px 12px;border-top:1px solid var(--line);color:var(--muted);font-size:12px">
-        <span>共 ${fmt(total)} 行，第 ${fmt(page)} / ${fmt(pages)} 页</span>
-        ${btn('首页', 1, page === 1)}${btn('上一页', page - 1, page === 1)}${btn('下一页', page + 1, page === pages)}${btn('末页', pages, page === pages)}
-        <label style="display:flex;align-items:center;gap:4px">每页
-          <select id="dailyPageSize">${[100, 200, 500, 1000].map(n => `<option value="${n}"${n === ui.dailyPageSize ? ' selected' : ''}>${n}</option>`).join('')}</select> 行
-        </label>
-      </div>`;
-    }
-
-    function dailyRecordTable(rows) {
-      if (!rows.length) return `<div class="empty">当前筛选范围没有每日记录</div>`;
-      const sorted = sortRows(rows.map(row => ({ ...row, status: row.hasDailyTraffic ? '完整' : '缺Traffic', organicConversion: row.organicSold / row.trafficNaturalViews || 0 })), 'daily');
-      const total = sorted.length;
-      const size = Number(ui.dailyPageSize) || 200;
-      const pages = Math.max(1, Math.ceil(total / size));
-      // 夹紧页码：筛选/换区间后行数会变，不能让用户停在一个不存在的页上
-      const page = Math.min(Math.max(1, Number(ui.dailyPageNo) || 1), pages);
-      ui.dailyPageNo = page;
-      const slice = sorted.slice((page - 1) * size, page * size);
-      return `<div class="table-wrap"><table><thead><tr>${sortHeader('日期', 'date', 'daily')}${sortHeader('Item ID', 'itemId', 'daily')}${sortHeader('标题', 'title', 'daily')}${sortHeader('数据状态', 'status', 'daily')}${sortHeader('总曝光', 'trafficTotalImpressions', 'daily')}${sortHeader('总PV', 'trafficPageViews', 'daily')}${sortHeader('站内PV', 'trafficEbayViews', 'daily')}${sortHeader('站外PV', 'trafficExternalViews', 'daily')}${sortHeader('总销量', 'trafficSold', 'daily')}${sortHeader('总 CTR', 'trafficCtr', 'daily')}${sortHeader('总转化率', 'trafficConversion', 'daily')}${sortHeader('自然曝光', 'trafficNaturalImpressions', 'daily')}${sortHeader('自然 eBay PV', 'trafficNaturalViews', 'daily')}${sortHeader('自然 SOLD', 'organicSold', 'daily')}${sortHeader('自然 CTR', 'trafficNaturalCtr', 'daily')}${sortHeader('自然转化率', 'organicConversion', 'daily')}${sortHeader('PLG曝光', 'adImpressions', 'daily')}${sortHeader('PLG点击', 'adClicks', 'daily')}${sortHeader('PLG CTR', 'ctr', 'daily')}${sortHeader('PLG销量', 'adSold', 'daily')}${sortHeader('PLG销售额', 'adSales', 'daily')}${sortHeader('PLG广告费', 'adFees', 'daily')}${sortHeader('PLG ROAS', 'roas', 'daily')}${sortHeader('PLP曝光', 'plpImpressions', 'daily')}${sortHeader('PLP点击', 'plpClicks', 'daily')}${sortHeader('PLP广告费', 'plpFees', 'daily')}${sortHeader('PLP ROAS', 'plpRoas', 'daily')}</tr></thead><tbody>${slice.map(row => `<tr>
-        <td>${row.date}</td><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td style="text-align:left"><span class="badge ${row.hasDailyTraffic ? 'green' : 'amber'}">${row.hasDailyTraffic ? '完整' : '缺Traffic'}</span></td>
-        <td>${row.hasDailyTraffic ? fmt(row.trafficTotalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficPageViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficEbayViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficExternalViews) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficSold) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.trafficConversion) : '—'}</td>
-        <td>${row.hasDailyTraffic ? fmt(row.trafficNaturalImpressions) : '—'}</td><td>${row.hasDailyTraffic ? fmt(row.trafficNaturalViews) : '—'}</td><td>${fmt(row.organicSold)}</td><td>${row.hasDailyTraffic ? pct(row.trafficNaturalCtr) : '—'}</td><td>${row.hasDailyTraffic ? pct(row.organicSold / row.trafficNaturalViews || 0) : '—'}</td>
-        <td>${fmt(row.adImpressions)}</td><td>${fmt(row.adClicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.adSold)}</td><td>${money(row.adSales)}</td><td>${money(row.adFees)}</td><td>${fmt(row.roas, 2)}</td><td>${row.plpImpressions == null ? '—' : fmt(row.plpImpressions)}</td><td>${row.plpClicks == null ? '—' : fmt(row.plpClicks)}</td><td>${row.plpFees == null ? '—' : money(row.plpFees)}</td><td>${row.plpRoas == null ? '—' : fmt(row.plpRoas, 2)}</td>
-      </tr>`).join('')}</tbody></table></div>${dailyPager(total, page, pages)}`;
+        ${coverageSummary(model)}
+        ${coverageMatrix(model)}
+        ${coverageGapList(model)}`;
     }
 
     function importPage() {
@@ -1744,15 +1951,30 @@
         render();
       }));
       document.querySelectorAll('[data-detail]').forEach(button => button.addEventListener('click', () => { ui.detail = button.dataset.detail; render(); }));
-      // 「每日记录」分页（2026-11-25 新增）
-      document.querySelectorAll('[data-daily-page]').forEach(button => button.addEventListener('click', () => {
-        ui.dailyPageNo = Number(button.dataset.dailyPage) || 1;
+      // 「每日记录 · 报表更新情况」：显示窗口切换与活动展开（2026-11-25 改版）
+      document.querySelectorAll('[data-coverage-span]').forEach(button => button.addEventListener('click', () => {
+        ui.coverageSpan = Number(button.dataset.coverageSpan) || 0;
         render();
       }));
-      document.getElementById('dailyPageSize')?.addEventListener('change', e => {
-        ui.dailyPageSize = Number(e.target.value) || 200;
-        ui.dailyPageNo = 1;
+      document.querySelectorAll('[data-coverage-toggle]').forEach(button => button.addEventListener('click', () => {
+        const key = button.dataset.coverageToggle;
+        ui.coverageOpen = (ui.coverageOpen || []).includes(key) ? ui.coverageOpen.filter(item => item !== key) : [...(ui.coverageOpen || []), key];
         render();
+      }));
+      document.getElementById('copyGapsBtn')?.addEventListener('click', async () => {
+        const model = coverageModel();
+        if (!model) return toast('当前没有覆盖台账可复制。', true);
+        const content = coverageGapText(model);
+        try { await navigator.clipboard.writeText(content); toast('缺失清单已复制到剪贴板'); }
+        catch {
+          const area = document.createElement('textarea');
+          area.value = content;
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand('copy');
+          area.remove();
+          toast('缺失清单已复制到剪贴板');
+        }
       });
       document.querySelectorAll('th[data-sort-key]').forEach(header => header.addEventListener('click', () => {
         const sameColumn = ui.sort.table === header.dataset.sortTable && ui.sort.key === header.dataset.sortKey;
@@ -1761,7 +1983,6 @@
       }));
       ['uploadBtn', 'topUploadBtn'].forEach(id => document.getElementById(id)?.addEventListener('click', () => document.getElementById('fileInput').click()));
       document.getElementById('exportBtn')?.addEventListener('click', exportData);
-      document.getElementById('dailyExportBtn')?.addEventListener('click', exportDailyData);
       document.getElementById('adTermsExportBtn')?.addEventListener('click', event => exportAdTerms(event.currentTarget.dataset.exportTerms));
       document.getElementById('clearBtn')?.addEventListener('click', clearData);
       document.getElementById('shopSelect')?.addEventListener('change', e => {
@@ -1771,9 +1992,9 @@
         location.href = url.toString();
       });
       const query = document.getElementById('queryFilter');
-      query?.addEventListener('change', e => { ui.query = e.target.value.trim(); ui.dailyPageNo = 1; render(); });
-      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; ui.dailyPageNo = 1; render(); });
-      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; ui.dailyPageNo = 1; render(); });
+      query?.addEventListener('change', e => { ui.query = e.target.value.trim(); render(); });
+      document.getElementById('startFilter')?.addEventListener('change', e => { ui.start = e.target.value; ui.trafficPeriod = 'custom'; render(); });
+      document.getElementById('endFilter')?.addEventListener('change', e => { ui.end = e.target.value; ui.trafficPeriod = 'custom'; render(); });
       document.getElementById('trafficSourceFilter')?.addEventListener('change', e => { ui.trafficSource = e.target.value; render(); });
       document.getElementById('listingStatusFilter')?.addEventListener('change', e => { ui.listingStatus = e.target.value; render(); });
       document.getElementById('trafficPeriodFilter')?.addEventListener('change', e => {
@@ -1891,29 +2112,13 @@
       XLSX.writeFile(workbook, 'eBay-Item链接表现-' + new Date().toLocaleDateString('sv-SE') + '.xlsx');
     }
 
-    function exportDailyData() {
-      const rows = dailyItemRecords().map(row => ({
-        日期: row.date, 'item ID': row.itemId, 链接: row.link, 标题: row.title, 数据状态: row.hasDailyTraffic ? '完整' : '缺Traffic',
-        '链接汇总-总曝光': row.hasDailyTraffic ? row.trafficTotalImpressions : '', '链接汇总-总PV': row.hasDailyTraffic ? row.trafficPageViews : '', '链接汇总-站内PV': row.hasDailyTraffic ? row.trafficEbayViews : '', '链接汇总-站外PV': row.hasDailyTraffic ? row.trafficExternalViews : '',
-        '链接汇总-Quantity sold': row.hasDailyTraffic ? row.trafficSold : '', '链接汇总-CTR': row.hasDailyTraffic ? row.trafficCtr : '', '链接汇总-转化率': row.hasDailyTraffic ? row.trafficConversion : '',
-        '自然-曝光': row.hasDailyTraffic ? row.trafficNaturalImpressions : '', '自然-eBay Page views': row.hasDailyTraffic ? row.trafficNaturalViews : '', '自然-SOLD': row.organicSold,
-        '自然-CTR': row.hasDailyTraffic ? row.trafficNaturalCtr : '', '自然-转化率': row.hasDailyTraffic ? row.organicSold / row.trafficNaturalViews || 0 : '',
-        'PLG-曝光': row.adImpressions, 'PLG-点击': row.adClicks, 'PLG-CTR': row.ctr, 'PLG-广告销量': row.adSold, 'PLG-销售额': row.adSales, 'PLG-广告费': row.adFees, 'PLG-ROAS': row.roas,
-        'PLP-曝光': row.plpImpressions ?? '', 'PLP-点击': row.plpClicks ?? '', 'PLP-CTR': row.plpImpressions == null ? '' : row.plpCtr, 'PLP-销量': row.plpSold ?? '', 'PLP-销售额': row.plpSales ?? '', 'PLP-广告费': row.plpFees ?? '', 'PLP-ROAS': row.plpImpressions == null ? '' : row.plpRoas
-      }));
-      if (!rows.length) return toast('当前筛选范围没有可导出的每日记录。', true);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'Item每日记录');
-      XLSX.writeFile(workbook, `eBay-Item每日记录-${new Date().toISOString().slice(0,10)}.xlsx`);
-    }
-
     async function clearData() {
       if (!confirm('确定清空当前浏览器中保存的所有报表数据吗？')) return;
       fullState = structuredClone(DEFAULT_STATE);
       skuByItemId = new Map();
       applyProduct();
       await saveState();
-      ui = { page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
+      ui = { coverageSpan: 30, coverageOpen: [], page: 'import', product: 'AD600 Elite', adTab: 'overview', campaigns: [], adFilters: {}, query: '', start: '', end: '', trafficPeriod: '', trafficSource: 'daily', listingStatus: 'active', detail: 'item', sort: { table: '', key: '', dir: 0 } };
       render();
       toast('数据已清空。');
     }
