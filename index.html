@@ -1819,10 +1819,47 @@
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
         ${listingStatusPanel()}
+        ${stockHealthPanel(rows)}
         <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
         <div class="snapshot-note">「当前售价」取该链接最近一次导出报表里的当前价（Price (Current or Last Price)，已含当时生效的促销/降价），不是标价、也不是成交均价；同一链接在区间内调过价时，这里显示最新那个价。</div>
         ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
         <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(rows.length)} 个 Item</small></div>${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
+    }
+
+    // 库存与链接健康巡检（2026-11-26）：运营每天该看的四种链接 —— 断货 / 低库存（可售天数 ≤7）/
+    // 零曝光僵尸 / 正常。可售天数＝库存 ÷ 近 7 日日均销量（Traffic 日度；没有销量的不编造，显示「—」）。
+    function stockHealthPanel(rows) {
+      const latest = reportBounds().max || '';
+      const within = (day, days) => Boolean(day && latest && day > covAddDays(latest, -days) && day <= latest);
+      const sold7 = new Map(), impressions14 = new Map();
+      (dataState.trafficRaw || []).forEach(row => {
+        const day = row.start === row.end ? row.start : '';
+        if (!day) return;
+        if (within(day, 7)) sold7.set(row.itemId, (sold7.get(row.itemId) || 0) + (Number(row.quantitySold) || 0));
+        if (within(day, 14)) impressions14.set(row.itemId, (impressions14.get(row.itemId) || 0) + (Number(row.totalImpressions) || 0));
+      });
+      const list = rows.filter(row => row.listingStatus === 'active').map(row => {
+        const stock = row.rosterAvailable == null ? null : Number(row.rosterAvailable);
+        const sold = sold7.get(row.itemId) || 0;
+        const perDay = sold / 7;
+        const cover = stock != null && perDay > 0 ? Math.round((stock / perDay) * 10) / 10 : null;
+        const impressions = impressions14.get(row.itemId) || 0;
+        const [state, tone] = stock === 0 ? ['断货', 'red']
+          : (cover != null && cover <= 7) ? ['低库存', 'amber']
+            : impressions === 0 ? ['零曝光', 'amber'] : ['正常', 'green'];
+        return { ...row, stock, sold7: sold, cover, impressions14: impressions, healthState: state, healthTone: tone };
+      }).sort((a, b) => (a.cover == null ? Number.MAX_SAFE_INTEGER : a.cover) - (b.cover == null ? Number.MAX_SAFE_INTEGER : b.cover) || b.sold7 - a.sold7);
+      if (!list.length) return '';
+      const counts = state => list.filter(row => row.healthState === state).length;
+      const body = list.slice(0, 30).map(row => `<tr><td><a href="${esc(row.link)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(row.itemId)}</a></td><td class="item-title" title="${esc(row.title)}">${esc(row.title)}</td><td>${row.stock == null ? '—' : fmt(row.stock)}</td><td>${fmt(row.sold7)}</td><td>${row.cover == null ? '—' : fmt(row.cover, 1) + ' 天'}</td><td>${fmt(row.impressions14)}</td><td class="t-text"><span class="badge ${row.healthTone}">${row.healthState}</span></td></tr>`).join('');
+      return `<section class="metrics" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+          ${metric('断货（在售但库存 0）', fmt(counts('断货')), '名单库存＝0，先确认是否要补货/下架')}
+          ${metric('低库存（可售 ≤7 天）', fmt(counts('低库存')), '库存 ÷ 近 7 日日均销量')}
+          ${metric('零曝光（近 14 天）', fmt(counts('零曝光')), '有流量记录的链接近 14 天 0 曝光，检查是否被降权/断码')}
+          ${metric('在售链接合计', fmt(list.length), `名单日期 ${esc(dataState.activeListings?.date || '—')}`)}
+        </section>
+        <section class="panel"><div class="panel-head"><h3>库存与链接健康</h3><small>按「可售天数」升序，最多 30 行；可售天数＝库存 ÷ 近 7 日日均销量</small></div>
+          <div class="table-wrap"><table><thead><tr><th>Item ID</th><th class="t-text">标题</th><th>库存</th><th>近 7 日销量</th><th>可售天数</th><th>近 14 日曝光</th><th class="t-text">状态</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
     }
 
     function itemFullTable(rows, trafficRows, plgStart, plgEnd) {
@@ -1925,7 +1962,9 @@
         item.adTypes.add(row.adType); item.dates.add(row.date); item.items.add(row.itemId);
         ['impressions','clicks','sold','sales','adFees'].forEach(field => item[field] += row[field] || 0);
       });
-      return [...map.values()].map(row => ({ ...row, adType: [...row.adTypes].join('/'), days: row.dates.size, itemCount: row.items.size, ctr: row.clicks / row.impressions || 0, conversion: row.sold / row.clicks || 0, avgCpc: row.adFees / row.clicks || 0, roas: row.sales / row.adFees || 0, startInfo: campaignStartOf(row.campaign) }))
+      return [...map.values()].map(row => ({ ...row, adType: [...row.adTypes].join('/'), days: row.dates.size, itemCount: row.items.size, ctr: row.clicks / row.impressions || 0, conversion: row.sold / row.clicks || 0, avgCpc: row.adFees / row.clicks || 0, roas: row.sales / row.adFees || 0, acos: row.sales > 0 ? row.adFees / row.sales : null, startInfo: campaignStartOf(row.campaign) }))
+        // 效率分级（2026-11-26）：ROAS ≥4 高效 / 2~4 观察 / <2 待优化 —— 只是为了排序与一眼扫，阈值可按自己标准改。
+        .map(row => ({ ...row, grade: !(row.adFees > 0) ? '—' : (row.roas >= 4 ? '高效' : row.roas >= 2 ? '观察' : '待优化') }))
         // 扁平排序键：sortRows 只认 a[key]，嵌套字段排不了
         .map(row => ({ ...row, adStart: row.startInfo.show || '', statusInfo: adStatusSummary(row.campaign) }))
         // 汇总表要按「刊登状态」排序 → 得有个扁平排序键（sortRows 只认 a[key]）
@@ -1960,8 +1999,8 @@
       const campaigns = adCampaignRows();
       const impressions = sum(campaigns, 'impressions'), clicks = sum(campaigns, 'clicks'), sold = sum(campaigns, 'sold'), sales = sum(campaigns, 'sales'), fees = sum(campaigns, 'adFees');
       const cards = [...campaigns].sort((a,b) => b.impressions-a.impressions).map(row => `<article class="panel campaign-card"><div class="campaign-card-head"><strong>${esc(row.campaign)}</strong><span class="badge ${row.adType.includes('PLP') ? 'blue' : 'amber'}">${esc(row.adType)}</span></div><div class="campaign-card-grid"><div><span>起始日</span><strong title="${esc(`报表标注 ${row.startInfo?.claim || '—'}；我方最早有数据 ${row.startInfo?.earliest || '—'}`)}">${esc(row.startInfo?.show || '—')}${row.startInfo?.earliest && row.startInfo?.claim && row.startInfo.earliest < row.startInfo.claim ? ' *' : ''}</strong></div><div><span>曝光</span><strong>${fmt(row.impressions)}</strong></div><div><span>点击 / CTR</span><strong>${fmt(row.clicks)} / ${pct(row.ctr)}</strong></div><div><span>销量 / CVR</span><strong>${fmt(row.sold)} / ${pct(row.conversion)}</strong></div><div><span>广告费</span><strong>${money(row.adFees)}</strong></div><div><span>ROAS</span><strong>${fmt(row.roas,2)}</strong></div><div><span>平均 CPC</span><strong>${money(row.avgCpc)}</strong></div><div><span>销售额</span><strong>${money(row.sales)}</strong></div><div><span>Item 数</span><strong>${fmt(row.itemCount)}</strong></div>${adStatusText(row.statusInfo) ? `<div><span>刊登状态</span><strong title="${esc(adStatusRaw(row.statusInfo))}">${esc(adStatusText(row.statusInfo))}</strong></div>` : ''}<div><span>数据天数</span><strong>${fmt(row.days)}</strong></div></div></article>`).join('');
-      const table = sortRows(campaigns, 'campaigns').map(row => `<tr><td>${esc(row.campaign)}</td><td class="t-text">${esc(row.adType)}</td>${startCell(row)}<td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td class="t-text" title="${esc(adStatusRaw(row.statusInfo))}">${esc(adStatusText(row.statusInfo) || '—')}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.avgCpc)}</td><td>${fmt(row.roas,2)}</td></tr>`).join('');
-      return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="snapshot-note">「起始日」取报表标注的 Campaign start date 与我方最早有数据日中**更早**的那个（带 <b>*</b> 表示报表标注偏晚，悬停可看两个值）—— 用它判断某天缺数据是否发生在活动开始之前。</div><div class="table-wrap"><table id="campaignTable" class="table-compact"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns','t-text')}${sortHeader('起始日','adStart','campaigns','t-text')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('刊登状态','statusText','campaigns','t-text')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}</tr></thead><tbody>${table}</tbody></table></div></section>`;
+      const table = sortRows(campaigns, 'campaigns').map(row => `<tr><td>${esc(row.campaign)}</td><td class="t-text">${esc(row.adType)}</td>${startCell(row)}<td>${fmt(row.days)}</td><td>${fmt(row.itemCount)}</td><td class="t-text" title="${esc(adStatusRaw(row.statusInfo))}">${esc(adStatusText(row.statusInfo) || '—')}</td><td>${fmt(row.impressions)}</td><td>${fmt(row.clicks)}</td><td>${pct(row.ctr)}</td><td>${fmt(row.sold)}</td><td>${pct(row.conversion)}</td><td>${money(row.sales)}</td><td>${money(row.adFees)}</td><td>${money(row.avgCpc)}</td><td>${fmt(row.roas,2)}</td><td>${row.acos == null ? '—' : pct(row.acos)}</td><td class="t-text"><span class="badge ${row.grade === '高效' ? 'green' : row.grade === '观察' ? 'amber' : row.grade === '待优化' ? 'red' : ''}">${row.grade}</span></td></tr>`).join('');
+      return `<section class="metrics">${metric('广告曝光',fmt(impressions),`${fmt(campaigns.length)} 个 Campaign`)}${metric('广告点击',fmt(clicks),`CTR ${pct(clicks/impressions||0)}`)}${metric('广告销量',fmt(sold),`CVR ${pct(sold/clicks||0)}`)}${metric('广告费',money(fees),`平均 CPC ${money(fees/clicks||0)}`)}${metric('广告销售额',money(sales),`ROAS ${fmt(sales/fees||0,2)}`)}</section><div class="campaign-cards">${cards}</div><section class="dashboard-grid"><div class="panel"><div class="panel-head"><h3>Campaign 每日曝光趋势</h3></div><div id="campaignImpressionsChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h3>Campaign 每日点击趋势</h3></div><div id="campaignClicksChart" class="chart"></div></div></section><section class="panel"><div class="panel-head"><h3>Campaign 每日广告费趋势</h3></div><div id="campaignFeesChart" class="chart"></div></section><section class="panel snapshot"><div class="panel-head"><h3>Campaign 汇总表</h3></div><div class="snapshot-note">「起始日」取报表标注的 Campaign start date 与我方最早有数据日中**更早**的那个（带 <b>*</b> 表示报表标注偏晚，悬停可看两个值）—— 用它判断某天缺数据是否发生在活动开始之前。</div><div class="table-wrap"><table id="campaignTable" class="table-compact"><thead><tr>${sortHeader('Campaign','campaign','campaigns')}${sortHeader('类型','adType','campaigns','t-text')}${sortHeader('起始日','adStart','campaigns','t-text')}${sortHeader('天数','days','campaigns')}${sortHeader('Item数','itemCount','campaigns')}${sortHeader('刊登状态','statusText','campaigns','t-text')}${sortHeader('曝光','impressions','campaigns')}${sortHeader('点击','clicks','campaigns')}${sortHeader('CTR','ctr','campaigns')}${sortHeader('销量','sold','campaigns')}${sortHeader('CVR','conversion','campaigns')}${sortHeader('销售额','sales','campaigns')}${sortHeader('广告费','adFees','campaigns')}${sortHeader('平均CPC','avgCpc','campaigns')}${sortHeader('ROAS','roas','campaigns')}${sortHeader('ACOS','acos','campaigns')}<th class="t-text">效率</th></tr></thead><tbody>${table}</tbody></table></div></section>`;
     }
 
     function adFilterState(tab = ui.adTab) {
@@ -2080,6 +2119,39 @@
       return { isKeyword, source, filtered, summary, rows };
     }
 
+    // 广告诊断（2026-11-26）：运营/投放每天该动手的两件事 —— ① 花了钱没出单的词（候选加否定）
+    // ② 出单效率最高的词（候选提价/加预算）。口径＝当前日期/活动/机型筛选下的词汇总行。
+    // 阈值（可调）：无单浪费＝点击 ≥ 3 且销量 0；ROAS 分级 2 / 4。
+    function adDiagnosisPage() {
+      const searches = summarizeAdRows(adTermsRows('searches').filtered, 'searches');
+      const keywords = summarizeAdRows(adTermsRows('keywords').filtered, 'keywords');
+      const wordOf = (row, kind) => kind === 'searches' ? (row.searchQuery || '（合并行）') : row.keyword;
+      const panel = (kind, rows, title, hint) => {
+        if (!rows.length) return `<section class="panel"><div class="panel-head"><h3>${title}</h3><small>${hint}</small></div><div class="empty" style="padding:22px">当前筛选下没有符合条件的行</div></section>`;
+        const body = rows.map(row => {
+          const roas = row.adFees > 0 ? row.sales / row.adFees : null;
+          const badge = kind === 'waste' ? '<span class="badge red">建议加否定</span>'
+            : roas != null && roas >= 4 ? '<span class="badge green">高效·可提价</span>'
+              : roas != null && roas >= 2 ? '<span class="badge amber">持平·可观察</span>' : '<span class="badge">低效</span>';
+          return `<tr><td class="t-text" title="${esc(wordOf(row, title.includes('搜索词') ? 'searches' : 'keywords'))}">${esc((wordOf(row, title.includes('搜索词') ? 'searches' : 'keywords') || '').slice(0, 46))}</td><td class="t-text">${esc(row.matchType || '—')}</td><td class="t-text">${esc(String(row.campaign || '').replace(/US\.TD\.(PLP|PLG)\./, '').slice(0, 26))}</td><td>${fmt(row.clicks || 0)}</td><td>${money(row.adFees || 0)}</td><td>${fmt(row.sold || 0)}</td><td>${money(row.sales || 0)}</td><td>${roas == null ? '—' : fmt(roas, 2)}</td><td class="t-text">${badge}</td></tr>`;
+        }).join('');
+        return `<section class="panel"><div class="panel-head"><h3>${title}</h3><small>${hint}</small></div>
+          <div class="table-wrap"><table><thead><tr><th class="t-text">词</th><th class="t-text">匹配方式</th><th class="t-text">活动</th><th>点击</th><th>广告费</th><th>销量</th><th>销售额</th><th>ROAS</th><th class="t-text">建议</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
+      };
+      const wasteOf = rows => rows.filter(row => (row.clicks || 0) >= 3 && !(row.sold > 0)).sort((a, b) => (b.adFees || 0) - (a.adFees || 0)).slice(0, 20);
+      const winnerOf = rows => rows.filter(row => row.sold > 0).sort((a, b) => (b.sales / (b.adFees || 1)) - (a.sales / (a.adFees || 1))).slice(0, 20);
+      return `<div class="metrics" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+          ${metric('候选否定词（搜索词）', fmt(wasteOf(searches).length), '点击 ≥3 且 0 出单')}
+          ${metric('出单词（搜索词）', fmt(winnerOf(searches).length), '本期有出单')}
+          ${metric('候选否定词（关键词）', fmt(wasteOf(keywords).length), '点击 ≥3 且 0 出单')}
+          ${metric('出单词（关键词）', fmt(winnerOf(keywords).length), '本期有出单')}
+        </div>
+        ${panel('waste', wasteOf(searches), '搜索词 · 花钱无单（候选加否定）', '按广告费降序，最多 20 行；已在搜索词报表里按「搜索词＋匹配方式」合并')}
+        ${panel('winner', winnerOf(searches), '搜索词 · 出单词（候选提价）', '按 ROAS 降序，最多 20 行；ROAS ≥ 4 标「高效」')}
+        ${panel('waste', wasteOf(keywords), '关键词 · 花钱无单（候选加否定）', '按广告费降序，最多 20 行；同一关键词＋匹配方式合并')}
+        ${panel('winner', winnerOf(keywords), '关键词 · 出单词（候选提价）', '按 ROAS 降序，最多 20 行')}`;
+    }
+
     function adTermsTable(type) {
       const { isKeyword, source, filtered, summary, rows } = adTermsRows(type);
       const body = rows.map(row => `<tr><td class="t-text">${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}${isKeyword ? '' : `<td class="t-text">${row.searchQuery ? esc(row.searchQuery) : '—'}</td>`}<td class="t-text">${esc(row.keyword)}</td><td class="t-text">${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}<td>${adValue(row.avgCostPerSale, money)}</td><td class="t-text">${esc(row.campaign)}</td></tr>`).join('');
@@ -2149,8 +2221,8 @@
 
 
     function advertisingPage() {
-      const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词']];
-      const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : ui.adTab === 'plp' ? adLinksTable('PLP') : adTermsTable(ui.adTab);
+      const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词'],['diagnosis','诊断']];
+      const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : ui.adTab === 'plp' ? adLinksTable('PLP') : ui.adTab === 'diagnosis' ? adDiagnosisPage() : adTermsTable(ui.adTab);
       const bounds = reportBounds();
       return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。<strong>与后台对账请先比钱</strong>（销售额／广告费／销量）：eBay 的曝光、点击属近实时数据、约 72 小时内继续上调，看板显示的是导出快照值 —— 详见「数据源说明 → 数据新鲜度」。</p></div></div><div class="panel toolbar"><div class="field field-date"><label for="startFilter">开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field field-date"><label for="endFilter">结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><span class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（广告页只看广告数据）</span></div>${campaignChips()}${adsKpiOverview()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
     }
