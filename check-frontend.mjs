@@ -44,7 +44,7 @@ const context = vm.createContext({
   setTimeout: () => 0, clearTimeout: noop, setInterval: () => 0,
   alert: noop, confirm: () => false, requestAnimationFrame: noop
 });
-vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, listingStartDate, reportBounds, REUSED_LINK_PRODUCT, isForeignEra, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN };', context);
+vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, listingStartDate, reportBounds, REUSED_LINK_PRODUCT, isForeignEra, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN, campaignStartOf, adCampaignRows };', context);
 const api = context.__api;
 
 let passed = 0;
@@ -670,6 +670,51 @@ ok('复用链接全计入 900E：曝光保留、前身期出单剔零并留痕�
 
   api.ui.start = ''; api.ui.end = ''; api.ui.trafficPeriod = ''; api.ui.trafficSource = 'daily';
   api.setUiProduct('all');
+  api.applyProduct();
+});
+
+ok('活动起始日：显示 min(报表标注, 我方最早数据)（2026-11-25 新增）', () => {
+  const restore = () => api.setFullState({
+    plgRaw: bundle.plgRaw, trafficRaw: bundle.trafficRaw, itemHistory: bundle.itemHistory,
+    activeListings: bundle.activeListings, sources: bundle.sources, ads: bundle.ads,
+    products: bundle.products, productCounts: bundle.productCounts
+  });
+  restore();
+  api.setUiProduct('all');
+  api.applyProduct();
+  const ex = api.adCampaignRows().find(row => row.campaign === 'US.TD.AD600 ELITE.PLP.ML.EX.CSGP');
+  assert.ok(ex, 'Campaign 汇总里应能找到 EX 活动');
+  assert.equal(ex.startInfo.claim, '2026-10-08', `报表标注起始日应为 2026-10-08，实际 ${ex.startInfo.claim}`);
+  assert.equal(ex.startInfo.show, '2026-10-08', `显示值应为 2026-10-08，实际 ${ex.startInfo.show}`);
+  assert.equal(ex.adStart, '2026-10-08', '扁平排序键 adStart 应等于显示值（sortRows 只认扁平字段）');
+
+  // 报表标注**偏晚**的情况（新店 CSGP 实测：标 11-17、真实数据自 11-10）→ 显示值必须取更早的那个
+  const fakeAds = structuredClone(bundle.ads);
+  fakeAds.campaignStarts = { '假活动.X': '2026-11-17' };
+  fakeAds.campaignEarliest = { '假活动.X': '2026-11-10' };
+  api.setFullState({
+    plgRaw: [], trafficRaw: [], itemHistory: {}, activeListings: null, sources: [],
+    products: bundle.products, productCounts: bundle.productCounts, ads: fakeAds
+  });
+  api.applyProduct();   // campaignStartOf 读的是 dataState，必须刷新
+  const late = api.campaignStartOf('假活动.X');
+  assert.equal(late.claim, '2026-11-17');
+  assert.equal(late.earliest, '2026-11-10');
+  assert.equal(late.show, '2026-11-10', `报表标注偏晚时显示值应取最早数据日，实际 ${late.show}`);
+
+  // 报表没标注起始日时，退回「我方最早数据」而不是留空
+  fakeAds.campaignStarts = {};
+  fakeAds.campaignEarliest = { '假活动.Y': '2026-11-12' };
+  api.setFullState({
+    plgRaw: [], trafficRaw: [], itemHistory: {}, activeListings: null, sources: [],
+    products: bundle.products, productCounts: bundle.productCounts, ads: fakeAds
+  });
+  api.applyProduct();
+  assert.equal(api.campaignStartOf('假活动.Y').show, '2026-11-12');
+  // 两者都没有 → 空（界面显示 —），不能瞎猜
+  assert.equal(api.campaignStartOf('假活动.Z').show, '');
+
+  restore();
   api.applyProduct();
 });
 
