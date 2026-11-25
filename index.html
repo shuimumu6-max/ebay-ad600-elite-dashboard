@@ -1345,6 +1345,14 @@
       return rows.filter(row => row.rosterPromoName === f);
     }
 
+    // 促销筛选下拉（两处复用：经营看板的 Item 整体链接表现 + Item 完整明细页）
+    function promoFilterSelect(allRows) {
+      const options = [['all', '全部'], ['__any__', '参加活动（任一）'], ['__none__', '未参加任何活动'],
+        ...[...new Set((allRows || []).map(r => r.rosterPromoName).filter(Boolean))].sort().map(n => [n, n])];
+      return `<div class="field field-auto"><label for="itemPromoFilter">促销活动</label><select class="input" id="itemPromoFilter">${options
+        .map(([value, label]) => `<option value="${esc(value)}" ${(ui.promoFilter || 'all') === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>`;
+    }
+
     // Item 表工具条（2026-11-25 新增）：搜索（与顶部同一个值）+ 在售状态 + 促销活动 + 显示行数。
     // 在售状态只筛本表；搜索与日期沿用整页口径（与原来一致）。
     function itemTableToolbar(allRows, shownRows) {
@@ -1354,11 +1362,7 @@
       return `<div class="table-toolbar">
         <div class="field field-search"><label for="itemTableQuery">搜索 Item ID 或标题</label><input class="input" id="itemTableQuery" type="search" value="${esc(ui.query)}" placeholder="输入 Item ID 或关键词" /></div>
         <div class="field field-auto"><label for="itemStatusFilter">在售状态</label><select class="input" id="itemStatusFilter">${options.map(([value, label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
-        <div class="field field-auto"><label for="itemPromoFilter">促销活动</label><select class="input" id="itemPromoFilter">
-          ${[['all', '全部'], ['__any__', '参加活动（任一）'], ['__none__', '未参加任何活动'],
-            ...[...new Set(allRows.map(r => r.rosterPromoName).filter(Boolean))].sort().map(n => [n, n])]
-            .map(([value, label]) => `<option value=\"${esc(value)}\" ${(ui.promoFilter || 'all') === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
-        </select></div>
+        ${promoFilterSelect(allRows)}
         <span class="table-count">显示 ${fmt(shownRows.length)} / ${fmt(allRows.length)} 个 Item${snapshot ? `（在售名单 ${esc(snapshot.date)}）` : '（尚无在售名单，状态待确认）'}　·　在售状态与促销筛选只筛本表，搜索与日期作用于整页${dataState.promotions?.tagged ? `　·　<b>促销数据</b>：${esc(String(dataState.promotions.at || '').slice(0, 10))} 抓取，${fmt(dataState.promotions.campaigns)} 个活动覆盖 ${fmt(dataState.promotions.tagged)} 个链接（其余链接显示「—」＝本次抓取未覆盖，不代表没有活动）` : ''}</span>
       </div>`;
     }
@@ -1852,13 +1856,15 @@
       const [plgStart, plgEnd] = plgDateRange();
       const [plpStart, plpEnd] = plpDateRange();
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
+      const tableRows = filterByPromo(rows);
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
         ${listingStatusPanel()}
+        <div class="table-toolbar">${promoFilterSelect(rows)}<span class="table-count">促销筛选只筛本表（在售状态用上面的卡）</span></div>
         <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
         <div class="snapshot-note">「当前售价」取该链接最近一次导出报表里的当前价（Price (Current or Last Price)，已含当时生效的促销/降价），不是标价、也不是成交均价；同一链接在区间内调过价时，这里显示最新那个价。</div>
         ${rows.some(row => row.salesMismatch) ? `<div class="snapshot-note">${esc(salesReconciliationNote(rows))}</div>` : ''}
-        <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(rows.length)} 个 Item</small></div>${itemFullTable(rows, trafficRows, plgStart, plgEnd)}</section>`;
+        <section class="panel"><div class="panel-head"><h3>Item 完整明细</h3><small>当前筛选 ${fmt(tableRows.length)} 个 Item</small></div>${itemFullTable(tableRows, trafficRows, plgStart, plgEnd)}</section>`;
     }
 
     function itemFullTable(rows, trafficRows, plgStart, plgEnd) {
@@ -2646,7 +2652,7 @@
       const samePeriod = Boolean(trafficSelection().complete && trafficRows.length && trafficRows[0].start === plgStart && trafficRows[0].end === plgEnd);
       const ordered = sortRows(rows.map(row => ({ ...row, naturalConversion: samePeriod && row.hasTraffic && row.hasPlg ? row.naturalSold / row.naturalViews || 0 : null })), 'detail');
       const container = document.createElement('div');
-      container.innerHTML = itemFullTable(rows, trafficRows, plgStart, plgEnd);
+      container.innerHTML = itemFullTable(filterByPromo(rows), trafficRows, plgStart, plgEnd);
       container.querySelectorAll('.sort-indicator').forEach(node => node.remove());
       const table = container.querySelector('table');
       const trafficRange = trafficRows.length ? rangeText(trafficRows[0].start, trafficRows[0].end) : '未上传';
