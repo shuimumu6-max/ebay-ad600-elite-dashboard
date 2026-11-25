@@ -2482,6 +2482,36 @@
       document.body.appendChild(node);
     }
 
+    // 通用表格导出（2026-11-26）：**每个有表的 panel 都自动获得一个「导出本表」按钮** ——
+    // 所见即所得：导出的是当前页面上渲染出来的内容（已排序、已筛选、含分组表头），
+    // 不再逐个表写一遍导出逻辑，以后新加的表也自动带上。
+    function exportVisibleTable(table, title) {
+      const workbook = XLSX.utils.book_new();
+      const sheet = XLSX.utils.aoa_to_sheet([[title], [`导出时间 ${new Date().toLocaleString('sv-SE')} ｜ 仅含当前页面筛选/排序后的内容`]]);
+      XLSX.utils.sheet_add_dom(sheet, table, { origin: 'A4', raw: true });
+      XLSX.utils.book_append_sheet(workbook, sheet, '数据');
+      const shop = document.querySelector('.shop-select option:checked')?.textContent || '';
+      XLSX.writeFile(workbook, `eBay-${title}-${shop ? shop + '-' : ''}${new Date().toLocaleDateString('sv-SE')}.xlsx`);
+      toast(`已导出「${title}」`);
+    }
+    function attachTableExports() {
+      document.querySelectorAll('.panel').forEach(panel => {
+        const table = panel.querySelector('.table-wrap table');
+        const head = panel.querySelector('.panel-head');
+        if (!table || !head || head.querySelector('[data-export-table]') || head.querySelector('[id$="ExportBtn"]')) return;
+        const title = clean(head.querySelector('h3')?.textContent || '数据表');
+        const actions = document.createElement('span');
+        actions.className = 'actions';
+        const button = document.createElement('button');
+        button.className = 'btn';
+        button.type = 'button';
+        button.dataset.exportTable = '1';
+        button.innerHTML = `${icon('download')}导出本表`;
+        button.addEventListener('click', () => exportVisibleTable(table, title));
+        actions.appendChild(button);
+        head.appendChild(actions);
+      });
+    }
     function render() {
       charts.forEach(chart => chart.dispose());
       charts = [];
@@ -2496,6 +2526,7 @@
       const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'ads' ? advertisingPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'sources' ? sourcesPage() : detailPage();
       document.getElementById('app').innerHTML = baseLayout(productNotice() + pageContent);
       bindEvents();
+      attachTableExports();
     }
 
     document.getElementById('fileInput').addEventListener('change', event => importFiles([...event.target.files]));
