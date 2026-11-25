@@ -1487,7 +1487,14 @@
       const head = `<div class="page-head"><div><h2>每日记录 · 报表更新情况</h2><p>判断各类报表哪天已经下载、哪天 eBay 明确回空、哪天还没下。只看文件在不在，不看指标。某天若活动本来就没跑，下载会回空 —— 把空报表入库后这里会显示成 ○ 已核实无数据。</p></div>
         <div class="actions"><button class="btn" id="copyGapsBtn">${icon('copy')}复制缺失清单</button>${SHARED_READONLY ? '' : `<button class="btn primary" id="topUploadBtn">${icon('upload')}上传报表</button>`}</div></div>`;
       if (!model) {
-        return `${head}<div class="panel empty">${coverageState().present ? '当前店铺还没有任何报表覆盖记录。' : '这份数据里没有覆盖台账（coverage 字段）。用 app/dashboard-build.mjs 重新构建一次看板数据即可显示。'}</div>`;
+        const noCoverage = coverageState().present
+          ? '当前店铺还没有任何报表覆盖记录。'
+          : SHARED_READONLY
+            // 在线看板的数据来自构建端（app/dashboard-build.mjs）：缺台账说明数据是旧版构出来的
+            ? '这份数据里没有覆盖台账（coverage 字段）。用 app/dashboard-build.mjs 重新构建一次看板数据即可显示。'
+            // 本机「浏览器上传」模式只解析 Traffic/PLG/名单，不算覆盖台账 —— 这不是坏了，别让人误以为出错
+            : '浏览器上传模式不计算覆盖台账（它只解析 Traffic、PLG 和名单）。要看「哪类报表哪天缺」，请用在线看板，或在本机跑：node app\\coverage-report.mjs';
+      return `${head}<div class="panel empty">${noCoverage}</div>`;
       }
       const typeGaps = model.types.reduce((sum, type) => sum + type.gaps.length, 0);
       const campaignGaps = model.types.reduce((sum, type) => sum + ((type.campaignGaps || []).reduce((n, item) => n + item.gaps.length, 0)), 0);
