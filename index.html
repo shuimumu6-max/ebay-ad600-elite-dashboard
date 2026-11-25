@@ -2495,15 +2495,14 @@
             // 覆盖台账自愈（2026-11-25）：本地存的是老版本状态（这种状态在种数据时被白名单丢掉了
             // coverage），而预置 bundle 里有 —— 直接补上，用户不用清缓存/清数据就能看到。
             if (seeded.coverage && !fullState.coverage) fullState.coverage = seeded.coverage;
-            // 广告行新字段自愈（2026-11-26）：本地 IndexedDB 里的旧快照是「重建前」存的，
-            // 没有 status / available（PLP 刊登状态、库存）与 Traffic 曝光构成这些新列 —— 表现为整列「—」。
-            // 预置 bundle 里有这些字段时直接用它的广告段，用户不用清缓存。
-            const stalePlp = (fullState.ads?.plpRows || []).length > 0 && (fullState.ads.plpRows || []).every(row => row.status === undefined);
-            const seededHasPlp = (seeded.ads?.plpRows || []).some(row => row.status !== undefined);
-            if (stalePlp && seededHasPlp) fullState.ads = seeded.ads;
-            const staleTraffic = (fullState.trafficRaw || []).length > 0 && (fullState.trafficRaw || []).every(row => row.top20Promoted === undefined);
-            const seededHasTraffic = (seeded.trafficRaw || []).some(row => row.top20Promoted !== undefined);
-            if (staleTraffic && seededHasTraffic) fullState.trafficRaw = seeded.trafficRaw;
+            // 版本自愈（2026-11-26）：本地 IndexedDB 里的状态可能是**旧版本构建**存下的 ——
+            // 它缺新加的字段（PLP 刊登状态/库存、Traffic 曝光构成等），表现为整列「—」，
+            // 而页面上看就是「看板没更新」。bundleId 就是构建版本号：不一致时整体采用新预置数据
+            // （预置数据是只读的构建产物；本机手动导入的 CSV 会因此被覆盖，需要时重新导入即可）。
+            if (seeded.bundleId && fullState.bundleId && seeded.bundleId !== fullState.bundleId) {
+              fullState = { ...seeded };
+              if (seeded.activeListings) fullState.activeListings = { ...seeded.activeListings, items: seeded.activeListings.items };
+            }
           }
           if (seeded && seeded.bundleId !== localStorage.getItem('ebay-preloaded-bundle')) {
             // 用「展开 + 覆盖」而不是白名单：2026-11-25 被这个坑过两次 ——
