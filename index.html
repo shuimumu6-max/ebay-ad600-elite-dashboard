@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script src="https://unpkg.com/lucide@0.468.0"></script>
-  <script src="./data.js?f=topdon-scanner-us:dual-product-v1-be975568a5ee41c8-e8a40ded5c056957,topdonofficial-us:dual-product-v1-97e14c74d1746830-imports-only"></script>
+  <script src="./data.js?f=topdon-scanner-us:dual-product-v1-493f6c87eea0b8ac-e8a40ded5c056957,topdonofficial-us:dual-product-v1-5b9b58d8caf6a4a5-imports-only"></script>
   <script>
     // 静态托管的缓存会让页面看到旧数据（GitHub Pages 约 10 分钟）→ 用 data-version.json
     // 对一下当前加载到的 bundleId；不一致就带 ?v=1 重载一次（只多一次，重载后就一致了）。
@@ -1893,8 +1893,11 @@
       const map = new Map();
       const textKey = value => clean(value).toLowerCase();
       rows.forEach(row => {
+        // 搜索词面板：Search Query 为空的行是 eBay 的合并行「Consolidated data from placements across eBay」
+        // （标签在 Keyword 列）。用标签当分组键：既不会塌成一条空名行，也不会和具体搜索词混在一起。
         const key = kind === 'links' ? row.itemId : kind === 'keywords'
-          ? JSON.stringify([textKey(row.keyword), row.matchType]) : textKey(row.searchQuery);
+          ? JSON.stringify([textKey(row.keyword), row.matchType])
+          : (textKey(row.searchQuery) || `合并行：${textKey(row.keyword)}`);
         if (!map.has(key)) map.set(key, { itemId: row.itemId, title: row.title, latest: '',
           impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0,
           dates: new Set(), campaigns: new Set(), keywords: new Set(), matches: new Set(), bids: [], natural: new Map() });
@@ -1980,9 +1983,9 @@
 
     function adTermsTable(type) {
       const { isKeyword, source, filtered, summary, rows } = adTermsRows(type);
-      const body = rows.map(row => `<tr><td class="t-text">${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}${isKeyword ? '' : `<td class="t-text">${esc(row.searchQuery)}</td>`}<td class="t-text">${esc(row.keyword)}</td><td class="t-text">${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}<td class="t-text">${esc(row.campaign)}</td></tr>`).join('');
+      const body = rows.map(row => `<tr><td class="t-text">${summary ? rangeText(row.date,row.end) : esc(row.date)}</td>${summary ? `<td>${fmt(row.days)}</td>` : ''}${isKeyword ? '' : `<td class="t-text">${row.searchQuery ? esc(row.searchQuery) : '—'}</td>`}<td class="t-text">${esc(row.keyword)}</td><td class="t-text">${esc(row.matchType)}</td>${isKeyword ? `<td>${adValue(row.bid,money)}${summary && row.bidMax !== row.bid ? ` 至 ${adValue(row.bidMax,money)}` : ''}</td>` : ''}${adMetricCells(row)}<td class="t-text">${esc(row.campaign)}</td></tr>`).join('');
       return `${adTableFilters(type,source)}${adResultMetrics(filtered)}<section class="panel"><div class="panel-head"><div style="display:flex;align-items:baseline;gap:10px"><h3>${isKeyword ? '关键词' : '搜索词'}表现 · ${summary ? '区间汇总' : '日度明细'}</h3><small>${fmt(rows.length)} 条${summary ? '汇总，来自 '+fmt(filtered.length)+' 条日度记录' : '日度记录'}</small></div><button class="btn" id="adTermsExportBtn" data-export-terms="${type}">${icon('download')}导出表格</button></div>
-        <div class="snapshot-note">${isKeyword ? '同一关键词和匹配方式跨日期、跨 Campaign 合并；出价显示所选期间的最小值至最大值。' : '同一搜索词跨日期、跨 Campaign、跨触发关键词合并；触发关键词及匹配方式列展示涉及的全部值。'} 汇总跟随日期及本页筛选，比例按合计值重算。记录天数仅代表报表中存在记录的天数。</div>
+        <div class="snapshot-note">${isKeyword ? '同一关键词和匹配方式跨日期、跨 Campaign 合并；出价显示所选期间的最小值至最大值。' : '同一搜索词跨日期、跨 Campaign、跨触发关键词合并；触发关键词及匹配方式列展示涉及的全部值。'} ${isKeyword ? '' : '其中「Consolidated data from placements across eBay」（搜索词列显示 —）是 eBay 自己的合并行：未归因到具体搜索词的位置，计入合计才能与活动总曝光对上。'} 汇总跟随日期及本页筛选，比例按合计值重算。记录天数仅代表报表中存在记录的天数。</div>
         <div class="table-wrap"><table class="table-compact"><thead><tr>${sortHeader(summary ? '数据区间' : '日期','date',type,'t-text')}${summary ? sortHeader('记录天数','days',type) : ''}${isKeyword ? '' : sortHeader('搜索词','searchQuery',type,'t-text')}${sortHeader(isKeyword ? '关键词' : '触发关键词','keyword',type,'t-text')}${sortHeader('匹配方式','matchType',type,'t-text')}${isKeyword ? sortHeader(summary ? '期间出价范围' : 'Bid','bid',type) : ''}${adMetricHeaders(type)}${sortHeader('Campaign','campaign',type,'t-text')}</tr></thead><tbody>${body || `<tr><td colspan="${summary ? 16 : 15}">当前筛选范围没有记录，请调整筛选条件。</td></tr>`}</tbody></table></div></section>`;
     }
 
