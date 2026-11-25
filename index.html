@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script src="https://unpkg.com/lucide@0.468.0"></script>
-  <script src="./data.js?f=topdon-scanner-us:dual-product-v1-d69c2d5903f25525-e8a40ded5c056957,topdonofficial-us:dual-product-v1-7ac4807b20522f0b-imports-only"></script>
+  <script src="./data.js?f=topdon-scanner-us:dual-product-v1-72b9cc2a80b81bf3-e8a40ded5c056957,topdonofficial-us:dual-product-v1-7ac4807b20522f0b-imports-only"></script>
   <script>
     // 静态托管的缓存会让页面看到旧数据（GitHub Pages 约 10 分钟）→ 用 data-version.json
     // 对一下当前加载到的 bundleId；不一致就带 ?v=1 重载一次（只多一次，重载后就一致了）。
@@ -1369,8 +1369,11 @@
       // 活动列表按当前产品范围收敛；但如果一个都没命中（例如在新店看默认产品 AD600 Elite，
       // 而活动全是 900E 的），就退回全量 —— 否则「展开活动」永远是 0 个，用户以为没数据。
       return [...map.entries()].filter(([key]) => mine.has(key)).map(([, entry]) => {
-        const cover = [...entry.have, ...entry.blank].sort();
-        return { ...entry, cover, first: cover[0] || '', latest: [...entry.have].sort().pop() || '' };
+        // 活动级同样要排掉「这天其实有数据」：实测 PH 的 10-22 既有新下的真数据，
+        // 又留着 10 月那份 719 字节的空壳文件 —— 不排的话活动行会同时显示「有数据」和「回空 1 天」。
+        const blank = new Set([...entry.blank].filter(date => !entry.have.has(date)));
+        const cover = [...entry.have, ...blank].sort();
+        return { ...entry, blank, cover, first: cover[0] || '', latest: [...entry.have].sort().pop() || '' };
       }).sort((a, b) => a.name.localeCompare(b.name));
     }
 
@@ -1399,7 +1402,10 @@
       const dates = sorted.filter(date => date >= windowStart && date <= latest);
       const types = COVERAGE_TYPES.map(type => {
         const have = new Set(Object.keys(days[type.key] || {}));
-        const blank = new Set(Object.keys(empty[type.key] || {}));
+        // 有数据的日子不该算进「回空」：同一天可能既有真数据文件、又有 0 行的空壳文件
+        // （实测 2026-11-25：PH 的 10-22 重下拿到了真数据，而 10 月那份 719 字节的空壳文件还留在归档里，
+        //   不排掉的话面板会把「有数据的一天」同时算成「已核实无数据」）。
+        const blank = new Set(Object.keys(empty[type.key] || {}).filter(date => !have.has(date)));
         const cover = [...new Set([...have, ...blank])].sort();
         const campaigns = type.ad ? coverageCampaigns(type.key) : [];
         // 活动级缺口：类型级「有数据」只要求有一个活动有文件，所以类型级看不到谁缺了 —— 这里单独算。
@@ -1566,12 +1572,17 @@
       const typeGaps = model.types.reduce((sum, type) => sum + type.gaps.length, 0);
       const campaignGaps = model.types.reduce((sum, type) => sum + ((type.campaignGaps || []).reduce((n, item) => n + item.gaps.length, 0)), 0);
       const knownDays = model.types.reduce((sum, type) => sum + (type.knownGapDays || 0), 0);
+      // 「已核实无数据」按 (活动, 日) 统计：活动级才是有用的粒度（同一天可能 A 活动没数据、B 活动有），
+      // 另外给出「整体无数据的日子」= 那天所有活动都没数据 —— 两个数是不同的问题，别混着看。
+      const typeBlankDays = model.types.reduce((sum, type) => sum + type.blank.size, 0);
+      const blankCampaignDays = model.types.reduce((sum, type) => sum + (type.campaigns || []).reduce((n, entry) => n + entry.blank.size, 0), 0)
+        + model.types.filter(type => !type.ad).reduce((sum, type) => sum + type.blank.size, 0);
       const totalGaps = typeGaps + campaignGaps;
       return `${head}
         <section class="metrics">
           ${metric('最新数据日', model.latest, `各类报表最早 ${model.earliest}`)}
           ${metric('还有缺口', totalGaps ? `${fmt(totalGaps)} 天` : '0 天', `类型级 ${fmt(typeGaps)} 天 ｜ 活动级 ${fmt(campaignGaps)} 天${knownDays ? `（另有 ${fmt(knownDays)} 天永久不可得，已排除）` : ''}`)}
-          ${metric('已核实无数据', fmt(model.types.reduce((sum, type) => sum + type.blank.size, 0)) + ' 天', 'eBay 回空，不用重下')}
+          ${metric('已核实无数据', `${fmt(blankCampaignDays)} 个活动-日`, `整体无数据的日子 ${fmt(typeBlankDays)} 天 ｜ eBay 回空，不用重下`)}
         </section>
         ${coverageSummary(model)}
         ${coverageMatrix(model)}
