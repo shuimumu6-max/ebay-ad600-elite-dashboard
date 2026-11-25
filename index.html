@@ -420,7 +420,20 @@
       if (ui.product === PRODUCT_ALL) { dataState = structuredClone(fullState); return; }
       const pick = rows => (rows || []).filter(row => row.product === ui.product);
       const ads = fullState.ads || structuredClone(EMPTY_ADS);
-      const keepAds = ui.product === PRODUCTS[0].key;
+      // 广告行的产品归属（2026-11-25 修）：
+      //   - plpRows 自带 product（构建期就算好了）；
+      //   - keywordRows / searchRows 没有 product 字段，用 productOf(row) 从标题或活动名推。
+      // 原来这里按「当前产品是不是首个产品」一刀切（keepAds）：选 900E 时关键词与搜索词被
+      // 整段清空 —— 即使报表里确实有 900E 数据（原店实测 216 条关键词 / 477 条搜索词），
+      // 面板也永远 0 条、且不给任何提示；而选 600E 时又会把 900E 的行一起显示出来。
+      // 现在统一按产品过滤。唯一例外：广告快照那批短名活动（PLP-EX / PLP-PH / PLP-ST-*）的
+      // 关键词/搜索词行**既无 itemId 也无 title**，推不出产品（实测 318 + 382 行）；
+      // 它们同活动的 plpRows 标题都是 TOPDON AD600 / ArtiDiag600、确认属 600E →
+      // 这类「推不出」的行沿用历史行为只进首个产品视图，避免静默丢数据。
+      const pickAds = rows => (rows || []).filter(row => {
+        const product = row.product || productOf(row);
+        return product === ui.product || (product === PRODUCT_UNKNOWN && ui.product === PRODUCTS[0].key);
+      });
       dataState = {
         plgRaw: pick(fullState.plgRaw),
         trafficRaw: pick(fullState.trafficRaw),
@@ -429,7 +442,12 @@
         sources: structuredClone(fullState.sources || []),
         products: structuredClone(fullState.products),
         productCounts: structuredClone(fullState.productCounts || null),
-        ads: keepAds ? structuredClone(ads) : { ...structuredClone(EMPTY_ADS), plpRows: pick(ads.plpRows || []) }
+        ads: {
+          ...structuredClone(ads),
+          plpRows: pickAds(ads.plpRows),
+          keywordRows: pickAds(ads.keywordRows),
+          searchRows: pickAds(ads.searchRows)
+        }
       };
     }
     function number(value) {
