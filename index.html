@@ -170,6 +170,14 @@
     .ad-tabs { display: flex; gap: 6px; margin: 0 0 14px; padding: 4px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: #eef2f6; }
     .ad-tab { min-height: 34px; padding: 0 13px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); white-space: nowrap; font-weight: 700; }
     .ad-tab.active { color: var(--blue); background: white; box-shadow: 0 1px 4px rgba(19,33,53,.12); }
+    /* KPI 概览（2026-11-26）：一排卡片，每张＝当期值 + 环比 + 迷你周趋势 */
+    .kpi-grid { padding: 12px 14px 2px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+    .kpi-card .panel-body { padding: 12px 14px 6px; }
+    .kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .kpi-head strong { font-size: 13px; }
+    .kpi-value { margin-top: 6px; font-size: 22px; font-weight: 760; font-variant-numeric: tabular-nums; }
+    .kpi-value small { margin-left: 8px; color: var(--muted); font-size: 11px; font-weight: 500; }
+    .kpi-chart { width: 100%; height: 76px; }
     .campaign-chips { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 14px; }
     .campaign-chip { min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: white; color: #435064; font-size: 12px; }
     .campaign-chip.active { color: white; border-color: var(--blue); background: var(--blue); }
@@ -2144,7 +2152,7 @@
       const tabs = [['overview','Campaign 总览'],['plg','PLG 链接'],['plp','PLP 链接'],['keywords','关键词'],['searches','搜索词']];
       const content = ui.adTab === 'overview' ? campaignOverview() : ui.adTab === 'plg' ? adLinksTable('PLG') : ui.adTab === 'plp' ? adLinksTable('PLP') : adTermsTable(ui.adTab);
       const bounds = reportBounds();
-      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。<strong>与后台对账请先比钱</strong>（销售额／广告费／销量）：eBay 的曝光、点击属近实时数据、约 72 小时内继续上调，看板显示的是导出快照值 —— 详见「数据源说明 → 数据新鲜度」。</p></div></div><div class="panel toolbar"><div class="field field-date"><label for="startFilter">开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field field-date"><label for="endFilter">结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><span class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（广告页只看广告数据）</span></div>${campaignChips()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
+      return `<div class="page-head"><div><h2>广告看板</h2><p>Campaign、PLG/PLP 链接、关键词和搜索词独立分析；不包含运营调整。<strong>与后台对账请先比钱</strong>（销售额／广告费／销量）：eBay 的曝光、点击属近实时数据、约 72 小时内继续上调，看板显示的是导出快照值 —— 详见「数据源说明 → 数据新鲜度」。</p></div></div><div class="panel toolbar"><div class="field field-date"><label for="startFilter">开始日期</label><input class="input" id="startFilter" type="date" value="${esc(ui.start)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><div class="field field-date"><label for="endFilter">结束日期</label><input class="input" id="endFilter" type="date" value="${esc(ui.end)}" min="${esc(bounds.min)}" max="${esc(bounds.max)}" /></div><span class="toolbar-note">可选日期范围：${esc(bounds.min || '—')} ~ ${esc(bounds.max || '—')}（广告页只看广告数据）</span></div>${campaignChips()}${adsKpiOverview()}<div class="ad-tabs">${tabs.map(([id,label])=>`<button class="ad-tab ${ui.adTab===id?'active':''}" data-ad-tab="${id}">${label}</button>`).join('')}</div>${content}`;
     }
 
     // 数据源说明（2026-11-26 新增）：每个数字「从哪来、怎么算」——运营核对时不用翻代码。
@@ -2300,6 +2308,109 @@
       charts.push(itemChart, ebayPvChart, channelChart, trendChart);
     }
 
+    // KPI 概览（2026-11-26）：本板块（PLG＋PLP 链接行，已随日期/活动/机型筛选）按自然周聚合成
+    // 「近 N 周」序列，每张卡显示当期值、环比（与上一周比）和一条迷你趋势线。数据与「周度对比」同口径。
+    let kpiWeekly = null;
+    function adsKpiWeekly() {
+      const weekCount = ui.kpiWeeks == null ? 6 : Number(ui.kpiWeeks);   // 0 = 全部
+      const weekOf = date => {
+        const day = new Date(String(date) + 'T00:00:00Z');
+        day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7));
+        return day.toISOString().slice(0, 10);
+      };
+      const buckets = new Map();
+      adDetailRows().forEach(row => {
+        if (!row.date) return;
+        const week = weekOf(row.date);
+        if (!buckets.has(week)) buckets.set(week, { impressions: 0, clicks: 0, sold: 0, sales: 0, adFees: 0 });
+        const cell = buckets.get(week);
+        cell.impressions += row.impressions || 0; cell.clicks += row.clicks || 0; cell.sold += row.sold || 0;
+        cell.sales += row.sales || 0; cell.adFees += row.adFees || 0;
+      });
+      let weeks = [...buckets.keys()].sort();
+      if (weekCount > 0 && weeks.length > weekCount) weeks = weeks.slice(-weekCount);
+      return { weeks, buckets };
+    }
+    function adsKpiOverview() {
+      const { weeks, buckets } = adsKpiWeekly();
+      kpiWeekly = { weeks, buckets };
+      if (!weeks.length) return '';
+      const rate = (cell, key) => {
+        if (key === 'roas') return cell.adFees > 0 ? cell.sales / cell.adFees : null;
+        if (key === 'acos') return cell.sales > 0 ? cell.adFees / cell.sales : null;
+        if (key === 'cpc') return cell.clicks > 0 ? cell.adFees / cell.clicks : null;
+        if (key === 'cvr') return cell.clicks > 0 ? cell.sold / cell.clicks : null;
+        if (key === 'ctr') return cell.impressions > 0 ? cell.clicks / cell.impressions : null;
+        return null;
+      };
+      const CARDS = [
+        ['广告销售额', 'sales', value => money(value)],
+        ['广告花费', 'adFees', value => money(value)],
+        ['ROAS', 'roas', value => fmt(value, 2)],
+        ['广告销量', 'sold', value => fmt(value)],
+        ['广告点击', 'clicks', value => fmt(value)],
+        ['ACOS（广告费÷销售额）', 'acos', value => pct(value)],
+        ['CPC（广告费÷点击）', 'cpc', value => money(value)],
+        ['CVR（销量÷点击）', 'cvr', value => pct(value)],
+        ['广告曝光', 'impressions', value => fmt(value)],
+        ['CTR（点击÷曝光）', 'ctr', value => pct(value)],
+        ['平均成交费（广告费÷销量）', 'acv', value => money(value)],
+        ['广告费占销售额', 'acos2', value => pct(value)]
+      ];
+      const valueOf = (cell, key) => {
+        if (key === 'acv') return cell.sold > 0 ? cell.adFees / cell.sold : null;
+        if (key === 'acos2') return cell.sales > 0 ? cell.adFees / cell.sales : null;
+        return rate(cell, key) != null ? rate(cell, key) : cell[key];
+      };
+      const cards = CARDS.map(([label, key, format]) => {
+        const current = valueOf(buckets.get(weeks.at(-1)), key);
+        const previous = weeks.length > 1 ? valueOf(buckets.get(weeks.at(-2)), key) : null;
+        const delta = current != null && previous != null && previous !== 0 ? (current - previous) / Math.abs(previous) : null;
+        const badge = delta == null ? '<span class="badge">环比 —</span>'
+          : `<span class="badge ${delta >= 0 ? 'green' : 'red'}">${delta >= 0 ? '↑' : '↓'} ${pct(Math.abs(delta))} 环比</span>`;
+        return `<article class="panel kpi-card"><div class="panel-body">
+          <div class="kpi-head"><strong>${label}</strong>${badge}</div>
+          <div class="kpi-value">${current == null ? '—' : format(current)}<small>当期（${esc(weeks.at(-1)?.slice(5).replace('-', '/') || '')}~${esc(weeks.at(-1) ? covAddDays(weeks.at(-1), 6).slice(5).replace('-', '/') : '')}）</small></div>
+          <div class="kpi-chart" id="kpiChart-${key}"></div>
+        </div></article>`;
+      }).join('');
+      const options = [[4, '近 4 周'], [6, '近 6 周'], [8, '近 8 周'], [12, '近 12 周'], [0, '全部']];
+      return `<section class="panel kpi-panel"><div class="panel-head"><h3>KPI 概览</h3>
+          <span class="actions"><small style="margin-right:8px">按自然周（周一~周日）聚合，随本页日期／活动筛选联动</small><span class="field"><select class="input" id="kpiWeeksSelect" style="width:auto">${options.map(([value, label]) => `<option value="${value}" ${(ui.kpiWeeks == null ? 6 : Number(ui.kpiWeeks)) === value ? 'selected' : ''}>${label}</option>`).join('')}</select></span></span></div>
+        <div class="kpi-grid">${cards}</div></section>`;
+    }
+    function renderKpiCharts() {
+      if (!kpiWeekly || !kpiWeekly.weeks.length) return;
+      const { weeks, buckets } = kpiWeekly;
+      const labels = weeks.map(week => `${week.slice(5).replace('-', '/')}`.replace(/^(\d+)\/(\d+)$/, '$1/$2'));
+      const series = key => weeks.map(week => {
+        const cell = buckets.get(week);
+        if (key === 'roas') return cell.adFees > 0 ? Number((cell.sales / cell.adFees).toFixed(2)) : null;
+        if (key === 'acos' || key === 'acos2') return cell.sales > 0 ? Number((cell.adFees / cell.sales * 100).toFixed(2)) : null;
+        if (key === 'cpc') return cell.clicks > 0 ? Number((cell.adFees / cell.clicks).toFixed(2)) : null;
+        if (key === 'cvr') return cell.clicks > 0 ? Number((cell.sold / cell.clicks * 100).toFixed(2)) : null;
+        if (key === 'ctr') return cell.impressions > 0 ? Number((cell.clicks / cell.impressions * 100).toFixed(2)) : null;
+        if (key === 'acv') return cell.sold > 0 ? Number((cell.adFees / cell.sold).toFixed(2)) : null;
+        return cell[key] || 0;
+      });
+      document.querySelectorAll('[id^="kpiChart-"]').forEach(element => {
+        const key = element.id.replace('kpiChart-', '');
+        const unit = (key === 'sales' || key === 'adFees' || key === 'cpc' || key === 'acv') ? '$' : (key === 'acos' || key === 'cvr' || key === 'ctr' || key === 'acos2') ? '%' : '';
+        const point = value => (value == null ? '—' : unit === '$' ? `$${value}` : unit === '%' ? `${value}%` : value);
+        const chart = echarts.init(element);
+        chart.setOption({
+          animationDuration: 300,
+          grid: { left: 8, right: 8, top: 8, bottom: 18, containLabel: false },
+          tooltip: { trigger: 'axis', valueFormatter: point, confine: true },
+          xAxis: { type: 'category', data: labels, axisLabel: { fontSize: 9, color: '#697586' }, axisTick: { show: false }, axisLine: { show: false } },
+          yAxis: { type: 'value', show: false, scale: true },
+          series: [{ type: 'line', data: series(key), smooth: true, symbolSize: 4, showSymbol: true,
+            lineStyle: { width: 2 }, areaStyle: { opacity: 0.18 } }]
+        });
+        charts.push(chart);
+      });
+    }
+
     function renderAdCharts() {
       const elements = ['campaignImpressionsChart','campaignClicksChart','campaignFeesChart'].map(id => document.getElementById(id));
       if (elements.some(element => !element)) return;
@@ -2393,6 +2504,7 @@
       document.getElementById('itemStatusFilter')?.addEventListener('change', e => { ui.itemStatus = e.target.value; render(); });
       document.getElementById('campaignToggle')?.addEventListener('click', () => { ui.campaignExpand = !ui.campaignExpand; render(); });
       document.getElementById('weekCountSelect')?.addEventListener('change', event => { ui.weekCount = Number(event.target.value); render(); });
+      document.getElementById('kpiWeeksSelect')?.addEventListener('change', event => { ui.kpiWeeks = Number(event.target.value); render(); });
       document.getElementById('filterReset')?.addEventListener('click', () => {
         ui.query = '';
         ui.trafficPeriod = 'daily-range';
@@ -2428,6 +2540,8 @@
       }
       lucide.createIcons();
       if (ui.page === 'dashboard') setTimeout(renderCharts, 0);
+      if (ui.page === 'ads') setTimeout(renderKpiCharts, 0);
+      if (ui.page === 'ads') setTimeout(renderKpiCharts, 0);
       if (ui.page === 'ads' && ui.adTab === 'overview') setTimeout(renderAdCharts, 0);
     }
 
