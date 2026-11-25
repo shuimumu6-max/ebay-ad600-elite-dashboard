@@ -1917,7 +1917,12 @@
         if (row.keyword) item.keywords.add(row.keyword);
         if (row.matchType) item.matches.add(row.matchType);
         if (row.bid != null && Number.isFinite(Number(row.bid))) item.bids.push(Number(row.bid));
-        if (!item.latest || row.date >= item.latest) { item.latest = row.date; item.title = row.title; item.searchQuery = row.searchQuery; item.status = row.status; item.available = row.available; }
+        // 同日多行时：优先保留**带状态/库存**的那一行 —— 外部快照行没有这两个字段，
+        // 而快照可能覆盖到同一天，用 >= 会让快照把真实行的状态抹成空（表现为整列「—」）。
+        const fresher = !item.latest || row.date > item.latest
+          || (row.date === item.latest && (item.status === undefined && row.status !== undefined))
+          || (row.date === item.latest && item.available === undefined && row.available !== undefined);
+        if (fresher) { item.latest = row.date; item.title = row.title; item.searchQuery = row.searchQuery; item.status = row.status; item.available = row.available; }
         if (row.naturalImpressions != null) {
           const naturalKey = JSON.stringify([row.date, row.itemId]);
           const values = [row.naturalImpressions, row.naturalClicks, row.naturalSold];
@@ -2499,10 +2504,13 @@
             // 它缺新加的字段（PLP 刊登状态/库存、Traffic 曝光构成等），表现为整列「—」，
             // 而页面上看就是「看板没更新」。bundleId 就是构建版本号：不一致时整体采用新预置数据
             // （预置数据是只读的构建产物；本机手动导入的 CSV 会因此被覆盖，需要时重新导入即可）。
-            if (seeded.bundleId && fullState.bundleId && seeded.bundleId !== fullState.bundleId) {
-              fullState = { ...seeded };
-              if (seeded.activeListings) fullState.activeListings = { ...seeded.activeListings, items: seeded.activeListings.items };
-            }
+            // 定稿（2026-11-26）：**预置 bundle 是只读的构建产物，永远以它为准**。
+            // 为什么不能只比 bundleId：bundleId 只由「数据」算出来（dual-product-v1-<数据哈希>-<快照号>），
+            // 加字段/改代码时它不变 —— 于是浏览器 IndexedDB 里的老快照一直赢，
+            // 新列（PLP 刊登状态/库存、Traffic 曝光构成）整列「—」，看着像「看板没更新」。
+            // 线上页是只读镜像、本机页的数据也来自本机服务，所以整体采用预置数据不会牺牲用户数据。
+            fullState = { ...seeded };
+            if (seeded.activeListings) fullState.activeListings = { ...seeded.activeListings, items: seeded.activeListings.items };
           }
           if (seeded && seeded.bundleId !== localStorage.getItem('ebay-preloaded-bundle')) {
             // 用「展开 + 覆盖」而不是白名单：2026-11-25 被这个坑过两次 ——
