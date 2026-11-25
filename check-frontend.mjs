@@ -44,7 +44,7 @@ const context = vm.createContext({
   setTimeout: () => 0, clearTimeout: noop, setInterval: () => 0,
   alert: noop, confirm: () => false, requestAnimationFrame: noop
 });
-vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, listingStartDate, reportBounds, REUSED_LINK_PRODUCT, isForeignEra, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN, campaignStartOf, adCampaignRows };', context);
+vm.runInContext(code + '\n;globalThis.__api = { get ui(){return ui}, setUiProduct(v){ui.product=v}, get fullState(){return fullState}, get dataState(){return dataState}, setFullState(v){fullState=v}, applyProduct, productOf, inProduct, productNotice, productSwitch, productOptions, trafficSelection, itemPerformance, dailyDateRange, filterPanel, listingStartDate, reportBounds, REUSED_LINK_PRODUCT, isForeignEra, PRODUCTS, PRODUCT_ALL, PRODUCT_UNKNOWN, campaignStartOf, adCampaignRows, coverageModel, coverageState, coverageMatrix, coverageGapList, coverageGapText, dailyPage };', context);
 const api = context.__api;
 
 let passed = 0;
@@ -718,16 +718,77 @@ ok('活动起始日：显示 min(报表标注, 我方最早数据)（2026-11-25 
   api.applyProduct();
 });
 
-ok('「每日记录」分页在位（防回归：曾一次渲染 4788 行、单次 4.2 秒）', () => {
+ok('「每日记录」已改成报表更新情况（覆盖矩阵 + 缺失清单）', () => {
   const src = readFileSync(join(repoDir, 'index.html'), 'utf8');
-  assert.ok(/dailyPageNo: 1, dailyPageSize: 200/.test(src), 'ui 里缺少分页状态 dailyPageNo / dailyPageSize');
-  assert.ok(/function dailyPager\(total, page, pages\)/.test(src), '缺少 dailyPager 分页条');
-  assert.ok(/sorted\.slice\(\(page - 1\) \* size, page \* size\)/.test(src), 'dailyRecordTable 没有按页切片（还会一次性渲染全部行）');
-  assert.ok(/\$\{dailyPager\(total, page, pages\)\}/.test(src), '表格末尾没有渲染分页条');
-  assert.ok(/data-daily-page/.test(src), '缺少翻页按钮');
-  assert.ok(/id="dailyPageSize"/.test(src), '缺少每页行数选择');
-  // 页码必须夹紧：筛选/换区间后行数变少，不能停在不存在的页上
-  assert.ok(/Math\.min\(Math\.max\(1, Number\(ui\.dailyPageNo\) \|\| 1\), pages\)/.test(src), '页码没有夹紧到 [1, pages]');
+  // 2026-11-25 改版：这个板块的用途是「判断各类报表哪天下了、哪天回空、哪天缺」，
+  // 原来的 Item 每日指标表被覆盖矩阵取代（指标去「经营看板 / Item 明细」看）。
+  assert.ok(/COVERAGE_TYPES = \[/.test(src), '缺少覆盖类型定义 COVERAGE_TYPES');
+  assert.ok(/const COV_GLYPH = \{ have: '●', partial: '◐', blank: '○', miss: '✕' \}/.test(src), '缺少状态字形表');
+  assert.ok(/function coverageModel\(/.test(src) && /function coverageMatrix\(/.test(src) && /function coverageGapList\(/.test(src), '缺少覆盖矩阵/缺失清单渲染');
+  assert.ok(/data-coverage-span=/.test(src), '缺少「最近 N 天 / 全部」切换');
+  assert.ok(/data-coverage-toggle=/.test(src), '缺少「展开活动」按钮');
+  assert.ok(/id="copyGapsBtn"/.test(src) && /function coverageGapText\(/.test(src), '缺少「复制缺失清单」');
+  // 关键判据：按「键是否存在」判有没有，不能按数组长度 —— Traffic 没有活动维度，台账里是空数组，
+  // 按长度判会把整列显示成「缺」（2026-11-25 渲染实测踩过这个坑）。
+  assert.ok(/Object\.prototype\.hasOwnProperty\.call\(bag, key\)/.test(src), '矩阵格子判定退回了「按数组长度」写法');
+  assert.ok(/coverageMineCampaigns\(/.test(src), '活动列表没有收敛到本店负责的活动（整店报表会带进几十个无关活动）');
+  assert.ok(/partialDays/.test(src), '缺少「部分活动缺」档（类型级全绿会掩盖活动级缺口）');
+  assert.ok(!/function dailyPager\(|function dailyRecordTable\(|exportDailyData/.test(src), '旧的 Item 明细表代码还残留');
+});
+
+ok('「永久不可得」标 ⛔：不计入缺口、不产生矩阵 ◐、复制文本单列一段', () => {
+  // 场景：某活动 eBay 根本没有这种报表选项（自动拓词活动没有 keyword 报表）。
+  // 不标的话它每天挂在缺失清单里当噪音，还容易被当成漏下载反复去补。
+  const target = 'US.TD.PLP.UD900E.S.CSGP.自动拓词';
+  const fake = structuredClone(bundle);
+  fake.knownGaps = [{ kind: 'keyword', campaign: target, note: '测试用：eBay 没有这个报表选项' }];
+  api.setFullState(fake);
+  api.setUiProduct('AD600 Elite');
+  api.applyProduct();
+  const model = api.coverageModel();
+  const type = model.types.find(entry => entry.key === 'keyword');
+  assert.ok(type, '找不到关键词这个类型');
+  assert.ok(type.knownGapEntries.some(item => item.entry.name === target), '没把目标活动标成永久不可得');
+  assert.ok(!type.campaignGaps.some(item => item.entry.name === target), '永久不可得的活动仍被算进「要补的缺口」');
+  assert.ok(type.knownGapDays > 0, '永久不可得的天数没算出来（复制清单要用）');
+  const html = api.coverageGapList(model);
+  assert.ok(/⛔/.test(html), '缺失清单里没有 ⛔ 标记');
+  assert.ok(/永久不可得（不用补）/.test(api.coverageGapText(model)), '复制文本里没有单列「永久不可得」');
+  // 矩阵不能因为这种活动挂 ◐
+  const badDay = [...type.partialDays].length;
+  assert.equal(badDay, [...type.partialDays].filter(d => false).length, '矩阵里出现了由永久不可得活动引起的 ◐');
+  api.setFullState(structuredClone(bundle));
+  api.applyProduct();
+});
+
+ok('两处状态重建都用「展开 + 覆盖」（防回归：白名单式重建把 coverage 丢掉过两次）', () => {
+  const src = readFileSync(join(repoDir, 'index.html'), 'utf8');
+  // 2026-11-25 连续踩了两次同一个坑：
+  //   ① applyProduct() 重建 dataState 时用白名单 → coverage 被丢；
+  //   ② 首次种数据那段（bundleId 变化时）也用白名单 → coverage 被丢，而且还被 await saveState()
+  //      存进了 IndexedDB，之后一直从本地状态读，用户永远看不到覆盖台账。
+  // 所以这里锁的是「写法」：两处都必须先展开、再覆盖需要过滤的字段。
+  assert.ok(/...fullState,/.test(src), 'applyProduct 又改回白名单写法了（新字段会被悄悄丢掉）');
+  assert.ok(/...seeded,/.test(src), '种数据那段又改回白名单写法了（新字段会被悄悄丢掉）');
+  // 已被污染的本地状态要能自愈，不然用户得手动清缓存
+  assert.ok(/if \(seeded\.coverage && !fullState\.coverage\) fullState\.coverage = seeded\.coverage/.test(src), '缺少覆盖台账自愈');
+});
+
+ok('「每日记录」真的渲染出覆盖矩阵（防回归：applyProduct 曾把 coverage 过滤掉，线上整屏显示「没有覆盖台账」）', () => {
+  // 2026-11-25 线上故障：data.js 里明明有 coverage，但 applyProduct() 重建 dataState 时
+  // 用的是白名单字段列表，新字段没加进去 → 页面读不到。纯 grep 源码的断言抓不到这种错，
+  // 必须真的把数据灌进去跑一遍渲染。
+  assert.ok(bundle.coverage, 'data.js 里没有 coverage 台账（构建端没写进去？）');
+  api.setFullState(structuredClone(bundle));
+  api.setUiProduct('AD600 Elite');
+  api.applyProduct();
+  assert.ok(api.dataState.coverage, 'applyProduct 把 coverage 过滤掉了（dataState 是白名单式重建，新字段必须显式透传）');
+  const model = api.coverageModel();
+  assert.ok(model && model.types.length >= 5, 'coverageModel 返回空 —— 覆盖台账没传到页面');
+  const html = api.dailyPage();
+  assert.ok(html.includes('覆盖矩阵') && html.includes('缺失清单'), '页面没有渲染出覆盖矩阵 / 缺失清单');
+  assert.ok(!html.includes('没有覆盖台账'), '仍在显示「没有覆盖台账」兜底文案');
+  assert.ok(/报表缺口清单/.test(api.coverageGapText(model)), '缺少可复制的缺失清单文本');
 });
 
 console.log(`\n全部通过：${passed} 项`);
