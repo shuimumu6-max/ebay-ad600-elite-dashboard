@@ -1395,7 +1395,17 @@
       if (!all.size) return null;
       const sorted = [...all].sort();
       const earliest = sorted[0];
-      const latest = sorted[sorted.length - 1];
+      const dataLatest = sorted[sorted.length - 1];
+      // 「应到日」（太平洋时间口径，2026-11-25 委托方拍板）：
+      //   报表是**次日**才出的（今天的报表明天才有）→ 次日 16:00 之前，不把前一天算作缺失。
+      //   16:00 之后：昨天应到；16:00 之前：前天应到。
+      //   若数据提前到了，照常显示（矩阵右端取「数据最新日」与「应到日」中更晚的那个）。
+      const pacFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' });
+      const pacToday = pacFmt.format(new Date());                                  // YYYY-MM-DD
+      const pacHour = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: '2-digit', hour12: false }).format(new Date()));
+      const dueEnd = pacHour >= 16 ? covAddDays(pacToday, -1) : covAddDays(pacToday, -2);
+      const latest = [dataLatest, dueEnd].sort().pop();                            // 矩阵右端（提前到了也能看）
+      const gapEnd = dataLatest && dataLatest < dueEnd ? dataLatest : dueEnd;       // 缺口右端（超过应到日的不算缺）
       // 显示窗口右端不越过「全店最新数据日」：否则会把「今天还没到下载时点」天天报成缺
       const span = Number(ui.coverageSpan) || 0;
       const windowStart = span && covAddDays(latest, -(span - 1)) > earliest ? covAddDays(latest, -(span - 1)) : earliest;
@@ -1410,7 +1420,7 @@
         const campaigns = type.ad ? coverageCampaigns(type.key) : [];
         // 活动级缺口：类型级「有数据」只要求有一个活动有文件，所以类型级看不到谁缺了 —— 这里单独算。
         const allCampaignGaps = campaigns
-          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, latest), note: knownGapNote(type.key, entry.name) }))
+          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, gapEnd), note: knownGapNote(type.key, entry.name) }))
           .filter(item => item.gaps.length);
         // 已知不可得（⛔）单独拎出来：不算缺口、不进「还有缺口」、也不让矩阵挂 ◐
         const knownGapEntries = allCampaignGaps.filter(item => item.note);
@@ -1423,10 +1433,11 @@
           ...type, have, blank, cover, campaigns, campaignGaps, knownGapEntries, partialDays,
           knownGapDays: knownGapEntries.reduce((sum, item) => sum + item.gaps.length, 0),
           latestDay: [...have].sort().pop() || '',
-          gaps: coverageGapDays(have, blank, cover[0] || '', latest)
+          gaps: coverageGapDays(have, blank, cover[0] || '', gapEnd)
         };
       });
-      return { dates, earliest, latest, types, ranges, active };
+      // dataLatest 与 dueEnd 一并暴露：前端「复制缺失清单」等也要用同一口径
+      return { dates, earliest, latest, dataLatest, dueEnd, gapEnd, types, ranges, active };
     }
 
     function coverageCellInfo(type, date) {
@@ -1540,7 +1551,7 @@
         lines.push(`【${type.label}】最新数据日 ${type.latestDay || '—'}`);
         if (type.blank.size) lines.push(`  已核实无数据（eBay 回空，不用重下）：${[...type.blank].sort().join(' ')}`);
         const allGaps = type.campaigns
-          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, model.latest), note: knownGapNote(type.key, entry.name) }))
+          .map(entry => ({ entry, gaps: coverageGapDays(entry.have, entry.blank, entry.first, model.gapEnd || model.latest), note: knownGapNote(type.key, entry.name) }))
           .filter(item => item.gaps.length);
         const campaignGaps = allGaps.filter(item => !item.note);
         const knownGaps = allGaps.filter(item => item.note);
