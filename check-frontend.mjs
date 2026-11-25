@@ -718,4 +718,16 @@ ok('活动起始日：显示 min(报表标注, 我方最早数据)（2026-11-25 
   api.applyProduct();
 });
 
+ok('「每日记录」分页在位（防回归：曾一次渲染 4788 行、单次 4.2 秒）', () => {
+  const src = readFileSync(join(repoDir, 'index.html'), 'utf8');
+  assert.ok(/dailyPageNo: 1, dailyPageSize: 200/.test(src), 'ui 里缺少分页状态 dailyPageNo / dailyPageSize');
+  assert.ok(/function dailyPager\(total, page, pages\)/.test(src), '缺少 dailyPager 分页条');
+  assert.ok(/sorted\.slice\(\(page - 1\) \* size, page \* size\)/.test(src), 'dailyRecordTable 没有按页切片（还会一次性渲染全部行）');
+  assert.ok(/\$\{dailyPager\(total, page, pages\)\}/.test(src), '表格末尾没有渲染分页条');
+  assert.ok(/data-daily-page/.test(src), '缺少翻页按钮');
+  assert.ok(/id="dailyPageSize"/.test(src), '缺少每页行数选择');
+  // 页码必须夹紧：筛选/换区间后行数变少，不能停在不存在的页上
+  assert.ok(/Math\.min\(Math\.max\(1, Number\(ui\.dailyPageNo\) \|\| 1\), pages\)/.test(src), '页码没有夹紧到 [1, pages]');
+});
+
 console.log(`\n全部通过：${passed} 项`);
