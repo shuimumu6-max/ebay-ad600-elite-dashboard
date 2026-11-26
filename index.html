@@ -2806,6 +2806,13 @@
         ui.start = ui.start || range.start;
         ui.end = ui.end || range.end;
       }
+      // 兜底（2026-11-26）：只要还是「日报逐日相加」模式、起止有一头空着，而数据已经能算出范围，就补上。
+      // 覆盖「广告页先打开 / 重数据晚到 / 首屏轻数据」这几种顺序 —— 不再依赖某一个页面的首次渲染。
+      if (ui.trafficPeriod === 'daily-range' && (!ui.start || !ui.end)) {
+        const range = dailyDateRange();
+        ui.start = ui.start || range.start;
+        ui.end = ui.end || range.end;
+      }
       const pageContent = ui.page === 'dashboard' ? dashboardPage() : ui.page === 'ads' ? advertisingPage() : ui.page === 'daily' ? dailyPage() : ui.page === 'import' ? importPage() : ui.page === 'sources' ? sourcesPage() : detailPage();
       document.getElementById('app').innerHTML = baseLayout(productNotice() + pageContent);
       bindEvents();
