@@ -2949,6 +2949,10 @@
               productCounts: seeded.productCounts || fullState.productCounts
             };
           }
+          // 拆分回归修复（2026-11-26）：首屏（轻数据）时 dailyDateRange() 还是空的，render() 却已经把
+          // trafficPeriod 标成 'daily-range' → 重数据到了也不会再算默认日期，表现为「日期选择空了」。
+          // 只在「起止都还空着」时清掉标记让 render() 重算；用户自己选过日期/区间的一律不动。
+          if (!ui.start && !ui.end) ui.trafficPeriod = '';
           applyProduct();
           render();
           clearRawPendingBanner();
