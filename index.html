@@ -111,11 +111,12 @@
     .source-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
     .source-meta { margin-top: 9px; display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
     /* 促销：一个链接参加多个活动时可点开看清单（2026-11-26）*/
-    details.promo-more{display:inline-block;margin-left:4px;position:relative}
+    details.promo-more{display:inline-block;margin-left:4px}
     details.promo-more>summary{cursor:pointer;list-style:none}
     details.promo-more>summary::-webkit-details-marker{display:none}
     details.promo-more[open]>summary{outline:2px solid var(--blue)}
-    .promo-list{position:absolute;z-index:30;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:8px 10px;min-width:300px;max-width:460px;font-size:12px;line-height:1.55;white-space:normal;text-align:left}
+    /* 展开后在**文档流内**往下撑（原来用绝对定位，会被 .table-wrap 的 overflow 裁掉 → 点开一片空白） */
+    .promo-list{margin:6px 0 2px;background:#fbfcfe;border:1px solid var(--line);border-radius:8px;padding:6px 10px;min-width:260px;max-width:560px;font-size:12px;line-height:1.55;white-space:normal;text-align:left}
     .promo-list>div{padding:4px 0;border-bottom:1px dashed var(--line)}
     .promo-list>div:last-child{border-bottom:0}
 
@@ -1146,7 +1147,8 @@
           if (!e) {
             const a = activeMap.get(id);
             if (!a || !a.promoName) return null;
-            return { name: a.promoName, status: a.promoStatus, type: a.promoType, rule: a.promoRule, start: a.promoStart, end: a.promoEnd, price: a.promoPrice, original: a.promoOriginal, discount: a.promoDiscount, count: a.promoCount || 0 };
+            const one = { name: a.promoName, status: a.promoStatus, type: a.promoType, rule: a.promoRule, start: a.promoStart, end: a.promoEnd, price: a.promoPrice, original: a.promoOriginal, discount: a.promoDiscount };
+            return { ...one, count: a.promoCount || 1, list: (a.promoAll && a.promoAll.length) ? a.promoAll : [one] };
           }
           const norm = x => ({ ...x, discount: (x.discount != null) ? x.discount : ((x.original != null && x.price != null) ? Math.round((x.original - x.price) * 100) / 100 : null) });
           const list = (fromMap || []).map(norm);
