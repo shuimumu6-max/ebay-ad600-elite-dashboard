@@ -1866,7 +1866,7 @@
       return itemPerformance(true).filter(row => !dataState.activeListings || (ui.listingStatus || 'active') === 'all' || row.listingStatus === (ui.listingStatus || 'active'));
     }
 
-    function listingStatusPanel() {
+    function listingStatusPanel(rows = []) {
       const snapshot = dataState.activeListings;
       const history = new Set([...dataState.trafficRaw, ...dataState.plgRaw, ...(dataState.ads.plpRows || [])].filter(row => inProduct(row)).map(row => row.itemId));
       const active = new Set((snapshot?.items || []).map(row => row.itemId));
@@ -1874,7 +1874,7 @@
       const absent = [...history].filter(id => !active.has(id)).length;
       const selected = ui.listingStatus || 'active';
       return `<section class="metrics">${metric('当前在售 Item', snapshot ? fmt(active.size) : '待确认', snapshot ? '名单日期：' + snapshot.date : '请提供完整在售商品报表')}${metric('历史记录 Item', fmt(history.size), '全部历史数据去重，不受所选日期影响')}${metric('历史链接不在最新名单', snapshot ? fmt(absent) : '待确认', '不等同于已确认下架')}${metric('零库存在售', snapshot ? fmt(zeroStock) : '待确认', '在售名单里 Available quantity = 0（不等于已下架，需人工确认）')}</section>
-        <div class="panel" style="padding:14px 16px;margin-bottom:16px"><div class="field" style="max-width:300px"><label for="listingStatusFilter">Item 在售状态</label><select class="input" id="listingStatusFilter">${[['active','在售'],['all','全部（含历史）'],['absent','不在最新在售名单'],['unknown','状态待确认']].map(([value,label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div><p class="field-help">${snapshot ? `名单日期：${esc(snapshot.date)}（文件导出日期）。` : '尚无在售名单，当前显示数据状态待确认的链接。'}状态按最新名单中的 Item ID 判断，与所选时间范围无关；筛选仅作用于本页与 Item 导出。</p><details class="inline-help"><summary>在售状态与名单口径说明（点击展开）</summary><p class="field-help">来源：${snapshot ? esc(snapshot.name) : '—'}。未在名单中不直接判为下架，可能涉及结束、售罄或导出范围；名单可能包含零库存链接，不代表均可购买；新在售链接即使所选区间没有表现记录也保留，指标显示“—”。经营看板与每日历史保留原口径。</p></details></div>`;
+        <div class="panel" style="padding:14px 16px;margin-bottom:16px"><div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end"><div class="field" style="max-width:300px;margin-bottom:0"><label for="listingStatusFilter">Item 在售状态</label><select class="input" id="listingStatusFilter">${[['active','在售'],['all','全部（含历史）'],['absent','不在最新在售名单'],['unknown','状态待确认']].map(([value,label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>${promoFilterSelect(rows)}</div><p class="field-help">${snapshot ? `名单日期：${esc(snapshot.date)}（文件导出日期）。` : '尚无在售名单，当前显示数据状态待确认的链接。'}状态按最新名单中的 Item ID 判断，与所选时间范围无关；筛选（含促销活动）仅作用于本页下方的 Item 表与本页导出。</p><details class="inline-help"><summary>在售状态与名单口径说明（点击展开）</summary><p class="field-help">来源：${snapshot ? esc(snapshot.name) : '—'}。未在名单中不直接判为下架，可能涉及结束、售罄或导出范围；名单可能包含零库存链接，不代表均可购买；新在售链接即使所选区间没有表现记录也保留，指标显示“—”。经营看板与每日历史保留原口径。</p></details></div>`;
     }
 
     function detailPage() {
@@ -1886,8 +1886,7 @@
       const tableRows = filterByPromo(rows);
       return `<div class="page-head"><div><h2>Item 完整明细</h2><p>链接汇总数据优先展示，每个 Item 一行，随后查看 PLG、PLP 与自然流量。</p></div><div class="actions"><button class="btn" id="exportBtn">${icon('download')}导出 Item 数据</button></div></div>
         ${filterPanel()}
-        ${listingStatusPanel()}
-        <div class="table-toolbar">${promoFilterSelect(rows)}<span class="table-count">促销筛选只筛本表（在售状态用上面的卡）</span></div>
+        ${listingStatusPanel(rows)}
         ${(dataState.promotions?.coupons || []).length ? `<div class="snapshot-note">另有 ${dataState.promotions.coupons.length} 个 <b>Coupon</b> 活动（结算时按门槛减；eBay 不提供参与 item 清单，所以不在下表按 itemId 显示）：${dataState.promotions.coupons.map(c => `${esc(c.name)}${c.rule ? '（' + esc(c.rule) + '）' : ''}${c.status && c.status !== 'Active' ? '[' + esc(c.status) + ']' : ''}`).join('；')}</div>` : ''}
         <details class="note-details"><summary>统计口径与数据说明（点击展开）</summary><div>PLP：${rangeText(plpStart, plpEnd)}，已匹配 ${fmt(rows.filter(row => row.hasPlp).length)} 个 Item，链接汇总数据位于基础信息之后。Traffic：${trafficRange}；PLG：${rangeText(plgStart, plpEnd)}。${esc(trafficSelection().note)}</div></details>
         <div class="snapshot-note">「当前售价」取该链接最近一次导出报表里的当前价（Price (Current or Last Price)，已含当时生效的促销/降价），不是标价、也不是成交均价；同一链接在区间内调过价时，这里显示最新那个价。</div>
