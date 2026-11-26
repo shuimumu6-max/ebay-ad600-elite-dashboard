@@ -2893,7 +2893,58 @@
         applyProduct();
       }
       render();
+      loadRawData();   // 首屏（明细）已经渲染出来了 → 后台去拉重数据，到了再重绘一次
     })();
+
+    // data.js 里只放了「明细页要用的轻数据」；trafficRaw / plgRaw / ads 这些重数据在 data-raw.js 里，
+    // 首屏之后再拉（2026-11-26 提速：17MB → 0.5MB 起步，用户不用盯着 25 秒白屏）。
+    // 数据内容与合并口径不变：拉到以后按「以预置数据为准」的同一套规则贴回 fullState 并重绘。
+    function loadRawData() {
+      if (!window.EBAY_RAW_PENDING || window.__rawLoading) return;
+      window.__rawLoading = true;
+      const boot = document.querySelector('script[src*="data.js"]');
+      const fp = boot ? (String(boot.getAttribute('src')).match(/[?&]f=([^&]+)/) || [])[1] : '';
+      const tag = document.createElement('script');
+      tag.src = './data-raw.js' + (fp ? '?f=' + fp : '');
+      tag.onload = function () {
+        try {
+          const raw = window.EBAY_SHOPS_RAW || { shops: [] };
+          for (const r of raw.shops || []) {
+            const shop = (window.EBAY_SHOPS && window.EBAY_SHOPS.shops || []).find(x => x.id === r.id);
+            if (!shop) continue;
+            for (const key of ['trafficRaw', 'plgRaw', 'adImports', 'itemHistory']) if (r[key] !== undefined) shop.bundle[key] = r[key];
+          }
+          window.EBAY_RAW_PENDING = false;
+          window.__rawLoading = false;
+          const seeded = pickShopBundle();
+          if (seeded) {
+            fullState = {
+              ...fullState,
+              ...seeded,
+              plgRaw: seeded.plgRaw || fullState.plgRaw || [],
+              trafficRaw: seeded.trafficRaw || fullState.trafficRaw || [],
+              ads: seeded.ads || fullState.ads || structuredClone(EMPTY_ADS),
+              activeListings: seeded.activeListings || fullState.activeListings || null,
+              sources: seeded.sources || fullState.sources || [],
+              products: seeded.products || fullState.products,
+              productCounts: seeded.productCounts || fullState.productCounts
+            };
+          }
+          applyProduct();
+          render();
+          toast('图表数据已就绪。');
+        } catch (error) {
+          window.__rawLoading = false;
+          toast('完整数据合并失败：' + error.message + '（明细页不受影响，刷新可重试）', true);
+        }
+      };
+      tag.onerror = function () {
+        window.__rawLoading = false;
+        toast('完整数据（Traffic/PLG/广告）暂时没拉到：图表页会显示空表，刷新可重试。', true);
+      };
+      document.head.appendChild(tag);
+      toast('明细已就绪，正在后台加载图表数据…');
+    }
   </script>
 </body>
 </html>
