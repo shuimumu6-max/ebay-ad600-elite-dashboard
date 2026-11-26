@@ -880,12 +880,21 @@
     // 600E 有 09-20~09-22 前置空行，都是 eBay 回溯用「当前标题」回填出来的，
     // 不代表该商品当时在售，不能拿来当统计起点。
     // 两个产品起点不同（600E 09-23 / 900E 10-28），切换产品后各自重新推导。
+    // 覆盖台账里的「日报天数」（2026-11-26 拆分提速）：重数据（trafficRaw）还在后台下时，
+    // 先用它定日期范围 —— 两者同源（都是那批日报报表），所以起止一致；等重数据到了会自动换成行数据口径。
+    function coverageDailyDates() {
+      const days = (dataState.coverage || {}).days || {};
+      const map = days.trafficDaily || {};
+      return Object.keys(map).filter(Boolean).sort();
+    }
+
     function dailyDateRange() {
       const dates = unique(dataState.trafficRaw
         .filter(row => row.start && row.start === row.end && inProduct(row))
         .map(row => row.start)).sort();
-      const start = [listingStartDate(), dates[0]].filter(Boolean).sort().at(-1) || '';
-      return { start, end: dates.at(-1) || '', days: dates.length };
+      const list = dates.length ? dates : coverageDailyDates();   // 重数据没到 → 用覆盖台账先顶上
+      const start = [listingStartDate(), list[0]].filter(Boolean).sort().at(-1) || '';
+      return { start, end: list.at(-1) || '', days: list.length };
     }
 
     // 日期输入框可选范围（2026-11-17 用户拍板「没有报表的时间不需要能勾选」）：
@@ -895,9 +904,10 @@
       const dates = unique(dataState.trafficRaw
         .filter(row => row.start && row.start === row.end && inProduct(row))
         .map(row => row.start)).sort();
+      const list = dates.length ? dates : coverageDailyDates();   // 同上：没重数据时用覆盖台账
       // 下限 = max(链接刊登开始日, 最早日报日)：既不早于上架日，也不早于有数据的日期。
-      const lower = [listingStartDate(), dates[0]].filter(Boolean).sort().at(-1) || '';
-      return { min: lower, max: dates.at(-1) || '' };
+      const lower = [listingStartDate(), list[0]].filter(Boolean).sort().at(-1) || '';
+      return { min: lower, max: list.at(-1) || '' };
     }
 
     function trafficSelection() {
